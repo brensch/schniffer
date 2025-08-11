@@ -246,11 +246,11 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 					name = cg.Name
 				}
 			}
-		nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
-		// Remove provider from label; show just dates and nights, name in description
-		label := fmt.Sprintf("%s → %s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
-		desc := name
-		options = append(options, discordgo.SelectMenuOption{Label: label, Description: desc, Value: strconv.FormatInt(r.ID, 10)})
+			nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
+			// Remove provider from label; show just dates and nights, name in description
+			label := fmt.Sprintf("%s → %s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
+			desc := name
+			options = append(options, discordgo.SelectMenuOption{Label: label, Description: desc, Value: strconv.FormatInt(r.ID, 10)})
 			count++
 			if count >= 25 { // Discord limit
 				break
@@ -556,11 +556,10 @@ func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo
 				name = cg.Name
 			}
 		}
-	nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
-	// Remove ID and provider from display; show dates, nights, and name
-	label := fmt.Sprintf("%s→%s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
-	val := r.ID
-	display := label + " • " + name
+		// Remove ID and provider from display; show dates, nights, and name
+		label := fmt.Sprintf("%s→%s", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"))
+		val := r.ID
+		display := label + " • " + name
 		// Discord requires Name length 1..100
 		if len(display) > 100 {
 			display = display[:97] + "…"
