@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -38,8 +39,18 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 	cur := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
 	endMonth := time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for !cur.After(endMonth) {
-		url := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month?start_date=%s", campgroundID, cur.Format(time.RFC3339))
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		// Build URL with proper query encoding. Recreation.gov expects the start_date value URL-encoded.
+		base := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month", campgroundID)
+		u, err := url.Parse(base)
+		if err != nil {
+			return nil, fmt.Errorf("invalid base url: %w", err)
+		}
+		q := u.Query()
+		// Use Zulu time with milliseconds, e.g. 2006-01-02T15:04:05.000Z
+		q.Set("start_date", cur.UTC().Format("2006-01-02T15:04:05.000Z"))
+		u.RawQuery = q.Encode()
+		fmt.Println("Fetching availability from:", u.String())
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		httpx.SpoofChromeHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
@@ -107,6 +118,7 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				Longitude  string `json:"longitude"`
 				ParentID   string `json:"parent_id"`
 				ParentName string `json:"parent_name"`
+				Reservable bool   `json:"reservable"`
 			} `json:"results"`
 			Size int `json:"size"`
 		}
@@ -114,6 +126,9 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			return nil, fmt.Errorf("search JSON decode failed: %w; body: %s", decErr, clipBody(body))
 		}
 		for _, r := range page.Results {
+			if !r.Reservable {
+				continue
+			}
 			var lat, lon float64
 			if r.Latitude != "" {
 				if v, err := strconv.ParseFloat(r.Latitude, 64); err == nil {

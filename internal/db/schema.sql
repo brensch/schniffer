@@ -59,11 +59,17 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     campground_id  VARCHAR,
     name           VARCHAR,
     parent_name    VARCHAR,
+    parent_id      VARCHAR,
+    lat            DOUBLE,
+    lon            DOUBLE,
     PRIMARY KEY (provider, campground_id)
 );
 
--- migrate existing installations: add parent_name if missing
+-- migrate existing installations: add columns if missing
 ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_name VARCHAR;
+ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_id VARCHAR;
+ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lat DOUBLE;
+ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lon DOUBLE;
 
 CREATE TABLE IF NOT EXISTS campsites_meta (
     provider       VARCHAR,
