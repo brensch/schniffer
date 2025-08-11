@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS schniff_requests (
     campground_id VARCHAR,
     start_date  DATE,
     end_date    DATE,
+    -- new semantics: checkin (inclusive) and checkout (exclusive)
+    checkin     DATE,
+    checkout    DATE,
     created_at  TIMESTAMPTZ,
     active      BOOLEAN
 );
@@ -70,6 +73,13 @@ ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_name VARCHAR;
 ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_id VARCHAR;
 ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lat DOUBLE;
 ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lon DOUBLE;
+
+-- add new request columns if missing
+ALTER TABLE schniff_requests ADD COLUMN IF NOT EXISTS checkin DATE;
+ALTER TABLE schniff_requests ADD COLUMN IF NOT EXISTS checkout DATE;
+-- backfill from old columns if present and new ones are null
+UPDATE schniff_requests SET checkin = COALESCE(checkin, start_date);
+UPDATE schniff_requests SET checkout = COALESCE(checkout, end_date);
 
 CREATE TABLE IF NOT EXISTS campsites_meta (
     provider       VARCHAR,

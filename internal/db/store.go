@@ -51,10 +51,11 @@ type SchniffRequest struct {
 	UserID       string
 	Provider     string
 	CampgroundID string
-	StartDate    time.Time
-	EndDate      time.Time
-	CreatedAt    time.Time
-	Active       bool
+	// Checkin is the arrival date (inclusive), Checkout is the departure date (exclusive)
+	Checkin   time.Time
+	Checkout  time.Time
+	CreatedAt time.Time
+	Active    bool
 }
 
 type CampsiteState struct {
@@ -100,10 +101,10 @@ type SyncLog struct {
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		INSERT INTO schniff_requests(user_id, provider, campground_id, start_date, end_date, created_at, active)
-		VALUES (?, ?, ?, ?, ?, now(), true)
+		INSERT INTO schniff_requests(user_id, provider, campground_id, start_date, end_date, checkin, checkout, created_at, active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, now(), true)
 		RETURNING id
-	`, r.UserID, r.Provider, r.CampgroundID, r.StartDate, r.EndDate)
+	`, r.UserID, r.Provider, r.CampgroundID, r.Checkin, r.Checkout, r.Checkin, r.Checkout)
 	var id int64
 	if err := row.Scan(&id); err != nil {
 		return 0, err
@@ -113,7 +114,7 @@ func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error)
 
 func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, provider, campground_id, start_date, end_date, created_at, active
+	SELECT id, user_id, provider, campground_id, coalesce(checkin, start_date) as checkin, coalesce(checkout, end_date) as checkout, created_at, active
 		FROM schniff_requests WHERE active=true
 	`)
 	if err != nil {
@@ -123,7 +124,7 @@ func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error
 	var out []SchniffRequest
 	for rows.Next() {
 		var r SchniffRequest
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.StartDate, &r.EndDate, &r.CreatedAt, &r.Active); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

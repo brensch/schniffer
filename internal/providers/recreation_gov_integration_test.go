@@ -34,22 +34,22 @@ func TestRecreationGov_FetchAllCampgrounds_Paginates(t *testing.T) {
 		}
 		q := r.URL.Query()
 		start, _ := strconv.Atoi(q.Get("start"))
-		size, _ := strconv.Atoi(q.Get("size"))
 		calls = append(calls, start)
 
 		// First page returns exactly 'size' results, second page returns 40, then no more calls expected.
 		var count int
 		if start == 0 {
-			count = size
-		} else if start == size {
+			count = 100
+		} else if start == 100 {
 			count = 40
 		} else {
 			t.Fatalf("unexpected start param: %d", start)
 		}
 
 		type result struct {
-			Name     string `json:"name"`
-			EntityID string `json:"entity_id"`
+			Name       string `json:"name"`
+			EntityID   string `json:"entity_id"`
+			Reservable bool   `json:"reservable"`
 		}
 		out := struct {
 			Results []result `json:"results"`
@@ -57,7 +57,7 @@ func TestRecreationGov_FetchAllCampgrounds_Paginates(t *testing.T) {
 		}{Results: make([]result, 0, count), Size: count}
 		for i := 0; i < count; i++ {
 			id := start + i + 1
-			out.Results = append(out.Results, result{EntityID: fmt.Sprintf("cg-%d", id), Name: fmt.Sprintf("Campground %d", id)})
+			out.Results = append(out.Results, result{EntityID: fmt.Sprintf("cg-%d", id), Name: fmt.Sprintf("Campground %d", id), Reservable: true})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)

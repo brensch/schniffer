@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,12 +73,13 @@ func (b *Bot) registerCommands() {
 			Options: []*discordgo.ApplicationCommandOption{
 				{Name: "add", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "campground", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select campground", Autocomplete: true},
-					{Name: "start_date", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "YYYY-MM-DD"},
-					{Name: "end_date", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "YYYY-MM-DD"},
+					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
+					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List your active schniffs"},
+				// Remove supports autocomplete of your active schniffs
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff", Options: []*discordgo.ApplicationCommandOption{
-					{Name: "id", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID"},
+					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
 				{Name: "stats", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show today stats"},
 				{Name: "checks", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show last 50 checks for your requests"},
@@ -94,6 +96,38 @@ func (b *Bot) registerCommands() {
 }
 
 func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Handle select menu for removal
+	if i.Type == discordgo.InteractionMessageComponent {
+		data := i.MessageComponentData()
+		switch data.CustomID {
+		case "remove_checks":
+			userID := getUserID(i)
+			if userID == "" {
+				respond(s, i, "unable to resolve user")
+				return
+			}
+			if len(data.Values) == 0 {
+				respond(s, i, "no selection")
+				return
+			}
+			vid := data.Values[0]
+			id, err := strconv.ParseInt(vid, 10, 64)
+			if err != nil {
+				respond(s, i, "invalid selection")
+				return
+			}
+			if err := b.store.DeactivateRequest(context.Background(), id, userID); err != nil {
+				respond(s, i, "error: "+err.Error())
+				return
+			}
+			// Update the message to confirm removal
+			_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseUpdateMessage,
+				Data: &discordgo.InteractionResponseData{Content: fmt.Sprintf("removed schniff %d", id), Components: []discordgo.MessageComponent{}, Flags: 1 << 6},
+			})
+			return
+		}
+	}
 	// Handle autocomplete for campground
 	if i.Type == discordgo.InteractionApplicationCommandAutocomplete {
 		data := i.ApplicationCommandData()
@@ -106,16 +140,24 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 					break
 				}
 			}
-			if focused != nil && focused.Name == "campground" {
-				query := focused.StringValue()
-				choices := b.autocompleteCampgrounds(i, query)
-				if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-					Data: &discordgo.InteractionResponseData{Choices: choices},
-				}); err != nil {
-					b.logger.Warn("autocomplete respond failed", slog.Any("err", err))
+			if focused != nil {
+				var choices []*discordgo.ApplicationCommandOptionChoice
+				switch focused.Name {
+				case "campground":
+					query := focused.StringValue()
+					choices = b.autocompleteCampgrounds(i, query)
+				case "ids":
+					choices = b.autocompleteRemoveIDs(i)
 				}
-				return
+				if choices != nil {
+					if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+						Data: &discordgo.InteractionResponseData{Choices: choices},
+					}); err != nil {
+						b.logger.Warn("autocomplete respond failed", slog.Any("err", err))
+					}
+					return
+				}
 			}
 		}
 	}
@@ -141,12 +183,13 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		provider := parts[0]
 		campID := parts[1]
-		start, end, err := parseDates(opts["start_date"].StringValue(), opts["end_date"].StringValue())
+		start, end, err := parseDates(opts["checkin"].StringValue(), opts["checkout"].StringValue())
 		if err != nil {
 			respond(s, i, "invalid dates: "+err.Error())
 			return
 		}
-		id, err := b.store.AddRequest(context.Background(), db.SchniffRequest{UserID: i.Member.User.ID, Provider: provider, CampgroundID: campID, StartDate: start, EndDate: end})
+		uid := getUserID(i)
+		id, err := b.store.AddRequest(context.Background(), db.SchniffRequest{UserID: uid, Provider: provider, CampgroundID: campID, Checkin: start, Checkout: end})
 		if err != nil {
 			respond(s, i, "error: "+err.Error())
 			return
@@ -160,8 +203,9 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		var out string
 		for _, r := range reqs {
-			if r.UserID == i.Member.User.ID {
-				out += fmt.Sprintf("%d: %s %s %s..%s\n", r.ID, r.Provider, r.CampgroundID, r.StartDate.Format("2006-01-02"), r.EndDate.Format("2006-01-02"))
+			if r.UserID == getUserID(i) {
+				nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
+				out += fmt.Sprintf("%d: %s %s %s→%s (%d nights)\n", r.ID, r.Provider, r.CampgroundID, r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
 			}
 		}
 		if out == "" {
@@ -169,13 +213,73 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		respond(s, i, out)
 	case "remove":
+		uid := getUserID(i)
 		opts := optMap(sub.Options)
-		id := int64(opts["id"].IntValue())
-		if err := b.store.DeactivateRequest(context.Background(), id, i.Member.User.ID); err != nil {
+		if opt, ok := opts["ids"]; ok && opt != nil {
+			id := int64(opt.IntValue())
+			if err := b.store.DeactivateRequest(context.Background(), id, uid); err != nil {
+				respond(s, i, "error: "+err.Error())
+				return
+			}
+			respond(s, i, "removed")
+			return
+		}
+		// Interactive removal: present select of active schniffs for this user
+		reqs, err := b.store.ListActiveRequests(context.Background())
+		if err != nil {
 			respond(s, i, "error: "+err.Error())
 			return
 		}
-		respond(s, i, "removed")
+		// Filter and build options (max 25)
+		options := []discordgo.SelectMenuOption{}
+		count := 0
+		for _, r := range reqs {
+			if r.UserID != uid {
+				continue
+			}
+			// Resolve campground display name if available
+			name := r.CampgroundID
+			if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), r.Provider, r.CampgroundID); ok {
+				if strings.TrimSpace(cg.ParentName) != "" {
+					name = cg.ParentName + " - " + cg.Name
+				} else {
+					name = cg.Name
+				}
+			}
+		nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
+		// Remove provider from label; show just dates and nights, name in description
+		label := fmt.Sprintf("%s → %s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
+		desc := name
+		options = append(options, discordgo.SelectMenuOption{Label: label, Description: desc, Value: strconv.FormatInt(r.ID, 10)})
+			count++
+			if count >= 25 { // Discord limit
+				break
+			}
+		}
+		if len(options) == 0 {
+			respond(s, i, "no active schniffs")
+			return
+		}
+		// Build select menu
+		selectMenu := discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.SelectMenu{
+					CustomID:    "remove_checks",
+					Placeholder: "Select a schniff to remove",
+					Options:     options,
+				},
+			},
+		}
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "Pick a schniff to remove. You'll get a confirmation after selection.",
+				Components: []discordgo.MessageComponent{selectMenu},
+				Flags:      1 << 6, // ephemeral
+			},
+		}); err != nil {
+			b.logger.Warn("remove respond failed", slog.Any("err", err))
+		}
 	case "stats":
 		row := b.store.DB.QueryRow(`
 			SELECT coalesce((SELECT count(*) FROM schniff_requests WHERE active=true),0),
@@ -187,7 +291,7 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		respond(s, i, fmt.Sprintf("active requests: %d\nlookups today: %d\nnotifications today: %d", active, lookups, notes))
 	case "checks":
 		// Build: last 50 lookup checks related to this user's requests
-		userID := i.Member.User.ID
+		userID := getUserID(i)
 		// Fetch relevant provider/cg combos for user
 		combos := map[string]struct{}{}
 		rows, err := b.store.DB.Query(`SELECT DISTINCT provider, campground_id FROM schniff_requests WHERE user_id=?`, userID)
@@ -207,7 +311,7 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		// Get last 200 lookup logs joined to requests to overfetch then de-dup to 50 checks
 		rows, err = b.store.DB.Query(`
-			SELECT l.provider, l.campground_id, l.checked_at, l.success, coalesce(l.err, ''), r.id, r.start_date, r.end_date
+			SELECT l.provider, l.campground_id, l.checked_at, l.success, coalesce(l.err, ''), r.id, coalesce(r.checkin, r.start_date) as checkin, coalesce(r.checkout, r.end_date) as checkout
 			FROM lookup_log l
 			JOIN schniff_requests r ON r.user_id=? AND r.provider=l.provider AND r.campground_id=l.campground_id
 			ORDER BY l.checked_at DESC
@@ -399,6 +503,17 @@ func respond(s *discordgo.Session, i *discordgo.InteractionCreate, content strin
 	}
 }
 
+// getUserID safely returns the user ID for both guild and DM interactions
+func getUserID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
+}
+
 func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {
 	ctx := context.Background()
 	cgs, err := b.store.ListCampgrounds(ctx, query)
@@ -416,6 +531,48 @@ func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query stri
 			Name:  display,
 			Value: c.Provider + "|" + c.CampgroundID,
 		})
+	}
+	return choices
+}
+
+// autocompleteRemoveIDs suggests the caller's active schniffs as choices.
+func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo.ApplicationCommandOptionChoice {
+	uid := getUserID(i)
+	reqs, err := b.store.ListActiveRequests(context.Background())
+	if err != nil {
+		b.logger.Warn("list active reqs failed", slog.Any("err", err))
+		return nil
+	}
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, 25)
+	for _, r := range reqs {
+		if r.UserID != uid {
+			continue
+		}
+		name := r.CampgroundID
+		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), r.Provider, r.CampgroundID); ok {
+			if strings.TrimSpace(cg.ParentName) != "" {
+				name = cg.ParentName + " - " + cg.Name
+			} else {
+				name = cg.Name
+			}
+		}
+	nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
+	// Remove ID and provider from display; show dates, nights, and name
+	label := fmt.Sprintf("%s→%s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
+	val := r.ID
+	display := label + " • " + name
+		// Discord requires Name length 1..100
+		if len(display) > 100 {
+			display = display[:97] + "…"
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: display, Value: val})
+		if len(choices) >= 25 {
+			break
+		}
+	}
+	if len(choices) == 0 {
+		// Discord requires at least one item for an autocomplete response; provide a hint.
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: "No active schniffs", Value: 0})
 	}
 	return choices
 }

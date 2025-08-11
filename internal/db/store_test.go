@@ -27,7 +27,7 @@ func TestRequestsCRUD(t *testing.T) {
 	ctx := context.Background()
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC)
-	id, err := s.AddRequest(ctx, db.SchniffRequest{UserID: "u1", Provider: "recreation_gov", CampgroundID: "cg1", StartDate: start, EndDate: end})
+	id, err := s.AddRequest(ctx, db.SchniffRequest{UserID: "u1", Provider: "recreation_gov", CampgroundID: "cg1", Checkin: start, Checkout: end})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
