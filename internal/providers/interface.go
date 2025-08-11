@@ -19,6 +19,8 @@ type Provider interface {
 	ResolveCampgrounds(ctx context.Context, query string, limit int) ([]CampgroundInfo, error)
 	// FetchCampsiteMetadata returns site-level names/labels for a campground.
 	FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error)
+	// FetchAllCampgrounds returns the full list of campgrounds and names from the provider.
+	FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error)
 }
 
 type Registry struct {

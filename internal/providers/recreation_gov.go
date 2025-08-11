@@ -108,3 +108,38 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 	}
 	return out, nil
 }
+
+// FetchAllCampgrounds scrapes the recreation.gov search API, paging through all results.
+func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error) {
+	start := 0
+	size := 100
+	var all []CampgroundInfo
+	for {
+		endpoint := fmt.Sprintf("https://recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d", size, start)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil { return nil, err }
+		req.Header.Set("User-Agent", "schniffer/1.0")
+		resp, err := r.client.Do(req)
+		if err != nil { return nil, err }
+		if resp.StatusCode != 200 {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("status %d", resp.StatusCode)
+		}
+		var page struct {
+			Results []struct{
+				Name string `json:"name"`
+				EntityID string `json:"entity_id"`
+			} `json:"results"`
+			Size int `json:"size"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil { resp.Body.Close(); return nil, err }
+		resp.Body.Close()
+		for _, r := range page.Results {
+			all = append(all, CampgroundInfo{ID: r.EntityID, Name: r.Name})
+		}
+		if page.Size < size { break }
+		start += page.Size
+	}
+	return all, nil
+}

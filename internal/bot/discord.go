@@ -3,7 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,10 +18,11 @@ type Bot struct {
 	token string
 	store *db.Store
 	mgr   *manager.Manager
+	logger *slog.Logger
 }
 
 func New(token, guildID string, store *db.Store, mgr *manager.Manager) *Bot {
-	return &Bot{g: guildID, store: store, mgr: mgr, token: token}
+	return &Bot{g: guildID, store: store, mgr: mgr, token: token, logger: slog.Default()}
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -58,7 +59,7 @@ func (b *Bot) NotifySummary(channelID string, msg string) error {
 }
 
 func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
-	log.Println("Bot ready as", s.State.User.Username)
+	b.logger.Info("bot ready", slog.String("user", s.State.User.Username))
 	b.registerCommands()
 }
 
@@ -78,9 +79,6 @@ func (b *Bot) registerCommands() {
 					{Name: "id", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID"},
 				}},
 				{Name: "stats", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show today stats"},
-				{Name: "sync_meta", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Sync campsite metadata for a campground", Options: []*discordgo.ApplicationCommandOption{
-					{Name: "campground", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select campground", Autocomplete: true},
-				}},
 			},
 		},
 	}
@@ -88,7 +86,7 @@ func (b *Bot) registerCommands() {
 	for _, c := range cmds {
 		_, err := b.s.ApplicationCommandCreate(appID, b.g, c)
 		if err != nil {
-			log.Printf("cmd create: %v", err)
+			b.logger.Warn("command registration failed", slog.Any("err", err))
 		}
 	}
 }
@@ -183,17 +181,6 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		var active, lookups, notes int64
 		_ = row.Scan(&active, &lookups, &notes)
 		respond(s, i, fmt.Sprintf("active requests: %d\nlookups today: %d\nnotifications today: %d", active, lookups, notes))
-	case "sync_meta":
-		opts := optMap(sub.Options)
-		cg := opts["campground"].StringValue()
-		parts := strings.SplitN(cg, "|", 2)
-		if len(parts) != 2 {
-			respond(s, i, "invalid campground selection")
-			return
-		}
-		provider := parts[0]
-		campID := parts[1]
-		respond(s, i, fmt.Sprintf("queued metadata sync for %s:%s", provider, campID))
 	}
 }
 

@@ -3,7 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,10 +17,11 @@ type Manager struct {
 	mu               sync.Mutex
 	notifier         Notifier
 	summaryChannelID string
+	logger           *slog.Logger
 }
 
 func NewManager(store *db.Store, reg *providers.Registry) *Manager {
-	return &Manager{store: store, reg: reg}
+	return &Manager{store: store, reg: reg, logger: slog.Default()}
 }
 
 // Run polls every 5 seconds for active requests and performs deduped provider lookups
@@ -44,7 +45,7 @@ func monthStart(t time.Time) time.Time {
 func (m *Manager) pollOnce(ctx context.Context) {
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
-		log.Printf("list requests: %v", err)
+		m.logger.Error("list requests failed", slog.Any("err", err))
 		return
 	}
 	// dedupe by provider+campground+month buckets across date ranges
@@ -99,7 +100,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 			batch = append(batch, db.CampsiteState{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, CheckedAt: now})
 		}
 		if err := m.store.UpsertCampsiteStateBatch(ctx, batch); err != nil {
-			log.Printf("upsert states: %v", err)
+			m.logger.Error("upsert states failed", slog.Any("err", err))
 		}
 	}
 }
@@ -188,7 +189,7 @@ func (m *Manager) snapshotDaily(ctx context.Context) {
 			now()
 	`)
 	if err != nil {
-		log.Printf("daily summary: %v", err)
+		m.logger.Error("daily summary insert failed", slog.Any("err", err))
 	}
 	// post summary to channel if configured
 	m.mu.Lock()
@@ -209,7 +210,9 @@ func (m *Manager) snapshotDaily(ctx context.Context) {
 				"Active requests: " + itoa(active) + "\n" +
 				"Lookups today: " + itoa(lookups) + "\n" +
 				"Notifications today: " + itoa(notes)
-			_ = n.NotifySummary(ch, msg)
+			if err := n.NotifySummary(ch, msg); err != nil {
+				m.logger.Warn("notify summary failed", slog.Any("err", err))
+			}
 		}
 	}
 }
@@ -219,3 +222,45 @@ func itoa(i int64) string { return fmt.Sprintf("%d", i) }
 
 // Configure summary channel id
 func (m *Manager) SetSummaryChannel(id string) { m.mu.Lock(); m.summaryChannelID = id; m.mu.Unlock() }
+
+// SyncCampgrounds pulls all campgrounds from a provider and stores them in DB.
+func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int, error) {
+	prov, ok := m.reg.Get(providerName)
+	if !ok { return 0, fmt.Errorf("unknown provider: %s", providerName) }
+	all, err := prov.FetchAllCampgrounds(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, cg := range all {
+		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+// RunCampgroundSync runs periodic campground syncs in the background.
+func (m *Manager) RunCampgroundSync(ctx context.Context, provider string, interval time.Duration) {
+	doSync := func() {
+		n, err := m.SyncCampgrounds(ctx, provider)
+		if err != nil {
+			m.logger.Error("campground sync failed", slog.String("provider", provider), slog.Any("err", err))
+			return
+		}
+		m.logger.Info("campground sync completed", slog.String("provider", provider), slog.Int("count", n))
+	}
+	doSync()
+	if interval <= 0 { interval = 24 * time.Hour }
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			doSync()
+		}
+	}
+}
