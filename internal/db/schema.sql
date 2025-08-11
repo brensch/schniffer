@@ -58,8 +58,12 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     provider       VARCHAR,
     campground_id  VARCHAR,
     name           VARCHAR,
+    parent_name    VARCHAR,
     PRIMARY KEY (provider, campground_id)
 );
+
+-- migrate existing installations: add parent_name if missing
+ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_name VARCHAR;
 
 CREATE TABLE IF NOT EXISTS campsites_meta (
     provider       VARCHAR,
@@ -68,3 +72,15 @@ CREATE TABLE IF NOT EXISTS campsites_meta (
     name           VARCHAR,
     PRIMARY KEY (provider, campground_id, campsite_id)
 );
+
+-- sync logs (e.g., campground syncs)
+CREATE TABLE IF NOT EXISTS sync_log (
+    sync_type    VARCHAR,
+    provider     VARCHAR,
+    started_at   TIMESTAMPTZ,
+    finished_at  TIMESTAMPTZ,
+    success      BOOLEAN,
+    err          VARCHAR,
+    count        BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_log_recent ON sync_log(sync_type, provider, finished_at);

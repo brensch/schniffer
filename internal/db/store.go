@@ -86,6 +86,16 @@ type Notification struct {
 	SentAt       time.Time
 }
 
+type SyncLog struct {
+	SyncType   string
+	Provider   string
+	StartedAt  time.Time
+	FinishedAt time.Time
+	Success    bool
+	Err        string
+	Count      int64
+}
+
 // CRUD
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
@@ -197,11 +207,11 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, campgroundID, name string) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, campgroundID, name, parentName string) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name)
-		VALUES (?, ?, ?)
-	`, provider, campgroundID, name)
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, parent_name)
+		VALUES (?, ?, ?, ?)
+	`, provider, campgroundID, name, parentName)
 	return err
 }
 
@@ -217,15 +227,25 @@ type Campground struct {
 	Provider     string
 	CampgroundID string
 	Name         string
+	ParentName   string
 }
 
 func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
+	// Fuzzy search across both name and parent_name with simple ranking.
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT provider, campground_id, name FROM campgrounds
-		WHERE name ILIKE '%' || ? || '%'
-		ORDER BY name
+		SELECT provider, campground_id, name, coalesce(parent_name, '') AS parent_name
+		FROM campgrounds
+		WHERE lower(name) LIKE '%' || lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE '%' || lower(?) || '%'
+		ORDER BY
+			CASE
+				WHEN lower(name) = lower(?) OR lower(coalesce(parent_name, '')) = lower(?) THEN 0
+				WHEN lower(name) LIKE lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE lower(?) || '%' THEN 1
+				WHEN lower(name) LIKE '%' || lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE '%' || lower(?) || '%' THEN 2
+				ELSE 3
+			END,
+			name
 		LIMIT 25
-	`, like)
+	`, like, like, like, like, like, like, like, like)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +253,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	var out []Campground
 	for rows.Next() {
 		var c Campground
-		if err := rows.Scan(&c.Provider, &c.CampgroundID, &c.Name); err != nil {
+		if err := rows.Scan(&c.Provider, &c.CampgroundID, &c.Name, &c.ParentName); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -243,15 +263,42 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 
 func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID string) (Campground, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT provider, campground_id, name FROM campgrounds
+		SELECT provider, campground_id, name, coalesce(parent_name, '')
+		FROM campgrounds
 		WHERE provider=? AND campground_id=?
 	`, provider, campgroundID)
 	var c Campground
-	if err := row.Scan(&c.Provider, &c.CampgroundID, &c.Name); err != nil {
+	if err := row.Scan(&c.Provider, &c.CampgroundID, &c.Name, &c.ParentName); err != nil {
 		if err == sql.ErrNoRows {
 			return Campground{}, false, nil
 		}
 		return Campground{}, false, err
 	}
 	return c, true, nil
+}
+
+// Sync helpers
+func (s *Store) RecordSync(ctx context.Context, l SyncLog) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO sync_log(sync_type, provider, started_at, finished_at, success, err, count)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, l.SyncType, l.Provider, l.StartedAt, l.FinishedAt, l.Success, l.Err, l.Count)
+	return err
+}
+
+func (s *Store) GetLastSuccessfulSync(ctx context.Context, syncType, provider string) (time.Time, bool, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT finished_at FROM sync_log
+		WHERE sync_type=? AND provider=? AND success=true
+		ORDER BY finished_at DESC LIMIT 1
+	`, syncType, provider)
+	var t time.Time
+	switch err := row.Scan(&t); err {
+	case nil:
+		return t, true, nil
+	case sql.ErrNoRows:
+		return time.Time{}, false, nil
+	default:
+		return time.Time{}, false, err
+	}
 }

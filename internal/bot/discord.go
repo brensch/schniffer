@@ -109,10 +109,12 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 			if focused != nil && focused.Name == "campground" {
 				query := focused.StringValue()
 				choices := b.autocompleteCampgrounds(i, query)
-				_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionApplicationCommandAutocompleteResult,
 					Data: &discordgo.InteractionResponseData{Choices: choices},
-				})
+				}); err != nil {
+					b.logger.Warn("autocomplete respond failed", slog.Any("err", err))
+				}
 				return
 			}
 		}
@@ -205,7 +207,7 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		// Get last 200 lookup logs joined to requests to overfetch then de-dup to 50 checks
 		rows, err = b.store.DB.Query(`
-			SELECT l.provider, l.campground_id, l.checked_at, l.success, r.id, r.start_date, r.end_date
+			SELECT l.provider, l.campground_id, l.checked_at, l.success, coalesce(l.err, ''), r.id, r.start_date, r.end_date
 			FROM lookup_log l
 			JOIN schniff_requests r ON r.user_id=? AND r.provider=l.provider AND r.campground_id=l.campground_id
 			ORDER BY l.checked_at DESC
@@ -230,9 +232,10 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 			var prov, cg string
 			var ts time.Time
 			var success bool
+			var errStr string
 			var id int64
 			var start, end time.Time
-			if err := rows.Scan(&prov, &cg, &ts, &success, &id, &start, &end); err != nil {
+			if err := rows.Scan(&prov, &cg, &ts, &success, &errStr, &id, &start, &end); err != nil {
 				continue
 			}
 			k := checkKey{prov: prov, cg: cg, t: ts, ok: success}
@@ -274,11 +277,23 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 			if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), k.prov, k.cg); ok {
 				name = cg.Name
 			}
+			var errSnippet string
+			if !k.ok {
+				// fetch one example error for this timestamp
+				var es string
+				_ = b.store.DB.QueryRow(`SELECT coalesce(err,'') FROM lookup_log WHERE provider=? AND campground_id=? AND checked_at=? LIMIT 1`, k.prov, k.cg, k.t).Scan(&es)
+				if es != "" {
+					if len(es) > 120 {
+						es = es[:120] + "…"
+					}
+					errSnippet = " error: " + es
+				}
+			}
 			status := "ok"
 			if !k.ok {
 				status = "fail"
 			}
-			header := fmt.Sprintf("%s %s %s (%s) [%s]", k.t.Format("2006-01-02 15:04"), k.prov, k.cg, name, status)
+			header := fmt.Sprintf("%s %s %s (%s) [%s]%s", k.t.Format("2006-01-02 15:04"), k.prov, k.cg, name, status, errSnippet)
 			line := header + "\n"
 			bld.WriteString(line)
 			// For each matching request span, compute counts by day at batchTS
@@ -301,7 +316,10 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 					for rows2.Next() {
 						var dt time.Time
 						var total, free int
-						_ = rows2.Scan(&dt, &total, &free)
+						if err := rows2.Scan(&dt, &total, &free); err != nil {
+							b.logger.Warn("scan counts failed", slog.Any("err", err))
+							continue
+						}
 						counts[dt.Format(dateFmt)] = [2]int{total, free}
 					}
 					rows2.Close()
@@ -335,12 +353,18 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 			return
 		}
 		// Defer then send larger content as followups to avoid 2000 char limit
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource})
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}); err != nil {
+			b.logger.Warn("checks defer failed", slog.Any("err", err))
+		}
 		// ephemeral is true by default with our respond helper; here we'll mark ephemeral true for followups too
 		first := chunks[0]
-		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: first})
+		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: first}); err != nil {
+			b.logger.Warn("checks followup send failed", slog.Any("err", err))
+		}
 		for _, c := range chunks[1:] {
-			_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: c})
+			if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: c}); err != nil {
+				b.logger.Warn("checks followup send failed", slog.Any("err", err))
+			}
 		}
 	}
 }
@@ -367,22 +391,29 @@ func optMap(opts []*discordgo.ApplicationCommandInteractionDataOption) map[strin
 }
 
 func respond(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: content, Flags: 1 << 6},
-	})
+	}); err != nil {
+		// last resort
+	}
 }
 
 func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {
 	ctx := context.Background()
 	cgs, err := b.store.ListCampgrounds(ctx, query)
 	if err != nil {
+		b.logger.Warn("list campgrounds failed", slog.Any("err", err))
 		return nil
 	}
 	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(cgs))
 	for _, c := range cgs {
+		display := c.Name
+		if strings.TrimSpace(c.ParentName) != "" {
+			display = c.ParentName + " - " + c.Name
+		}
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
-			Name:  c.Name,
+			Name:  display,
 			Value: c.Provider + "|" + c.CampgroundID,
 		})
 	}

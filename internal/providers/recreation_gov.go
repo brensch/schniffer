@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
+
+	"log/slog"
+
+	"github.com/brensch/schniffer/internal/httpx"
 )
 
 type RecreationGov struct {
@@ -14,7 +19,7 @@ type RecreationGov struct {
 }
 
 func NewRecreationGov() *RecreationGov {
-	return &RecreationGov{client: &http.Client{Timeout: 15 * time.Second}}
+	return &RecreationGov{client: httpx.Default()}
 }
 
 func (r *RecreationGov) Name() string { return "recreation_gov" }
@@ -35,27 +40,28 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 	for !cur.After(endMonth) {
 		url := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month?start_date=%s", campgroundID, cur.Format(time.RFC3339))
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		req.Header.Set("User-Agent", "schniffer/1.0")
+		httpx.SpoofChromeHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("availability GET failed: %w", err)
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("availability read body failed: %w", err)
 		}
-		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("recreation.gov status %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
 		var parsed recGovResp
 		if err := json.Unmarshal(body, &parsed); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
 		}
 		for siteID, data := range parsed.Campsites {
 			for dateStr, status := range data.Availabilities {
 				d, err := time.Parse(time.RFC3339, dateStr)
 				if err != nil {
+					slog.Debug("bad date from rec.gov", slog.String("date", dateStr))
 					continue
 				}
 				if d.Before(start) || d.After(end) {
@@ -80,30 +86,53 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("User-Agent", "schniffer/1.0")
+		httpx.SpoofChromeHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("search GET failed: %w", err)
 		}
-		if resp.StatusCode != 200 {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("status %d", resp.StatusCode)
+		body, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			return nil, fmt.Errorf("search read body failed: %w", rerr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("recreation.gov search status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
 		var page struct {
 			Results []struct {
-				Name     string `json:"name"`
-				EntityID string `json:"entity_id"`
+				Name       string `json:"name"`
+				EntityID   string `json:"entity_id"`
+				Latitude   string `json:"latitude"`
+				Longitude  string `json:"longitude"`
+				ParentID   string `json:"parent_id"`
+				ParentName string `json:"parent_name"`
 			} `json:"results"`
 			Size int `json:"size"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			resp.Body.Close()
-			return nil, err
+		if decErr := json.Unmarshal(body, &page); decErr != nil {
+			return nil, fmt.Errorf("search JSON decode failed: %w; body: %s", decErr, clipBody(body))
 		}
-		resp.Body.Close()
 		for _, r := range page.Results {
-			all = append(all, CampgroundInfo{ID: r.EntityID, Name: r.Name})
+			var lat, lon float64
+			if r.Latitude != "" {
+				if v, err := strconv.ParseFloat(r.Latitude, 64); err == nil {
+					lat = v
+				}
+			}
+			if r.Longitude != "" {
+				if v, err := strconv.ParseFloat(r.Longitude, 64); err == nil {
+					lon = v
+				}
+			}
+			all = append(all, CampgroundInfo{
+				ID:         r.EntityID,
+				Name:       r.Name,
+				Lat:        lat,
+				Lon:        lon,
+				ParentID:   r.ParentID,
+				ParentName: r.ParentName,
+			})
 		}
 		if page.Size < size {
 			break
@@ -111,4 +140,17 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 		start += page.Size
 	}
 	return all, nil
+}
+
+// clipBody returns a short string version of a response body for error messages.
+// It limits to a reasonable size to avoid logging huge payloads.
+func clipBody(b []byte) string {
+	const max = 2048
+	if len(b) == 0 {
+		return ""
+	}
+	if len(b) > max {
+		return string(b[:max]) + "..."
+	}
+	return string(b)
 }

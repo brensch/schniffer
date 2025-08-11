@@ -87,10 +87,14 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		end = me.AddDate(0, 1, -1)
 		states, err := prov.FetchAvailability(ctx, k.cg, start, end)
 		if err != nil {
-			_ = m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: false, Err: err.Error()})
+			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
+				m.logger.Warn("record lookup failed", slog.Any("err", err2))
+			}
 			continue
 		}
-		_ = m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: true})
+		if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: true}); err2 != nil {
+			m.logger.Warn("record lookup failed", slog.Any("err", err2))
+		}
 		// change detection and notify
 		m.detectChangesAndNotify(ctx, reqs, states, k.prov, k.cg)
 		// persist states after detecting changes
@@ -157,8 +161,12 @@ func (m *Manager) detectChangesAndNotify(ctx context.Context, reqs []db.SchniffR
 				state = "available"
 			}
 			msg := "Campground " + cg + " site " + s.ID + " on " + key + " is " + state
-			_ = n.NotifyAvailability(r.UserID, msg)
-			_ = m.store.RecordNotification(ctx, db.Notification{RequestID: r.ID, UserID: r.UserID, Provider: prov, CampgroundID: cg, CampsiteID: s.ID, Date: s.Date, State: state, SentAt: time.Now()})
+			if err := n.NotifyAvailability(r.UserID, msg); err != nil {
+				m.logger.Warn("notify availability failed", slog.Any("err", err))
+			}
+			if err := m.store.RecordNotification(ctx, db.Notification{RequestID: r.ID, UserID: r.UserID, Provider: prov, CampgroundID: cg, CampsiteID: s.ID, Date: s.Date, State: state, SentAt: time.Now()}); err != nil {
+				m.logger.Warn("record notification failed", slog.Any("err", err))
+			}
 		}
 	}
 }
@@ -229,16 +237,37 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	if !ok {
 		return 0, fmt.Errorf("unknown provider: %s", providerName)
 	}
+	// Check last successful sync within 24h
+	if last, ok, err := m.store.GetLastSuccessfulSync(ctx, "campgrounds", providerName); err == nil && ok {
+		if time.Since(last) < 24*time.Hour {
+			m.logger.Info("skip campground sync; recently synced", slog.String("provider", providerName), slog.Time("last", last))
+			return 0, nil
+		}
+	} else if err != nil {
+		m.logger.Warn("get last sync failed", slog.Any("err", err))
+	}
+	started := time.Now()
 	all, err := prov.FetchAllCampgrounds(ctx)
 	if err != nil {
+		// store failed sync
+		if err2 := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, Err: err.Error(), Count: 0}); err2 != nil {
+			m.logger.Warn("record sync failed", slog.Any("err", err2))
+		}
 		return 0, err
 	}
 	count := 0
 	for _, cg := range all {
-		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name); err != nil {
+		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.ParentName); err != nil {
+			// store failed sync
+			if err2 := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, Err: err.Error(), Count: int64(count)}); err2 != nil {
+				m.logger.Warn("record sync failed", slog.Any("err", err2))
+			}
 			return count, err
 		}
 		count++
+	}
+	if err := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: int64(count)}); err != nil {
+		m.logger.Warn("record sync failed", slog.Any("err", err))
 	}
 	return count, nil
 }

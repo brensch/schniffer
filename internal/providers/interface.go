@@ -30,6 +30,10 @@ func (r *Registry) Register(name string, p Provider) { r.providers[name] = p }
 func (r *Registry) Get(name string) (Provider, bool) { p, ok := r.providers[name]; return p, ok }
 
 type CampgroundInfo struct {
-	ID   string
-	Name string
+	ID         string
+	Name       string
+	Lat        float64
+	Lon        float64
+	ParentID   string
+	ParentName string
 }

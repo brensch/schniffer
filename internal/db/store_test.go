@@ -90,7 +90,7 @@ func TestLookupLog(t *testing.T) {
 func TestMetadata(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.UpsertCampground(ctx, "recreation_gov", "cg1", "Test Campground"); err != nil {
+	if err := s.UpsertCampground(ctx, "recreation_gov", "cg1", "Test Campground", "Parent Area"); err != nil {
 		t.Fatalf("upsert cg: %v", err)
 	}
 	if err := s.UpsertCampsiteMeta(ctx, "recreation_gov", "cg1", "s1", "Site 1"); err != nil {
