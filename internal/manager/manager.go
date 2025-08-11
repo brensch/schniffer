@@ -226,7 +226,9 @@ func (m *Manager) SetSummaryChannel(id string) { m.mu.Lock(); m.summaryChannelID
 // SyncCampgrounds pulls all campgrounds from a provider and stores them in DB.
 func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int, error) {
 	prov, ok := m.reg.Get(providerName)
-	if !ok { return 0, fmt.Errorf("unknown provider: %s", providerName) }
+	if !ok {
+		return 0, fmt.Errorf("unknown provider: %s", providerName)
+	}
 	all, err := prov.FetchAllCampgrounds(ctx)
 	if err != nil {
 		return 0, err
@@ -252,7 +254,9 @@ func (m *Manager) RunCampgroundSync(ctx context.Context, provider string, interv
 		m.logger.Info("campground sync completed", slog.String("provider", provider), slog.Int("count", n))
 	}
 	doSync()
-	if interval <= 0 { interval = 24 * time.Hour }
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
