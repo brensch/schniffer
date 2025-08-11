@@ -30,6 +30,7 @@ go.work.sum
 # DuckDB database
 *.duckdb
 auto.duckdb
+*.wal
 
 # build artifact
 schniffer
