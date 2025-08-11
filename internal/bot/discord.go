@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
@@ -68,8 +69,7 @@ func (b *Bot) registerCommands() {
 			Description: "Manage campground monitors",
 			Options: []*discordgo.ApplicationCommandOption{
 				{Name: "add", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff", Options: []*discordgo.ApplicationCommandOption{
-					{Name: "provider", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Provider name (recreation_gov)"},
-					{Name: "campground_id", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Campground ID"},
+					{Name: "campground", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select campground", Autocomplete: true},
 					{Name: "start_date", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "YYYY-MM-DD"},
 					{Name: "end_date", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "YYYY-MM-DD"},
 				}},
@@ -78,6 +78,9 @@ func (b *Bot) registerCommands() {
 					{Name: "id", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID"},
 				}},
 				{Name: "stats", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show today stats"},
+				{Name: "sync_meta", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Sync campsite metadata for a campground", Options: []*discordgo.ApplicationCommandOption{
+					{Name: "campground", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select campground", Autocomplete: true},
+				}},
 			},
 		},
 	}
@@ -91,6 +94,29 @@ func (b *Bot) registerCommands() {
 }
 
 func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Handle autocomplete for campground
+	if i.Type == discordgo.InteractionApplicationCommandAutocomplete {
+		data := i.ApplicationCommandData()
+		if data.Name == "schniff" && len(data.Options) > 0 {
+			sub := data.Options[0]
+			var focused *discordgo.ApplicationCommandInteractionDataOption
+			for _, o := range sub.Options {
+				if o.Focused {
+					focused = o
+					break
+				}
+			}
+			if focused != nil && focused.Name == "campground" {
+				query := focused.StringValue()
+				choices := b.autocompleteCampgrounds(i, query)
+				_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+					Data: &discordgo.InteractionResponseData{Choices: choices},
+				})
+				return
+			}
+		}
+	}
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
@@ -105,8 +131,14 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 	switch sub.Name {
 	case "add":
 		opts := optMap(sub.Options)
-		provider := opts["provider"].StringValue()
-		campID := opts["campground_id"].StringValue()
+		cg := opts["campground"].StringValue()
+		parts := strings.SplitN(cg, "|", 2)
+		if len(parts) != 2 {
+			respond(s, i, "invalid campground selection")
+			return
+		}
+		provider := parts[0]
+		campID := parts[1]
 		start, end, err := parseDates(opts["start_date"].StringValue(), opts["end_date"].StringValue())
 		if err != nil {
 			respond(s, i, "invalid dates: "+err.Error())
@@ -151,6 +183,17 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		var active, lookups, notes int64
 		_ = row.Scan(&active, &lookups, &notes)
 		respond(s, i, fmt.Sprintf("active requests: %d\nlookups today: %d\nnotifications today: %d", active, lookups, notes))
+	case "sync_meta":
+		opts := optMap(sub.Options)
+		cg := opts["campground"].StringValue()
+		parts := strings.SplitN(cg, "|", 2)
+		if len(parts) != 2 {
+			respond(s, i, "invalid campground selection")
+			return
+		}
+		provider := parts[0]
+		campID := parts[1]
+		respond(s, i, fmt.Sprintf("queued metadata sync for %s:%s", provider, campID))
 	}
 }
 
@@ -180,4 +223,20 @@ func respond(s *discordgo.Session, i *discordgo.InteractionCreate, content strin
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: content, Flags: 1 << 6},
 	})
+}
+
+func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {
+	ctx := context.Background()
+	cgs, err := b.store.ListCampgrounds(ctx, query)
+	if err != nil {
+		return nil
+	}
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(cgs))
+	for _, c := range cgs {
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+			Name:  c.Name,
+			Value: c.Provider + "|" + c.CampgroundID,
+		})
+	}
+	return choices
 }

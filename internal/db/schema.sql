@@ -1,7 +1,8 @@
 -- schema for schniffer
 
+CREATE SEQUENCE IF NOT EXISTS schniff_requests_id_seq START 1;
 CREATE TABLE IF NOT EXISTS schniff_requests (
-    id          BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    id          BIGINT PRIMARY KEY DEFAULT nextval('schniff_requests_id_seq'),
     user_id     VARCHAR,
     provider    VARCHAR,
     campground_id VARCHAR,
@@ -50,4 +51,20 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     lookups        BIGINT,
     notifications  BIGINT,
     created_at     TIMESTAMPTZ
+);
+
+-- campground metadata
+CREATE TABLE IF NOT EXISTS campgrounds (
+    provider       VARCHAR,
+    campground_id  VARCHAR,
+    name           VARCHAR,
+    PRIMARY KEY (provider, campground_id)
+);
+
+CREATE TABLE IF NOT EXISTS campsites_meta (
+    provider       VARCHAR,
+    campground_id  VARCHAR,
+    campsite_id    VARCHAR,
+    name           VARCHAR,
+    PRIMARY KEY (provider, campground_id, campsite_id)
 );

@@ -194,3 +194,64 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 		return false, false, err
 	}
 }
+
+// Metadata
+
+func (s *Store) UpsertCampground(ctx context.Context, provider, campgroundID, name string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name)
+		VALUES (?, ?, ?)
+	`, provider, campgroundID, name)
+	return err
+}
+
+func (s *Store) UpsertCampsiteMeta(ctx context.Context, provider, campgroundID, campsiteID, name string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT OR REPLACE INTO campsites_meta(provider, campground_id, campsite_id, name)
+		VALUES (?, ?, ?, ?)
+	`, provider, campgroundID, campsiteID, name)
+	return err
+}
+
+type Campground struct {
+	Provider     string
+	CampgroundID string
+	Name         string
+}
+
+func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT provider, campground_id, name FROM campgrounds
+		WHERE name ILIKE '%' || ? || '%'
+		ORDER BY name
+		LIMIT 25
+	`, like)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Campground
+	for rows.Next() {
+		var c Campground
+		if err := rows.Scan(&c.Provider, &c.CampgroundID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID string) (Campground, bool, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT provider, campground_id, name FROM campgrounds
+		WHERE provider=? AND campground_id=?
+	`, provider, campgroundID)
+	var c Campground
+	if err := row.Scan(&c.Provider, &c.CampgroundID, &c.Name); err != nil {
+		if err == sql.ErrNoRows {
+			return Campground{}, false, nil
+		}
+		return Campground{}, false, err
+	}
+	return c, true, nil
+}
