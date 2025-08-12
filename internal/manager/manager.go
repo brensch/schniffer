@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,6 +135,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 		dates := datesFromSet(datesSet)
 		// provider decides minimal set of requests
 		buckets := prov.PlanBuckets(dates)
+		// collect all states for this provider+campground across buckets to enable bundled notifications
+		collectedStates := make([]providers.Campsite, 0, 128)
 		for _, b := range buckets {
 			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
 			call := struct {
@@ -161,9 +164,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			if len(states) == 0 {
 				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
 			}
-			// change detection and notify
-			reqs := reqsByPC[k]
-			m.detectChangesAndNotify(ctx, reqs, states, k.prov, k.cg)
+			// collect for later bundled change detection and notification
+			collectedStates = append(collectedStates, states...)
 			// persist states after detecting changes
 			batch := make([]db.CampsiteState, 0, len(states))
 			now := time.Now()
@@ -175,6 +177,11 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			} else {
 				m.logger.Info("persisted campsite states", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Int("count", len(batch)))
 			}
+		}
+		// change detection and bundled notification across all buckets for this provider+campground
+		if len(collectedStates) > 0 {
+			reqs := reqsByPC[k]
+			m.detectChangesAndNotify(ctx, reqs, collectedStates, k.prov, k.cg)
 		}
 	}
 	return result
@@ -207,41 +214,47 @@ func (m *Manager) detectChangesAndNotify(ctx context.Context, reqs []db.SchniffR
 	if n == nil {
 		return
 	}
-	// Build quick lookup for requests by date (nights): include dates d with r.Checkin <= d < r.Checkout
-	perDate := map[string][]db.SchniffRequest{}
-	for _, r := range reqs {
-		for d := r.Checkin; d.Before(r.Checkout); d = d.AddDate(0, 0, 1) {
-			key := d.Format("2006-01-02")
-			perDate[key] = append(perDate[key], r)
-		}
-	}
+	// Convert provider states to db-friendly incoming states
+	incoming := make([]db.IncomingCampsiteState, 0, len(states))
 	for _, s := range states {
-		// get previous state
-		prevAvail, prevExist, err := m.store.GetLastState(ctx, prov, cg, s.ID, s.Date)
-		if err != nil {
+		incoming = append(incoming, db.IncomingCampsiteState{CampsiteID: s.ID, Date: s.Date, Available: s.Available})
+	}
+	// Ask DB to reconcile notifications and return per-user newly opened availability items
+	newlyOpenByUser, err := m.store.ReconcileNotifications(ctx, prov, cg, reqs, incoming)
+	if err != nil {
+		m.logger.Warn("reconcile notifications failed", slog.Any("err", err))
+		return
+	}
+	if len(newlyOpenByUser) == 0 {
+		return
+	}
+	// Bundle notifications per user
+	provIf, _ := m.reg.Get(prov)
+	for userID, items := range newlyOpenByUser {
+		if len(items) == 0 {
 			continue
 		}
-		// Only notify when we have a previous state and it flips from unavailable -> available
-		if !prevExist || !(prevAvail == false && s.Available == true) {
-			continue
+		// Compose a single message listing all new availabilities
+		// Format: "Available: <provider> <campground>\n- YYYY-MM-DD site <id> [url]\n..."
+		b := strings.Builder{}
+		b.WriteString("Available: ")
+		b.WriteString(prov)
+		b.WriteString(" ")
+		b.WriteString(cg)
+		for _, it := range items {
+			b.WriteString("\n- ")
+			b.WriteString(it.Date.Format("2006-01-02"))
+			b.WriteString(" site ")
+			b.WriteString(it.CampsiteID)
+			if provIf != nil {
+				if url := provIf.CampsiteURL(cg, it.CampsiteID); url != "" {
+					b.WriteString(" ")
+					b.WriteString(url)
+				}
+			}
 		}
-		key := s.Date.Format("2006-01-02")
-		for _, r := range perDate[key] {
-			// Compose message with provider URL to the campsite
-			url := ""
-			if provIf, ok := m.reg.Get(prov); ok {
-				url = provIf.CampsiteURL(cg, s.ID)
-			}
-			msg := "Available: " + prov + " " + cg + " site " + s.ID + " on " + key
-			if url != "" {
-				msg += " " + url
-			}
-			if err := n.NotifyAvailability(r.UserID, msg); err != nil {
-				m.logger.Warn("notify availability failed", slog.Any("err", err))
-			}
-			if err := m.store.RecordNotification(ctx, db.Notification{RequestID: r.ID, UserID: r.UserID, Provider: prov, CampgroundID: cg, CampsiteID: s.ID, Date: s.Date, State: "available", SentAt: time.Now()}); err != nil {
-				m.logger.Warn("record notification failed", slog.Any("err", err))
-			}
+		if err := n.NotifyAvailability(userID, b.String()); err != nil {
+			m.logger.Warn("notify availability failed", slog.Any("err", err))
 		}
 	}
 }

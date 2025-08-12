@@ -103,6 +103,19 @@ type Notification struct {
 	SentAt       time.Time
 }
 
+// IncomingCampsiteState represents the latest observed state for a campsite on a date.
+type IncomingCampsiteState struct {
+	CampsiteID string
+	Date       time.Time
+	Available  bool
+}
+
+// AvailabilityItem describes a newly opened availability to notify a user about.
+type AvailabilityItem struct {
+	CampsiteID string
+	Date       time.Time
+}
+
 type SyncLog struct {
 	SyncType   string
 	Provider   string
@@ -224,6 +237,111 @@ func (s *Store) RecordNotification(ctx context.Context, n Notification) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, n.RequestID, n.UserID, n.Provider, n.CampgroundID, n.CampsiteID, n.Date, n.State, n.SentAt)
 	return err
+}
+
+// ReconcileNotifications uses current campsite states to open or close notifications per user.
+// For each (campsite_id,date):
+//   - If current Available=true and the user's last recorded notification state is not "available",
+//     insert an "available" row and include it in the return for bundling.
+//   - If current Available=false and the user's last state is "available",
+//     insert an "unavailable" row to close it.
+//
+// Dedup is per user (even if they have multiple overlapping requests). We record the row with
+// the smallest request_id among the user's matching active requests for that date.
+func (s *Store) ReconcileNotifications(ctx context.Context, provider, campgroundID string, reqs []SchniffRequest, states []IncomingCampsiteState) (map[string][]AvailabilityItem, error) {
+	// Build per-date user -> requestID mapping from active requests
+	perDateUserReq := map[string]map[string]int64{}
+	for _, r := range reqs {
+		// Only consider matching provider/campground (callers pass filtered; keep defensive)
+		if r.Provider != provider || r.CampgroundID != campgroundID || !r.Active {
+			continue
+		}
+		for d := normalizeDay(r.Checkin); d.Before(normalizeDay(r.Checkout)); d = d.AddDate(0, 0, 1) {
+			key := d.Format("2006-01-02")
+			m, ok := perDateUserReq[key]
+			if !ok {
+				m = map[string]int64{}
+				perDateUserReq[key] = m
+			}
+			id, ok := m[r.UserID]
+			if !ok || r.ID < id {
+				m[r.UserID] = r.ID
+			}
+		}
+	}
+
+	// Prepare statements for performance
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		// If not committed due to early return, rollback
+		_ = tx.Rollback()
+	}()
+
+	stLast, err := tx.PrepareContext(ctx, `
+		SELECT state FROM notifications
+		WHERE user_id=? AND provider=? AND campground_id=? AND campsite_id=? AND date=?
+		ORDER BY sent_at DESC LIMIT 1
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer stLast.Close()
+
+	stInsert, err := tx.PrepareContext(ctx, `
+		INSERT INTO notifications(request_id, user_id, provider, campground_id, campsite_id, date, state, sent_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer stInsert.Close()
+
+	newly := map[string][]AvailabilityItem{}
+	now := time.Now()
+	for _, st := range states {
+		dateKey := normalizeDay(st.Date).Format("2006-01-02")
+		userReqs, ok := perDateUserReq[dateKey]
+		if !ok || len(userReqs) == 0 {
+			continue
+		}
+		for userID, reqID := range userReqs {
+			// check last
+			var last string
+			err := stLast.QueryRowContext(ctx, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date)).Scan(&last)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, err
+			}
+			hadOpen := (err == nil && strings.EqualFold(last, "available"))
+			if st.Available {
+				if !hadOpen { // open it
+					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "available", now); err != nil {
+						return nil, err
+					}
+					newly[userID] = append(newly[userID], AvailabilityItem{CampsiteID: st.CampsiteID, Date: normalizeDay(st.Date)})
+				}
+			} else { // unavailable
+				if hadOpen { // close it
+					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "unavailable", now); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return newly, nil
+}
+
+// normalizeDay returns time truncated to 00:00:00 UTC
+func normalizeDay(t time.Time) time.Time {
+	tt := t.UTC()
+	return time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // Aggregations & stats

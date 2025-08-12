@@ -78,16 +78,18 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 			b.logger.Error("failed to count notifications", "err", err)
 			notes24 = 0
 		}
-		// Dates to display: inclusive of checkout to match existing UX example
+		// Dates to display: exclude checkout (nights are [checkin, checkout))
 		// Limit to at most 14 days to keep message size reasonable
 		maxDays := 14
 		dates := make([]time.Time, 0, maxDays)
-		for d := it.checkin; !d.After(it.checkout) && len(dates) < maxDays; d = d.AddDate(0, 0, 1) {
+		for d := it.checkin; d.Before(it.checkout) && len(dates) < maxDays; d = d.AddDate(0, 0, 1) {
 			dates = append(dates, d)
 		}
 		// Aggregate latest availability per date in range (latest per campsite/date by checked_at)
 		counts := map[string][2]int{}
-		avs, _ := b.store.LatestAvailabilityByDate(context.Background(), it.provider, it.campgroundID, it.checkin, it.checkout)
+		// end is checkout-1 day to exclude checkout (function treats end inclusive)
+		endIncl := it.checkout.AddDate(0, 0, -1)
+		avs, _ := b.store.LatestAvailabilityByDate(context.Background(), it.provider, it.campgroundID, it.checkin, endIncl)
 		for _, a := range avs {
 			counts[a.Date.Format(dateFmt)] = [2]int{a.Total, a.Free}
 		}
@@ -102,7 +104,14 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 			c := counts[key]
 			bld.WriteString(fmt.Sprintf("%s: %d/%d\n", key, c[1], c[0]))
 		}
-		if len(dates) == maxDays && it.checkout.After(dates[len(dates)-1]) {
+		if len(dates) == maxDays {
+			lastWanted := it.checkout.AddDate(0, 0, -1)
+			if len(dates) > 0 && lastWanted.After(dates[len(dates)-1]) {
+				bld.WriteString("…\n")
+			}
+		} else if len(dates) == 0 {
+			// no nights in range; nothing to append
+		} else {
 			bld.WriteString("…\n")
 		}
 		// Spacer between schniffs
