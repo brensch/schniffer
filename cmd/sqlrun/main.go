@@ -45,15 +45,13 @@ func main() {
 		store, err = db.Open(duck)
 	} else {
 		fmt.Println("Opening DB in read-only mode...")
-		store, err = db.OpenReadOnly(duck)
-		if err != nil {
-			fmt.Println("Failed to open read-only DB:", err)
-			// Fallback: copy DB to a temp file to bypass locks and open read-only
-			tmp, cerr := copyToTemp(duck)
-			if cerr == nil {
-				store, err = db.OpenReadOnly(tmp)
-			}
+
+		// Fallback: copy DB to a temp file to bypass locks and open read-only
+		tmp, cerr := copyToTemp(duck)
+		if cerr == nil {
+			store, err = db.OpenReadOnly(tmp)
 		}
+
 	}
 	if err != nil {
 		fatalf("open db: %v", err)
