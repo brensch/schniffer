@@ -57,7 +57,7 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 		// Use Zulu time with milliseconds, e.g. 2006-01-02T15:04:05.000Z
 		q.Set("start_date", cur.UTC().Format("2006-01-02T15:04:05.000Z"))
 		u.RawQuery = q.Encode()
-		fmt.Println("Fetching availability from:", u.String())
+		slog.Info("Fetching availability", slog.String("url", u.String()))
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		httpx.SpoofChromeHeaders(req)
 		resp, err := r.client.Do(req)
@@ -92,6 +92,28 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 		cur = cur.AddDate(0, 1, 0)
 	}
 	return out, nil
+}
+
+// PlanBuckets groups dates by month and returns one monthly range per group.
+func (r *RecreationGov) PlanBuckets(dates []time.Time) []DateRange {
+	if len(dates) == 0 {
+		return nil
+	}
+	// Normalize to month keys
+	seen := map[time.Time]struct{}{}
+	for i := range dates {
+		d := dates[i].UTC()
+		dates[i] = time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	for _, d := range dates {
+		m := time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, time.UTC)
+		seen[m] = struct{}{}
+	}
+	out := make([]DateRange, 0, len(seen))
+	for m := range seen {
+		out = append(out, DateRange{Start: m, End: m.AddDate(0, 1, -1)})
+	}
+	return out
 }
 
 // FetchAllCampgrounds scrapes the recreation.gov search API, paging through all results.

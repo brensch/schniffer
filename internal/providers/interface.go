@@ -20,6 +20,18 @@ type Provider interface {
 	// CampsiteURL returns a link to the campsite details page for this provider.
 	// campgroundID may be ignored by providers that only key by campsiteID.
 	CampsiteURL(campgroundID, campsiteID string) string
+	// PlanBuckets tells the manager how to split a set of exact dates (UTC days) into
+	// the minimal set of upstream requests (inclusive day ranges) for this provider.
+	// The input dates are unique and normalized to YYYY-MM-DD UTC.
+	PlanBuckets(dates []time.Time) []DateRange
+}
+
+// DateRange represents an inclusive date span [Start..End] at day granularity.
+// Providers that can efficiently fetch data in fixed windows (e.g., month, week)
+// can declare their preferred batching by implementing Bucketizer.
+type DateRange struct {
+	Start time.Time
+	End   time.Time
 }
 
 type Registry struct {

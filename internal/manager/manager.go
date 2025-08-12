@@ -38,75 +38,140 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
-func monthStart(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+// PollResult is returned by pollOnce for testing/inspection.
+type PollResult struct {
+	Calls []struct {
+		Provider     string
+		CampgroundID string
+		Start        time.Time
+		End          time.Time
+		Success      bool
+		Error        string
+	}
+	States int // number of campsite states observed this run (before persist)
 }
 
 func (m *Manager) pollOnce(ctx context.Context) {
+	_ = m.pollOnceResult(ctx)
+}
+
+// normalizeDay returns t truncated to 00:00:00 UTC.
+func normalizeDay(t time.Time) time.Time {
+	tt := t.UTC()
+	return time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// generateNights returns the UTC days in [checkin, checkout) at day granularity.
+func generateNights(checkin, checkout time.Time) []time.Time {
+	if !checkin.Before(checkout) {
+		return nil
+	}
+	out := []time.Time{}
+	for d := normalizeDay(checkin); d.Before(normalizeDay(checkout)); d = d.AddDate(0, 0, 1) {
+		out = append(out, d)
+	}
+	return out
+}
+
+// datesFromSet converts a set of dates to a sorted slice (ascending) of UTC days.
+func datesFromSet(set map[time.Time]struct{}) []time.Time {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]time.Time, 0, len(set))
+	for d := range set {
+		out = append(out, normalizeDay(d))
+	}
+	// simple insertion sort (small N typical); could use sort.Slice
+	for i := 1; i < len(out); i++ {
+		j := i
+		for j > 0 && out[j].Before(out[j-1]) {
+			out[j], out[j-1] = out[j-1], out[j]
+			j--
+		}
+	}
+	return out
+}
+
+type pc struct{ prov, cg string }
+
+// collectDatesByPC groups requests by provider+campground and accumulates unique UTC days.
+func collectDatesByPC(reqs []db.SchniffRequest) (map[pc]map[time.Time]struct{}, map[pc][]db.SchniffRequest) {
+	datesBy := map[pc]map[time.Time]struct{}{}
+	reqsBy := map[pc][]db.SchniffRequest{}
+	for _, r := range reqs {
+		if !r.Checkin.Before(r.Checkout) {
+			continue
+		}
+		key := pc{prov: r.Provider, cg: r.CampgroundID}
+		if _, ok := datesBy[key]; !ok {
+			datesBy[key] = map[time.Time]struct{}{}
+		}
+		for _, d := range generateNights(r.Checkin, r.Checkout) {
+			datesBy[key][d] = struct{}{}
+		}
+		reqsBy[key] = append(reqsBy[key], r)
+	}
+	return datesBy, reqsBy
+}
+
+// pollOnceResult performs one poll cycle and returns a summary for tests.
+func (m *Manager) pollOnceResult(ctx context.Context) PollResult {
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
 		m.logger.Error("list requests failed", slog.Any("err", err))
-		return
+		return PollResult{}
 	}
-	// dedupe by provider+campground+month buckets across date ranges
-	type key struct {
-		prov, cg string
-		month    time.Time
-	}
-	buckets := map[key][]db.SchniffRequest{}
-	for _, r := range requests {
-		// for each month between start and end, add bucket
-		cur := monthStart(r.Checkin)
-		end := monthStart(r.Checkout)
-		for !cur.After(end) {
-			k := key{r.Provider, r.CampgroundID, cur}
-			buckets[k] = append(buckets[k], r)
-			cur = cur.AddDate(0, 1, 0)
-		}
-	}
-	for k, reqs := range buckets {
+	// dedupe by provider+campground, then provider decides how to bucket dates
+	datesByPC, reqsByPC := collectDatesByPC(requests)
+	var result PollResult
+	for k, datesSet := range datesByPC {
 		prov, ok := m.reg.Get(k.prov)
 		if !ok {
 			continue
 		}
-		// The actual range needed across reqs within this month
-		start := reqs[0].Checkin
-		end := reqs[0].Checkout
-		for _, r := range reqs[1:] {
-			if r.Checkin.Before(start) {
-				start = r.Checkin
+		// to sorted slice
+		dates := datesFromSet(datesSet)
+		// provider decides minimal set of requests
+		buckets := prov.PlanBuckets(dates)
+		for _, b := range buckets {
+			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
+			call := struct {
+				Provider     string
+				CampgroundID string
+				Start        time.Time
+				End          time.Time
+				Success      bool
+				Error        string
+			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
+			if err != nil {
+				call.Error = err.Error()
+				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
+					m.logger.Warn("record lookup failed", slog.Any("err", err2))
+				}
+				result.Calls = append(result.Calls, call)
+				continue
 			}
-			if r.Checkout.After(end) {
-				end = r.Checkout
-			}
-		}
-		// clamp to month
-		ms := monthStart(start)
-		me := monthStart(end)
-		start = ms
-		end = me.AddDate(0, 1, -1)
-		states, err := prov.FetchAvailability(ctx, k.cg, start, end)
-		if err != nil {
-			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
+			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, CheckedAt: time.Now(), Success: true}); err2 != nil {
 				m.logger.Warn("record lookup failed", slog.Any("err", err2))
 			}
-			continue
-		}
-		if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: k.month, CheckedAt: time.Now(), Success: true}); err2 != nil {
-			m.logger.Warn("record lookup failed", slog.Any("err", err2))
-		}
-		// change detection and notify
-		m.detectChangesAndNotify(ctx, reqs, states, k.prov, k.cg)
-		// persist states after detecting changes
-		batch := make([]db.CampsiteState, 0, len(states))
-		now := time.Now()
-		for _, s := range states {
-			batch = append(batch, db.CampsiteState{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, CheckedAt: now})
-		}
-		if err := m.store.UpsertCampsiteStateBatch(ctx, batch); err != nil {
-			m.logger.Error("upsert states failed", slog.Any("err", err))
+			result.Calls = append(result.Calls, call)
+			result.States += len(states)
+			// change detection and notify
+			reqs := reqsByPC[k]
+			m.detectChangesAndNotify(ctx, reqs, states, k.prov, k.cg)
+			// persist states after detecting changes
+			batch := make([]db.CampsiteState, 0, len(states))
+			now := time.Now()
+			for _, s := range states {
+				batch = append(batch, db.CampsiteState{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, CheckedAt: now})
+			}
+			if err := m.store.UpsertCampsiteStateBatch(ctx, batch); err != nil {
+				m.logger.Error("upsert states failed", slog.Any("err", err))
+			}
 		}
 	}
+	return result
 }
 
 // Notifier must be provided by bot; here we define an interface to call back.

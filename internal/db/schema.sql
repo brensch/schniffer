@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS lookup_log (
     err          VARCHAR
 );
 
+CREATE INDEX IF NOT EXISTS idx_lookup_log_bucket ON lookup_log(provider, campground_id, month, checked_at);
+
 CREATE TABLE IF NOT EXISTS notifications (
     request_id    BIGINT,
     user_id       VARCHAR,
