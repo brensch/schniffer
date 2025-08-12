@@ -32,8 +32,7 @@ go.work.sum
 auto.duckdb
 *.wal
 
-# build artifact
-schniffer
+
 
 # Editor/IDE
 # .idea/

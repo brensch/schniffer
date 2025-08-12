@@ -26,14 +26,14 @@ func NewManager(store *db.Store, reg *providers.Registry) *Manager {
 
 // Run polls every 5 seconds for active requests and performs deduped provider lookups
 func (m *Manager) Run(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.pollOnce(ctx)
+			m.PollOnce(ctx)
 		}
 	}
 }
@@ -51,8 +51,8 @@ type PollResult struct {
 	States int // number of campsite states observed this run (before persist)
 }
 
-func (m *Manager) pollOnce(ctx context.Context) {
-	_ = m.pollOnceResult(ctx)
+func (m *Manager) PollOnce(ctx context.Context) {
+	_ = m.PollOnceResult(ctx)
 }
 
 // normalizeDay returns t truncated to 00:00:00 UTC.
@@ -116,7 +116,7 @@ func collectDatesByPC(reqs []db.SchniffRequest) (map[pc]map[time.Time]struct{}, 
 }
 
 // pollOnceResult performs one poll cycle and returns a summary for tests.
-func (m *Manager) pollOnceResult(ctx context.Context) PollResult {
+func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
 		m.logger.Error("list requests failed", slog.Any("err", err))
@@ -149,6 +149,7 @@ func (m *Manager) pollOnceResult(ctx context.Context) PollResult {
 				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
 					m.logger.Warn("record lookup failed", slog.Any("err", err2))
 				}
+				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
 				result.Calls = append(result.Calls, call)
 				continue
 			}
@@ -157,6 +158,9 @@ func (m *Manager) pollOnceResult(ctx context.Context) PollResult {
 			}
 			result.Calls = append(result.Calls, call)
 			result.States += len(states)
+			if len(states) == 0 {
+				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
+			}
 			// change detection and notify
 			reqs := reqsByPC[k]
 			m.detectChangesAndNotify(ctx, reqs, states, k.prov, k.cg)
@@ -168,6 +172,8 @@ func (m *Manager) pollOnceResult(ctx context.Context) PollResult {
 			}
 			if err := m.store.UpsertCampsiteStateBatch(ctx, batch); err != nil {
 				m.logger.Error("upsert states failed", slog.Any("err", err))
+			} else {
+				m.logger.Info("persisted campsite states", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Int("count", len(batch)))
 			}
 		}
 	}
@@ -256,16 +262,7 @@ func (m *Manager) RunDailySummary(ctx context.Context) {
 
 func (m *Manager) snapshotDaily(ctx context.Context) {
 	// aggregate and store
-	_, err := m.store.DB.ExecContext(ctx, `
-		INSERT INTO daily_summary(date, total_requests, active_requests, lookups, notifications, created_at)
-		SELECT current_date,
-			(SELECT count(*) FROM schniff_requests),
-			(SELECT count(*) FROM schniff_requests WHERE active=true),
-			(SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),
-			(SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),
-			now()
-	`)
-	if err != nil {
+	if err := m.store.InsertDailySummarySnapshot(ctx); err != nil {
 		m.logger.Error("daily summary insert failed", slog.Any("err", err))
 	}
 	// post summary to channel if configured
@@ -274,14 +271,15 @@ func (m *Manager) snapshotDaily(ctx context.Context) {
 	ch := m.summaryChannelID
 	m.mu.Unlock()
 	if n != nil && ch != "" {
-		row := m.store.DB.QueryRowContext(ctx, `
-			SELECT coalesce((SELECT count(*) FROM schniff_requests),0),
-				   coalesce((SELECT count(*) FROM schniff_requests WHERE active=true),0),
-				   coalesce((SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),0),
-				   coalesce((SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),0)
-		`)
-		var total, active, lookups, notes int64
-		if err := row.Scan(&total, &active, &lookups, &notes); err == nil {
+		total, active, lookups, notes, err := func() (int64, int64, int64, int64, error) {
+			t, err := m.store.CountTotalRequests(ctx)
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			a, l, n, err := m.store.StatsToday(ctx)
+			return t, a, l, n, err
+		}()
+		if err == nil {
 			msg := "Daily summary (" + time.Now().Format("2006-01-02") + ")\n" +
 				"Total requests: " + itoa(total) + "\n" +
 				"Active requests: " + itoa(active) + "\n" +

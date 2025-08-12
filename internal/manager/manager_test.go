@@ -143,7 +143,7 @@ func Test_pollOnceResult_MinimalCalls(t *testing.T) {
 	reg.Register("fake", fp)
 	mgr := NewManager(s, reg)
 
-	res := mgr.pollOnceResult(ctx)
+	res := mgr.PollOnceResult(ctx)
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected 1 upstream call, got %d: %+v", len(res.Calls), res.Calls)
 	}

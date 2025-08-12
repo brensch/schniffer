@@ -1,0 +1,54 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/brensch/schniffer/internal/bot"
+	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/manager"
+	"github.com/brensch/schniffer/internal/providers"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	duckPath := os.Getenv("DUCKDB_PATH")
+	if duckPath == "" {
+		duckPath = "./schniffer.duckdb"
+	}
+
+	store, err := db.Open(duckPath)
+	if err != nil {
+		slog.Error("open db failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	provRegistry := providers.NewRegistry()
+	provRegistry.Register("recreation_gov", providers.NewRecreationGov())
+
+	mgr := manager.NewManager(store, provRegistry)
+	mgr.SetSummaryChannel(os.Getenv("SUMMARY_CHANNEL_ID"))
+	go mgr.Run(ctx)
+	go mgr.RunDailySummary(ctx)
+	// Background campground sync (daily)
+	go mgr.RunCampgroundSync(ctx, "recreation_gov", 24*60*60*1e9)
+
+	discordToken := os.Getenv("DISCORD_TOKEN")
+	guildID := os.Getenv("GUILD_ID")
+	if discordToken == "" {
+		slog.Error("DISCORD_TOKEN env var required")
+		os.Exit(1)
+	}
+
+	b := bot.New(discordToken, guildID, store, mgr)
+	if err := b.Run(ctx); err != nil {
+		slog.Error("bot run failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+}

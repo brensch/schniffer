@@ -34,27 +34,25 @@ func (r *RecreationGov) CampsiteURL(_ string, campsiteID string) string {
 }
 
 // minimal response structs following campbot logic: availability is monthly and keyed by campsite id and date
-
 type recGovResp struct {
 	Campsites map[string]struct {
 		Availabilities map[string]string `json:"availabilities"`
 	} `json:"campsites"`
 }
 
+// FetchAvailability fetches monthly availability pages between start and end (inclusive by month).
 func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]Campsite, error) {
-	// Query per-month range windows
 	var out []Campsite
 	cur := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
 	endMonth := time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for !cur.After(endMonth) {
-		// Build URL with proper query encoding. Recreation.gov expects the start_date value URL-encoded.
 		base := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month", campgroundID)
 		u, err := url.Parse(base)
 		if err != nil {
 			return nil, fmt.Errorf("invalid base url: %w", err)
 		}
 		q := u.Query()
-		// Use Zulu time with milliseconds, e.g. 2006-01-02T15:04:05.000Z
+		// Recreation.gov expects RFC3339 with milliseconds and Zulu time.
 		q.Set("start_date", cur.UTC().Format("2006-01-02T15:04:05.000Z"))
 		u.RawQuery = q.Encode()
 		slog.Info("Fetching availability", slog.String("url", u.String()))
@@ -80,10 +78,7 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 			for dateStr, status := range data.Availabilities {
 				d, err := time.Parse(time.RFC3339, dateStr)
 				if err != nil {
-					slog.Debug("bad date from rec.gov", slog.String("date", dateStr))
-					continue
-				}
-				if d.Before(start) || d.After(end) {
+					slog.Error("bad date from rec.gov", slog.String("date", dateStr))
 					continue
 				}
 				out = append(out, Campsite{ID: siteID, Date: d, Available: status == "Available"})
@@ -94,7 +89,7 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 	return out, nil
 }
 
-// PlanBuckets groups dates by month and returns one monthly range per group.
+// PlanBuckets groups dates by month and returns one monthly range per group from day 1 to last day of month.
 func (r *RecreationGov) PlanBuckets(dates []time.Time) []DateRange {
 	if len(dates) == 0 {
 		return nil

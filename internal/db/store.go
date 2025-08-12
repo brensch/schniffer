@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	_ "github.com/marcboeker/go-duckdb"
 )
 
@@ -19,7 +21,19 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("%s?access_mode=READ_WRITE", path)
+	return OpenWithMode(path, "READ_WRITE")
+}
+
+// OpenReadOnly opens the database in READ_ONLY mode (no write lock)
+func OpenReadOnly(path string) (*Store, error) { return OpenWithMode(path, "READ_ONLY") }
+
+// OpenWithMode allows specifying DuckDB access_mode (READ_WRITE or READ_ONLY)
+func OpenWithMode(path, mode string) (*Store, error) {
+	if mode == "" {
+		mode = "READ_WRITE"
+	}
+	dsn := fmt.Sprintf("%s?access_mode=%s", path, mode)
+	fmt.Println("Connecting to DuckDB:", dsn)
 	db, err := sql.Open("duckdb", dsn)
 	if err != nil {
 		return nil, err
@@ -27,8 +41,10 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
-		return nil, err
+	if strings.EqualFold(mode, "READ_WRITE") {
+		if err := migrate(db); err != nil {
+			return nil, err
+		}
 	}
 	return &Store{DB: db}, nil
 }
@@ -146,6 +162,27 @@ func (s *Store) DeactivateRequest(ctx context.Context, id int64, userID string) 
 	return nil
 }
 
+// Convenience: list active requests for a specific user
+func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]SchniffRequest, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id, user_id, provider, campground_id, coalesce(checkin, start_date) as checkin, coalesce(checkout, end_date) as checkout, created_at, active
+		FROM schniff_requests WHERE active=true AND user_id=?
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SchniffRequest
+	for rows.Next() {
+		var r SchniffRequest
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteState) error {
 	if len(states) == 0 {
 		return nil
@@ -187,6 +224,82 @@ func (s *Store) RecordNotification(ctx context.Context, n Notification) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, n.RequestID, n.UserID, n.Provider, n.CampgroundID, n.CampsiteID, n.Date, n.State, n.SentAt)
 	return err
+}
+
+// Aggregations & stats
+
+func (s *Store) CountLookupsLast24h(ctx context.Context, provider, campgroundID string) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce(count(*),0)
+		FROM lookup_log
+	WHERE provider=? AND campground_id=? AND CAST(checked_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+	`, provider, campgroundID)
+	var n int64
+	return n, row.Scan(&n)
+}
+
+func (s *Store) CountNotificationsLast24hByRequest(ctx context.Context, requestID int64) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce(count(*),0)
+		FROM notifications
+	WHERE request_id=? AND CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+	`, requestID)
+	var n int64
+	return n, row.Scan(&n)
+}
+
+type AvailabilityByDate struct {
+	Date  time.Time
+	Total int
+	Free  int
+}
+
+// LatestAvailabilityByDate returns latest per-campsite state aggregated by date in [start, end] inclusive.
+func (s *Store) LatestAvailabilityByDate(ctx context.Context, provider, campgroundID string, start, end time.Time) ([]AvailabilityByDate, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT date, COUNT(DISTINCT campsite_id) AS total,
+			   SUM(CASE WHEN available THEN 1 ELSE 0 END) AS free
+		FROM (
+			SELECT provider, campground_id, campsite_id, date, available,
+				   ROW_NUMBER() OVER (PARTITION BY provider, campground_id, campsite_id, date ORDER BY checked_at DESC) AS rn
+			FROM campsite_state
+			WHERE provider=? AND campground_id=? AND date BETWEEN ? AND ?
+		) t
+		WHERE rn = 1
+		GROUP BY date
+		ORDER BY date
+	`, provider, campgroundID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AvailabilityByDate{}
+	for rows.Next() {
+		var a AvailabilityByDate
+		if err := rows.Scan(&a.Date, &a.Total, &a.Free); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// StatsToday returns active, lookups today, notifications today
+func (s *Store) StatsToday(ctx context.Context) (active int64, lookups int64, notes int64, err error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce((SELECT count(*) FROM schniff_requests WHERE active=true),0),
+			   coalesce((SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),0),
+			   coalesce((SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),0)
+	`)
+	err = row.Scan(&active, &lookups, &notes)
+	return
+}
+
+// CountTotalRequests returns the total number of schniff_requests (active + inactive)
+func (s *Store) CountTotalRequests(ctx context.Context) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM schniff_requests`)
+	var n int64
+	return n, row.Scan(&n)
 }
 
 func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsiteID string, date time.Time) (bool, bool, error) {
@@ -305,4 +418,18 @@ func (s *Store) GetLastSuccessfulSync(ctx context.Context, syncType, provider st
 	default:
 		return time.Time{}, false, err
 	}
+}
+
+// InsertDailySummarySnapshot aggregates and inserts today's snapshot into daily_summary.
+func (s *Store) InsertDailySummarySnapshot(ctx context.Context) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO daily_summary(date, total_requests, active_requests, lookups, notifications, created_at)
+		SELECT current_date,
+			(SELECT count(*) FROM schniff_requests),
+			(SELECT count(*) FROM schniff_requests WHERE active=true),
+			(SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),
+			(SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),
+			now()
+	`)
+	return err
 }

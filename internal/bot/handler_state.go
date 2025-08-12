@@ -16,7 +16,7 @@ import (
 // - latest per-date availability counts within the schniff date range
 func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionCreate, _ *discordgo.ApplicationCommandInteractionDataOption) {
 	uid := getUserID(i)
-	reqs, err := b.store.ListActiveRequests(context.Background())
+	reqs, err := b.store.ListUserActiveRequests(context.Background(), uid)
 	if err != nil {
 		respond(s, i, "error: "+err.Error())
 		return
@@ -47,8 +47,11 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 	var bld strings.Builder
 	dateFmt := "2006-01-02"
 
-	// We'll defer initial ack for longer responses
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource})
+	// We'll defer initial ack for longer responses (ephemeral)
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: 1 << 6},
+	})
 
 	for _, it := range items {
 		// Campground display name
@@ -63,27 +66,18 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		header := fmt.Sprintf("schniff %s: %s -> %s", name, it.checkin.Format(dateFmt), it.checkout.Format(dateFmt))
 
 		// Checks in last 24h for provider+campground
-		var checks24 int64
-		_ = b.store.DB.QueryRow(`
-            SELECT coalesce(count(*),0)
-            FROM lookup_log
-            WHERE provider=? AND campground_id=? AND checked_at >= current_timestamp - INTERVAL 1 DAY
-        `, it.provider, it.campgroundID).Scan(&checks24)
+		checks24, err := b.store.CountLookupsLast24h(context.Background(), it.provider, it.campgroundID)
+		if err != nil {
+			b.logger.Error("failed to count lookups", "err", err)
+			checks24 = 0
+		}
 
 		// Notifications in last 24h for this request id
-		var notes24 int64
-		_ = b.store.DB.QueryRow(`
-            SELECT coalesce(count(*),0)
-            FROM notifications
-            WHERE request_id=? AND sent_at >= current_timestamp - INTERVAL 1 DAY
-        `, it.id).Scan(&notes24)
-
-		// Latest batch timestamp for campsite_state
-		var latest time.Time
-		_ = b.store.DB.QueryRow(`
-            SELECT coalesce(max(checked_at), current_timestamp) FROM campsite_state WHERE provider=? AND campground_id=?
-        `, it.provider, it.campgroundID).Scan(&latest)
-
+		notes24, err := b.store.CountNotificationsLast24hByRequest(context.Background(), it.id)
+		if err != nil {
+			b.logger.Error("failed to count notifications", "err", err)
+			notes24 = 0
+		}
 		// Dates to display: inclusive of checkout to match existing UX example
 		// Limit to at most 14 days to keep message size reasonable
 		maxDays := 14
@@ -91,25 +85,11 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		for d := it.checkin; !d.After(it.checkout) && len(dates) < maxDays; d = d.AddDate(0, 0, 1) {
 			dates = append(dates, d)
 		}
-		// Aggregate latest availability per date in range
+		// Aggregate latest availability per date in range (latest per campsite/date by checked_at)
 		counts := map[string][2]int{}
-		if !latest.IsZero() {
-			rows, err := b.store.DB.Query(`
-                SELECT date, count(DISTINCT campsite_id) AS total, sum(CASE WHEN available THEN 1 ELSE 0 END) AS free
-                FROM campsite_state
-                WHERE provider=? AND campground_id=? AND checked_at=? AND date BETWEEN ? AND ?
-                GROUP BY date ORDER BY date
-            `, it.provider, it.campgroundID, latest, it.checkin, it.checkout)
-			if err == nil {
-				for rows.Next() {
-					var dt time.Time
-					var total, free int
-					if err := rows.Scan(&dt, &total, &free); err == nil {
-						counts[dt.Format(dateFmt)] = [2]int{total, free}
-					}
-				}
-				rows.Close()
-			}
+		avs, _ := b.store.LatestAvailabilityByDate(context.Background(), it.provider, it.campgroundID, it.checkin, it.checkout)
+		for _, a := range avs {
+			counts[a.Date.Format(dateFmt)] = [2]int{a.Total, a.Free}
 		}
 
 		// Build section
@@ -141,11 +121,11 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		chunks = []string{"no data"}
 	}
 	// Send first chunk as follow-up, then the rest
-	if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: chunks[0]}); err != nil {
+	if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: chunks[0], Flags: 1 << 6}); err != nil {
 		b.logger.Warn("state followup send failed", "err", err)
 	}
 	for _, c := range chunks[1:] {
-		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: c}); err != nil {
+		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: c, Flags: 1 << 6}); err != nil {
 			b.logger.Warn("state followup send failed", "err", err)
 		}
 	}
