@@ -77,7 +77,7 @@ func (b *Bot) registerCommands() {
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
 				{Name: "stats", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show today stats"},
-				{Name: "checks", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show last 50 checks for your requests"},
+				{Name: "state", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show current state for your schniffs"},
 			},
 		},
 	}
@@ -163,8 +163,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleRemoveCommand(s, i, sub)
 	case "stats":
 		b.handleStatsCommand(s, i, sub)
-	case "checks":
-		b.handleChecksCommand(s, i, sub)
+	case "state":
+		b.handleStateCommand(s, i, sub)
 	}
 }
 
