@@ -128,6 +128,13 @@ type SyncLog struct {
 	Count      int64
 }
 
+type DetailedSummaryStats struct {
+	Notifications24h int64
+	Lookups24h       int64
+	ActiveRequests   int64
+	RequestsPerHour  float64
+}
+
 // CRUD
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
@@ -581,4 +588,103 @@ func (s *Store) InsertDailySummarySnapshot(ctx context.Context) error {
 			now()
 	`)
 	return err
+}
+
+// GetDetailedSummaryStats returns comprehensive stats for the detailed summary
+func (s *Store) GetDetailedSummaryStats(ctx context.Context) (DetailedSummaryStats, error) {
+	// Get basic stats for last 24 hours
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT 
+			coalesce((SELECT count(*) FROM notifications WHERE CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day' AND state = 'available'), 0) as notifications_24h,
+			coalesce((SELECT count(*) FROM lookup_log WHERE CAST(checked_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'), 0) as lookups_24h,
+			coalesce((SELECT count(*) FROM schniff_requests WHERE active=true), 0) as active_requests
+	`)
+
+	var notifications24h, lookups24h, activeRequests int64
+	if err := row.Scan(&notifications24h, &lookups24h, &activeRequests); err != nil {
+		return DetailedSummaryStats{}, err
+	}
+
+	// Calculate requests per hour (last 24h lookups / 24)
+	requestsPerHour := float64(lookups24h) / 24.0
+
+	return DetailedSummaryStats{
+		Notifications24h: notifications24h,
+		Lookups24h:       lookups24h,
+		ActiveRequests:   activeRequests,
+		RequestsPerHour:  requestsPerHour,
+	}, nil
+}
+
+// GetUsersWithNotifications returns users who got notifications in last 24h
+func (s *Store) GetUsersWithNotifications(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT user_id 
+		FROM notifications 
+		WHERE CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+		ORDER BY user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		users = append(users, userID)
+	}
+	return users, rows.Err()
+}
+
+// GetUsersWithActiveRequests returns users who have active schniffs
+func (s *Store) GetUsersWithActiveRequests(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT user_id 
+		FROM schniff_requests 
+		WHERE active=true
+		ORDER BY user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		users = append(users, userID)
+	}
+	return users, rows.Err()
+}
+
+// GetTrackedCampgrounds returns list of campgrounds being actively tracked
+func (s *Store) GetTrackedCampgrounds(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT c.name
+		FROM campgrounds c
+		JOIN schniff_requests sr ON c.provider = sr.provider AND c.id = sr.campground_id
+		WHERE sr.active = true
+		ORDER BY c.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var campgrounds []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		campgrounds = append(campgrounds, name)
+	}
+	return campgrounds, rows.Err()
 }

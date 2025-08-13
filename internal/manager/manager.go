@@ -194,6 +194,15 @@ type Notifier interface {
 	// NotifyAvailabilityEmbed sends an embed with availability items; implementations may ignore extra fields.
 	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, items []db.AvailabilityItem) error
 	NotifySummary(channelID string, msg string) error
+	// ResolveUsernames converts user IDs to usernames
+	ResolveUsernames(userIDs []string) []string
+}
+
+type SummaryData struct {
+	Stats                 db.DetailedSummaryStats
+	NotificationUsernames []string
+	ActiveUsernames       []string
+	TrackedCampgrounds    []string
 }
 
 func (m *Manager) SetNotifier(n Notifier) { // optional injection later
@@ -390,4 +399,131 @@ func (m *Manager) RunCampgroundSync(ctx context.Context, provider string, interv
 			doSync()
 		}
 	}
+}
+
+// GetDetailedSummary returns a formatted summary string with comprehensive statistics
+func (m *Manager) GetDetailedSummary(ctx context.Context) (string, error) {
+	// Get detailed stats
+	stats, err := m.store.GetDetailedSummaryStats(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get stats: %w", err)
+	}
+
+	// Get users with notifications
+	usersWithNotifications, err := m.store.GetUsersWithNotifications(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get users with notifications: %w", err)
+	}
+
+	// Get users with active requests
+	usersWithActiveRequests, err := m.store.GetUsersWithActiveRequests(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get users with active requests: %w", err)
+	}
+
+	// Get tracked campgrounds
+	trackedCampgrounds, err := m.store.GetTrackedCampgrounds(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get tracked campgrounds: %w", err)
+	}
+
+	// Resolve usernames if notifier is available
+	var notificationUsernames, activeUsernames []string
+	m.mu.Lock()
+	n := m.notifier
+	m.mu.Unlock()
+
+	if n != nil {
+		notificationUsernames = n.ResolveUsernames(usersWithNotifications)
+		activeUsernames = n.ResolveUsernames(usersWithActiveRequests)
+	} else {
+		// Fallback to user IDs if no notifier
+		notificationUsernames = usersWithNotifications
+		activeUsernames = usersWithActiveRequests
+	}
+
+	// Build the summary message
+	var summary strings.Builder
+	summary.WriteString("24 Hour Schniff roundup:\n")
+	summary.WriteString("Available campsites found\n")
+	summary.WriteString(fmt.Sprintf("%d\n", stats.Notifications24h))
+	summary.WriteString("Checks made\n")
+	summary.WriteString(fmt.Sprintf("%d\n", stats.Lookups24h))
+	summary.WriteString("Active Schniffs\n")
+	summary.WriteString(fmt.Sprintf("%d\n", stats.ActiveRequests))
+
+	// Schniffists who got schniffs
+	summary.WriteString("Schniffists who got schniffs\n")
+	if len(notificationUsernames) == 0 {
+		summary.WriteString("No bueno today.\n")
+	} else {
+		summary.WriteString(strings.Join(notificationUsernames, "\n") + "\n")
+	}
+
+	// Schniffists with active schniffs
+	summary.WriteString("Schniffists with active schniffs\n")
+	if len(activeUsernames) == 0 {
+		summary.WriteString("None\n")
+	} else {
+		summary.WriteString(strings.Join(activeUsernames, "\n") + "\n")
+	}
+
+	// Campgrounds being tracked
+	summary.WriteString("Campgrounds being tracked\n")
+	if len(trackedCampgrounds) == 0 {
+		summary.WriteString("None\n")
+	} else {
+		summary.WriteString(strings.Join(trackedCampgrounds, "\n"))
+	}
+
+	return summary.String(), nil
+}
+
+// GetSummaryData returns structured summary data for creating embeds
+func (m *Manager) GetSummaryData(ctx context.Context) (SummaryData, error) {
+	// Get detailed stats
+	stats, err := m.store.GetDetailedSummaryStats(ctx)
+	if err != nil {
+		return SummaryData{}, fmt.Errorf("failed to get stats: %w", err)
+	}
+
+	// Get users with notifications
+	usersWithNotifications, err := m.store.GetUsersWithNotifications(ctx)
+	if err != nil {
+		return SummaryData{}, fmt.Errorf("failed to get users with notifications: %w", err)
+	}
+
+	// Get users with active requests
+	usersWithActiveRequests, err := m.store.GetUsersWithActiveRequests(ctx)
+	if err != nil {
+		return SummaryData{}, fmt.Errorf("failed to get users with active requests: %w", err)
+	}
+
+	// Get tracked campgrounds
+	trackedCampgrounds, err := m.store.GetTrackedCampgrounds(ctx)
+	if err != nil {
+		return SummaryData{}, fmt.Errorf("failed to get tracked campgrounds: %w", err)
+	}
+
+	// Resolve usernames if notifier is available
+	var notificationUsernames, activeUsernames []string
+	m.mu.Lock()
+	n := m.notifier
+	m.mu.Unlock()
+
+	if n != nil {
+		notificationUsernames = n.ResolveUsernames(usersWithNotifications)
+		activeUsernames = n.ResolveUsernames(usersWithActiveRequests)
+	} else {
+		// Fallback to user IDs if no notifier
+		notificationUsernames = usersWithNotifications
+		activeUsernames = usersWithActiveRequests
+	}
+
+	return SummaryData{
+		Stats:                 stats,
+		NotificationUsernames: notificationUsernames,
+		ActiveUsernames:       activeUsernames,
+		TrackedCampgrounds:    trackedCampgrounds,
+	}, nil
 }

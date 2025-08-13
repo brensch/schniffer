@@ -43,6 +43,20 @@ func (b *Bot) Run(ctx context.Context) error {
 	return nil
 }
 
+// ResolveUsernames converts user IDs to usernames, falling back to user ID if resolution fails
+func (b *Bot) ResolveUsernames(userIDs []string) []string {
+	usernames := make([]string, len(userIDs))
+	for i, userID := range userIDs {
+		if user, err := b.s.User(userID); err == nil {
+			usernames[i] = user.Username
+		} else {
+			// Fallback to user ID if we can't resolve the username
+			usernames[i] = userID
+		}
+	}
+	return usernames
+}
+
 // Notifier implementation
 func (b *Bot) NotifyAvailability(userID string, msg string) error {
 	channel, err := b.s.UserChannelCreate(userID)
@@ -119,6 +133,7 @@ func (b *Bot) registerCommands() {
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
 				{Name: "state", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show current state for your schniffs"},
+				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get detailed schniffer summary"},
 			},
 		},
 	}
@@ -205,6 +220,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleRemoveCommand(s, i, sub)
 	case "state":
 		b.handleStateCommand(s, i, sub)
+	case "summary":
+		b.handleSummaryCommand(s, i, sub)
 	}
 }
 
