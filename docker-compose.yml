@@ -6,8 +6,9 @@ services:
       - .env
     environment:
       - PROD=true
+      - DUCKDB_PATH=/app/data/schniffer.duckdb
     volumes:
-      - ./schniffer.duckdb:/app/schniffer.duckdb
+      - ./data:/app/data
     restart: unless-stopped
     # roll logs
     logging:
