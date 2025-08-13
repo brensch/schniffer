@@ -3,6 +3,9 @@ package bot
 import (
 	"context"
 	"log/slog"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
@@ -50,6 +53,51 @@ func (b *Bot) NotifyAvailability(userID string, msg string) error {
 	return err
 }
 
+// NotifyAvailabilityEmbed sends an embed with first 10 items, each as a line with date, site, and link.
+func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, items []db.AvailabilityItem) error {
+	channel, err := b.s.UserChannelCreate(userID)
+	if err != nil {
+		return err
+	}
+	// Sort by date ascending and cap 10
+	if len(items) > 1 {
+		sort.Slice(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
+	}
+	if len(items) > 10 {
+		items = items[:10]
+	}
+	weekday := func(t time.Time) string { return t.Format("Mon") }
+	desc := strings.Builder{}
+	for _, it := range items {
+		// Format: - 2025-08-12 (Tue) site [12345](link)
+		dateStr := it.Date.Format("2006-01-02") + " (" + weekday(it.Date) + ")"
+		url := b.mgr.CampsiteURL(provider, campgroundID, it.CampsiteID)
+		siteLabel := it.CampsiteID
+		if url != "" {
+			siteLabel = "[" + siteLabel + "](" + url + ")"
+		}
+		desc.WriteString("- ")
+		desc.WriteString(dateStr)
+		desc.WriteString(" site ")
+		desc.WriteString(siteLabel)
+		desc.WriteString("\n")
+	}
+	// Title should be the campground name if we have it
+	title := "Available"
+	if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), provider, campgroundID); ok {
+		if strings.TrimSpace(cg.ParentName) != "" {
+			title = "Available: " + cg.ParentName + " - " + cg.Name
+		} else {
+			title = "Available: " + cg.Name
+		}
+	} else {
+		title = "Available: " + campgroundID
+	}
+	embed := &discordgo.MessageEmbed{Title: title, Description: desc.String(), Timestamp: time.Now().Format(time.RFC3339)}
+	_, err = b.s.ChannelMessageSendEmbed(channel.ID, embed)
+	return err
+}
+
 func (b *Bot) NotifySummary(channelID string, msg string) error {
 	_, err := b.s.ChannelMessageSend(channelID, msg)
 	return err
@@ -71,7 +119,6 @@ func (b *Bot) registerCommands() {
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
-				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List your active schniffs"},
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
@@ -158,8 +205,6 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 	switch sub.Name {
 	case "add":
 		b.handleAddCommand(s, i, sub)
-	case "list":
-		b.handleListCommand(s, i, sub)
 	case "remove":
 		b.handleRemoveCommand(s, i, sub)
 	case "state":

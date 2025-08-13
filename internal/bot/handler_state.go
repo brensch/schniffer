@@ -68,15 +68,9 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 			b.logger.Warn("count request checks failed", "err", err)
 			totalChecks = 0
 		}
-		link := bookingURL(it.provider, it.campgroundID, it.checkin)
-
 		// Build description in the required format but inside an embed
 		desc := strings.Builder{}
-		if link != "" {
-			desc.WriteString(fmt.Sprintf("[%s](%s)\n", name, link))
-		} else {
-			desc.WriteString(name + "\n")
-		}
+		desc.WriteString(name + "\n")
 		desc.WriteString(fmt.Sprintf("%s (%s) -> %s (%s) (%d nights)\n", it.checkin.Format("2006-01-02"), weekday(it.checkin), it.checkout.Format("2006-01-02"), weekday(it.checkout), nights))
 		desc.WriteString("active: true\n")
 		desc.WriteString(fmt.Sprintf("total checks: %d\n", totalChecks))

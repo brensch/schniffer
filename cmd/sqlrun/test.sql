@@ -1,1 +1,3 @@
-select * from notifications 
+select * from campgrounds 
+where provider <> 'recreation_gov'
+limit 100

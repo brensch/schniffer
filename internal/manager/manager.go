@@ -191,6 +191,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 
 type Notifier interface {
 	NotifyAvailability(userID string, msg string) error
+	// NotifyAvailabilityEmbed sends an embed with availability items; implementations may ignore extra fields.
+	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, items []db.AvailabilityItem) error
 	NotifySummary(channelID string, msg string) error
 }
 
@@ -228,33 +230,36 @@ func (m *Manager) detectChangesAndNotify(ctx context.Context, reqs []db.SchniffR
 	if len(newlyOpenByUser) == 0 {
 		return
 	}
-	// Bundle notifications per user
-	provIf, _ := m.reg.Get(prov)
+	// Bundle notifications per user (embed preferred, limit to first 10)
 	for userID, items := range newlyOpenByUser {
 		if len(items) == 0 {
 			continue
 		}
-		// Compose a single message listing all new availabilities
-		// Format: "Available: <provider> <campground>\n- YYYY-MM-DD site <id> [url]\n..."
-		b := strings.Builder{}
-		b.WriteString("Available: ")
-		b.WriteString(prov)
-		b.WriteString(" ")
-		b.WriteString(cg)
-		for _, it := range items {
-			b.WriteString("\n- ")
-			b.WriteString(it.Date.Format("2006-01-02"))
-			b.WriteString(" site ")
-			b.WriteString(it.CampsiteID)
-			if provIf != nil {
-				if url := provIf.CampsiteURL(cg, it.CampsiteID); url != "" {
+		// cap to first 10
+		if len(items) > 10 {
+			items = items[:10]
+		}
+		// Try embed path first
+		if err := n.NotifyAvailabilityEmbed(userID, prov, cg, items); err != nil {
+			// fallback to plain text
+			b := strings.Builder{}
+			b.WriteString("Available: ")
+			b.WriteString(prov)
+			b.WriteString(" ")
+			b.WriteString(cg)
+			for _, it := range items {
+				b.WriteString("\n- ")
+				b.WriteString(it.Date.Format("2006-01-02"))
+				b.WriteString(" site ")
+				b.WriteString(it.CampsiteID)
+				if url := m.CampsiteURL(prov, cg, it.CampsiteID); url != "" {
 					b.WriteString(" ")
 					b.WriteString(url)
 				}
 			}
-		}
-		if err := n.NotifyAvailability(userID, b.String()); err != nil {
-			m.logger.Warn("notify availability failed", slog.Any("err", err))
+			if err2 := n.NotifyAvailability(userID, b.String()); err2 != nil {
+				m.logger.Warn("notify availability failed", slog.Any("err", err2))
+			}
 		}
 	}
 }
@@ -310,6 +315,15 @@ func itoa(i int64) string { return fmt.Sprintf("%d", i) }
 
 // Configure summary channel id
 func (m *Manager) SetSummaryChannel(id string) { m.mu.Lock(); m.summaryChannelID = id; m.mu.Unlock() }
+
+// CampsiteURL exposes provider-specific campsite URLs for the bot to build embeds.
+func (m *Manager) CampsiteURL(provider, parentID, campgroundID, campsiteID string) string {
+	p, ok := m.reg.Get(provider)
+	if !ok || p == nil {
+		return ""
+	}
+	return p.CampsiteURL(parentID, campgroundID, campsiteID)
+}
 
 // SyncCampgrounds pulls all campgrounds from a provider and stores them in DB.
 func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int, error) {
