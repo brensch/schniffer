@@ -42,19 +42,17 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 	}
 	sort.Slice(items, func(a, b int) bool { return items[a].id < items[b].id })
 
-	// Prepare output with chunking under Discord 2000 chars (use ~1600 buffer)
-	var chunks []string
-	var bld strings.Builder
-	dateFmt := "2006-01-02"
-
 	// We'll defer initial ack for longer responses (ephemeral)
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: 1 << 6},
 	})
 
+	// Build embeds (one per schniff) to ensure links render and to stay within limits
+	weekday := func(t time.Time) string { return t.Format("Mon") }
+	embeds := make([]*discordgo.MessageEmbed, 0, len(items))
 	for _, it := range items {
-		// Campground display name
+		// display name
 		name := it.campgroundID
 		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), it.provider, it.campgroundID); ok {
 			if strings.TrimSpace(cg.ParentName) != "" {
@@ -63,78 +61,40 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 				name = cg.Name
 			}
 		}
-		header := fmt.Sprintf("schniff %s: %s -> %s", name, it.checkin.Format(dateFmt), it.checkout.Format(dateFmt))
-
-		// Checks in last 24h for provider+campground
-		checks24, err := b.store.CountLookupsLast24h(context.Background(), it.provider, it.campgroundID)
+		nights := int(it.checkout.Sub(it.checkin).Hours() / 24)
+		// total checks within request lifetime and date span
+		totalChecks, err := b.store.CountLookupsForRequest(context.Background(), it.provider, it.campgroundID, it.created, it.checkin, it.checkout)
 		if err != nil {
-			b.logger.Error("failed to count lookups", "err", err)
-			checks24 = 0
+			b.logger.Warn("count request checks failed", "err", err)
+			totalChecks = 0
 		}
+		link := bookingURL(it.provider, it.campgroundID, it.checkin)
 
-		// Notifications in last 24h for this request id
-		notes24, err := b.store.CountNotificationsLast24hByRequest(context.Background(), it.id)
-		if err != nil {
-			b.logger.Error("failed to count notifications", "err", err)
-			notes24 = 0
-		}
-		// Dates to display: exclude checkout (nights are [checkin, checkout))
-		// Limit to at most 14 days to keep message size reasonable
-		maxDays := 14
-		dates := make([]time.Time, 0, maxDays)
-		for d := it.checkin; d.Before(it.checkout) && len(dates) < maxDays; d = d.AddDate(0, 0, 1) {
-			dates = append(dates, d)
-		}
-		// Aggregate latest availability per date in range (latest per campsite/date by checked_at)
-		counts := map[string][2]int{}
-		// end is checkout-1 day to exclude checkout (function treats end inclusive)
-		endIncl := it.checkout.AddDate(0, 0, -1)
-		avs, _ := b.store.LatestAvailabilityByDate(context.Background(), it.provider, it.campgroundID, it.checkin, endIncl)
-		for _, a := range avs {
-			counts[a.Date.Format(dateFmt)] = [2]int{a.Total, a.Free}
-		}
-
-		// Build section
-		bld.WriteString(header + "\n")
-		bld.WriteString(fmt.Sprintf("%d checks in last 24 hours\n", checks24))
-		bld.WriteString(fmt.Sprintf("%d notifications in the last 24 hours\n", notes24))
-		bld.WriteString("Latest state:\n")
-		for _, d := range dates {
-			key := d.Format(dateFmt)
-			c := counts[key]
-			bld.WriteString(fmt.Sprintf("%s: %d/%d\n", key, c[1], c[0]))
-		}
-		if len(dates) == maxDays {
-			lastWanted := it.checkout.AddDate(0, 0, -1)
-			if len(dates) > 0 && lastWanted.After(dates[len(dates)-1]) {
-				bld.WriteString("…\n")
-			}
-		} else if len(dates) == 0 {
-			// no nights in range; nothing to append
+		// Build description in the required format but inside an embed
+		desc := strings.Builder{}
+		if link != "" {
+			desc.WriteString(fmt.Sprintf("[%s](%s)\n", name, link))
 		} else {
-			bld.WriteString("…\n")
+			desc.WriteString(name + "\n")
 		}
-		// Spacer between schniffs
-		bld.WriteString("\n")
+		desc.WriteString(fmt.Sprintf("%s (%s) -> %s (%s) (%d nights)\n", it.checkin.Format("2006-01-02"), weekday(it.checkin), it.checkout.Format("2006-01-02"), weekday(it.checkout), nights))
+		desc.WriteString("active: true\n")
+		desc.WriteString(fmt.Sprintf("total checks: %d\n", totalChecks))
 
-		if bld.Len() > 1600 {
-			chunks = append(chunks, bld.String())
-			bld.Reset()
+		embeds = append(embeds, &discordgo.MessageEmbed{
+			Description: desc.String(),
+			Timestamp:   time.Now().Format(time.RFC3339),
+		})
+		// Send in batches of up to 10 embeds per message to fit Discord limits
+		if len(embeds) == 10 {
+			if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6}); err != nil {
+				b.logger.Warn("state followup send failed", "err", err)
+			}
+			embeds = nil
 		}
 	}
-
-	if bld.Len() > 0 {
-		chunks = append(chunks, bld.String())
-	}
-	if len(chunks) == 0 {
-		chunks = []string{"no data"}
-	}
-	// Send first chunk as follow-up, then the rest
-	if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: chunks[0], Flags: 1 << 6}); err != nil {
-		b.logger.Warn("state followup send failed", "err", err)
-	}
-	for _, c := range chunks[1:] {
-		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: c, Flags: 1 << 6}); err != nil {
+	if len(embeds) > 0 {
+		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6}); err != nil {
 			b.logger.Warn("state followup send failed", "err", err)
 		}
 	}

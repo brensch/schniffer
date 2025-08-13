@@ -149,14 +149,14 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
 			if err != nil {
 				call.Error = err.Error()
-				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
+				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
 					m.logger.Warn("record lookup failed", slog.Any("err", err2))
 				}
 				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
 				result.Calls = append(result.Calls, call)
 				continue
 			}
-			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, CheckedAt: time.Now(), Success: true}); err2 != nil {
+			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true}); err2 != nil {
 				m.logger.Warn("record lookup failed", slog.Any("err", err2))
 			}
 			result.Calls = append(result.Calls, call)

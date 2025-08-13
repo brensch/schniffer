@@ -63,3 +63,25 @@ func sanitizeChoiceName(s string) string {
 	}
 	return string(runes) + "…"
 }
+
+// bookingURL returns a provider-specific booking/search URL for a given campground and date.
+// For providers where deep linking per campsite is not reliable, we link to the campground or search page.
+func bookingURL(provider, campgroundID string, date time.Time) string {
+	// standard YYYY-MM-DD
+	d := date.UTC().Format("2006-01-02")
+	switch provider {
+	case "recreation_gov":
+		// Recreation.gov campground-month availability page; date param uses first day shown.
+		// Linking to campsite list filtered by date is tricky without campground slug; fall back to month view.
+		// Example: https://www.recreation.gov/camping/campgrounds/<campgroundID>/availability?date=2025-08-12
+		if campgroundID == "" {
+			return ""
+		}
+		return "https://www.recreation.gov/camping/campgrounds/" + campgroundID + "/availability?date=" + d
+	case "reservecalifornia":
+		// ReserveCalifornia lacks stable deep links. Send to landing page.
+		return "https://reservecalifornia.com/"
+	default:
+		return ""
+	}
+}

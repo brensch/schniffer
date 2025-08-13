@@ -82,7 +82,7 @@ func TestStateAndNotifications(t *testing.T) {
 func TestLookupLog(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	if err := s.RecordLookup(ctx, db.LookupLog{Provider: "recreation_gov", CampgroundID: "cg1", Month: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), CheckedAt: time.Now().UTC(), Success: true}); err != nil {
+	if err := s.RecordLookup(ctx, db.LookupLog{Provider: "recreation_gov", CampgroundID: "cg1", Month: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), StartDate: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), EndDate: time.Date(2025, 1, 31, 0, 0, 0, 0, time.UTC), CheckedAt: time.Now().UTC(), Success: true}); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 }

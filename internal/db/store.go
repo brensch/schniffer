@@ -87,6 +87,8 @@ type LookupLog struct {
 	Provider     string
 	CampgroundID string
 	Month        time.Time
+	StartDate    time.Time
+	EndDate      time.Time
 	CheckedAt    time.Time
 	Success      bool
 	Err          string
@@ -225,9 +227,9 @@ func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteS
 
 func (s *Store) RecordLookup(ctx context.Context, l LookupLog) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO lookup_log(provider, campground_id, month, checked_at, success, err)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, l.Provider, l.CampgroundID, l.Month, l.CheckedAt, l.Success, l.Err)
+		INSERT INTO lookup_log(provider, campground_id, month, start_date, end_date, checked_at, success, err)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, l.Provider, l.CampgroundID, l.Month, l.StartDate, l.EndDate, l.CheckedAt, l.Success, l.Err)
 	return err
 }
 
@@ -352,6 +354,37 @@ func (s *Store) CountLookupsLast24h(ctx context.Context, provider, campgroundID 
 		FROM lookup_log
 	WHERE provider=? AND campground_id=? AND CAST(checked_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
 	`, provider, campgroundID)
+	var n int64
+	return n, row.Scan(&n)
+}
+
+// CountLookupsTotal returns total number of lookup_log rows for a provider+campground.
+func (s *Store) CountLookupsTotal(ctx context.Context, provider, campgroundID string) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce(count(*),0)
+		FROM lookup_log
+		WHERE provider=? AND campground_id=?
+	`, provider, campgroundID)
+	var n int64
+	return n, row.Scan(&n)
+}
+
+// CountLookupsForRequest returns the number of lookup_log rows for a provider+campground
+// bounded by the schniff's lifecycle and date span. We consider checks with checked_at >= createdAt
+// (start of schniff) up to now (for active schniffs) and only those where the lookup month/start
+// falls within [checkin .. checkout] to approximate the relevant date span.
+func (s *Store) CountLookupsForRequest(ctx context.Context, provider, campgroundID string, createdAt, checkin, checkout time.Time) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce(count(*),0)
+		FROM lookup_log
+		WHERE provider=? AND campground_id=?
+					AND CAST(checked_at AS TIMESTAMP) >= CAST(? AS TIMESTAMP)
+					AND (
+						-- any overlap between logged lookup date span and schniff date span
+						(start_date IS NOT NULL AND end_date IS NOT NULL AND start_date < ? AND end_date > ?)
+						OR (start_date IS NULL AND end_date IS NULL AND month BETWEEN ? AND ?)
+					)
+		`, provider, campgroundID, createdAt, checkout, checkin, checkin, checkout)
 	var n int64
 	return n, row.Scan(&n)
 }
