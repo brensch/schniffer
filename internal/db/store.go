@@ -205,6 +205,19 @@ func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]Sc
 	return out, rows.Err()
 }
 
+// DeactivateExpiredRequests deactivates all active requests where the checkout date is before the current date
+func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE schniff_requests 
+		SET active=false 
+		WHERE active=true AND coalesce(checkout, end_date) < CURRENT_DATE
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteState) error {
 	if len(states) == 0 {
 		return nil

@@ -123,20 +123,20 @@ func Test_pollOnceResult_MinimalCalls(t *testing.T) {
 			t.Fatalf("%v", err)
 		}
 	}
-	_, err := s.AddRequest(ctx, db.SchniffRequest{UserID: "u1", Provider: "fake", CampgroundID: "cg", Checkin: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC), Checkout: time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC)})
+	_, err := s.AddRequest(ctx, db.SchniffRequest{UserID: "u1", Provider: "fake", CampgroundID: "cg", Checkin: time.Date(2025, 9, 2, 0, 0, 0, 0, time.UTC), Checkout: time.Date(2025, 9, 4, 0, 0, 0, 0, time.UTC)})
 	must(err)
-	_, err = s.AddRequest(ctx, db.SchniffRequest{UserID: "u2", Provider: "fake", CampgroundID: "cg", Checkin: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC), Checkout: time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)})
+	_, err = s.AddRequest(ctx, db.SchniffRequest{UserID: "u2", Provider: "fake", CampgroundID: "cg", Checkin: time.Date(2025, 9, 3, 0, 0, 0, 0, time.UTC), Checkout: time.Date(2025, 9, 6, 0, 0, 0, 0, time.UTC)})
 	must(err)
 
-	// Fake provider that buckets entire month Jan 2025 into a single call
+	// Fake provider that buckets entire month Sep 2025 into a single call
 	fp := &fakeProv{
 		name: "fake",
 		buckets: []providers.DateRange{{
-			Start: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
-			End:   time.Date(2025, 1, 31, 0, 0, 0, 0, time.UTC),
+			Start: time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC),
+			End:   time.Date(2025, 9, 30, 0, 0, 0, 0, time.UTC),
 		}},
 		data: map[string][]providers.Campsite{
-			"2025-01-03": {{ID: "s1", Date: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC), Available: true}},
+			"2025-09-03": {{ID: "s1", Date: time.Date(2025, 9, 3, 0, 0, 0, 0, time.UTC), Available: true}},
 		},
 	}
 	reg := providers.NewRegistry()
@@ -153,5 +153,86 @@ func Test_pollOnceResult_MinimalCalls(t *testing.T) {
 	}
 	if c.Start != fp.buckets[0].Start || c.End != fp.buckets[0].End {
 		t.Fatalf("unexpected bucket window: got %v..%v", c.Start, c.End)
+	}
+}
+
+func Test_PollDeactivatesExpiredRequests(t *testing.T) {
+	// Setup DB
+	s := func(t *testing.T) *db.Store {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test.duckdb")
+		st, err := db.Open(path)
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close(); _ = os.Remove(path) })
+		return st
+	}(t)
+	ctx := context.Background()
+	
+	// Add an expired request and a future request
+	_, err := s.AddRequest(ctx, db.SchniffRequest{
+		UserID: "u1", 
+		Provider: "fake", 
+		CampgroundID: "cg", 
+		Checkin: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), 
+		Checkout: time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC), // Expired
+	})
+	if err != nil {
+		t.Fatalf("add expired request: %v", err)
+	}
+	
+	_, err = s.AddRequest(ctx, db.SchniffRequest{
+		UserID: "u2", 
+		Provider: "fake", 
+		CampgroundID: "cg", 
+		Checkin: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), 
+		Checkout: time.Date(2025, 12, 5, 0, 0, 0, 0, time.UTC), // Future
+	})
+	if err != nil {
+		t.Fatalf("add future request: %v", err)
+	}
+	
+	// Verify both requests are initially active
+	reqs, err := s.ListActiveRequests(ctx)
+	if err != nil {
+		t.Fatalf("list active requests: %v", err)
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 active requests initially, got %d", len(reqs))
+	}
+	
+	// Create manager with fake provider
+	fp := &fakeProv{
+		name: "fake",
+		buckets: []providers.DateRange{{
+			Start: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC),
+			End:   time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC),
+		}},
+		data: map[string][]providers.Campsite{},
+	}
+	reg := providers.NewRegistry()
+	reg.Register("fake", fp)
+	mgr := NewManager(s, reg)
+	
+	// Run one poll cycle - this should deactivate expired requests
+	res := mgr.PollOnceResult(ctx)
+	
+	// Verify only the future request remains active
+	reqs, err = s.ListActiveRequests(ctx)
+	if err != nil {
+		t.Fatalf("list active requests after poll: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 active request after poll, got %d", len(reqs))
+	}
+	if reqs[0].Checkout.Year() != 2025 || reqs[0].Checkout.Month() != 12 {
+		t.Fatalf("unexpected remaining request: %+v", reqs[0])
+	}
+	
+	// Should have 1 call for the future request
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected 1 upstream call, got %d", len(res.Calls))
 	}
 }

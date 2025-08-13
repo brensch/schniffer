@@ -118,6 +118,14 @@ func collectDatesByPC(reqs []db.SchniffRequest) (map[pc]map[time.Time]struct{}, 
 
 // pollOnceResult performs one poll cycle and returns a summary for tests.
 func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
+	// First, deactivate any expired requests
+	expiredCount, err := m.store.DeactivateExpiredRequests(ctx)
+	if err != nil {
+		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
+	} else if expiredCount > 0 {
+		m.logger.Info("deactivated expired requests", slog.Int64("count", expiredCount))
+	}
+
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
 		m.logger.Error("list requests failed", slog.Any("err", err))
