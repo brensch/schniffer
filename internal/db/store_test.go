@@ -112,35 +112,35 @@ func TestMetadata(t *testing.T) {
 func TestDeactivateExpiredRequests(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	
+
 	// Add some requests: one expired, one current
-	expiredDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)  // Past date (expired)
-	futureDate := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)  // Future date (active)
-	
+	expiredDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC) // Past date (expired)
+	futureDate := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC) // Future date (active)
+
 	// Add expired request
 	expiredID, err := s.AddRequest(ctx, db.SchniffRequest{
-		UserID: "u1", 
-		Provider: "recreation_gov", 
-		CampgroundID: "cg1", 
-		Checkin: time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC), 
-		Checkout: expiredDate,
+		UserID:       "u1",
+		Provider:     "recreation_gov",
+		CampgroundID: "cg1",
+		Checkin:      time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC),
+		Checkout:     expiredDate,
 	})
 	if err != nil {
 		t.Fatalf("add expired request: %v", err)
 	}
-	
+
 	// Add future request
 	futureID, err := s.AddRequest(ctx, db.SchniffRequest{
-		UserID: "u2", 
-		Provider: "recreation_gov", 
-		CampgroundID: "cg2", 
-		Checkin: time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC), 
-		Checkout: futureDate,
+		UserID:       "u2",
+		Provider:     "recreation_gov",
+		CampgroundID: "cg2",
+		Checkin:      time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC),
+		Checkout:     futureDate,
 	})
 	if err != nil {
 		t.Fatalf("add future request: %v", err)
 	}
-	
+
 	// Verify both requests are initially active
 	reqs, err := s.ListActiveRequests(ctx)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("expected 2 active requests, got %d", len(reqs))
 	}
-	
+
 	// Call DeactivateExpiredRequests
 	count, err := s.DeactivateExpiredRequests(ctx)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected 1 expired request, got %d", count)
 	}
-	
+
 	// Verify only the future request is still active
 	reqs, err = s.ListActiveRequests(ctx)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 	if reqs[0].ID != futureID {
 		t.Fatalf("expected future request to remain active, got ID %d instead of %d", reqs[0].ID, futureID)
 	}
-	
+
 	// Verify expired request is no longer active
 	for _, req := range reqs {
 		if req.ID == expiredID {

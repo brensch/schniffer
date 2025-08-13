@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Environment files
+.env
+.env.local
+
+# Development files
+.vscode
+.idea
+
+# Build artifacts
+bin/
+schniffer
+
+# Database files
+*.duckdb
+*.duckdb.wal
+
+# Secrets (for security)
+secrets/
+!secrets/*.example
+
+# Test files
+*_test.go
+testdata/
+
+# OS files
+.DS_Store
+Thumbs.db

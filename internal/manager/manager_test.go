@@ -170,30 +170,30 @@ func Test_PollDeactivatesExpiredRequests(t *testing.T) {
 		return st
 	}(t)
 	ctx := context.Background()
-	
+
 	// Add an expired request and a future request
 	_, err := s.AddRequest(ctx, db.SchniffRequest{
-		UserID: "u1", 
-		Provider: "fake", 
-		CampgroundID: "cg", 
-		Checkin: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), 
-		Checkout: time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC), // Expired
+		UserID:       "u1",
+		Provider:     "fake",
+		CampgroundID: "cg",
+		Checkin:      time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Checkout:     time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC), // Expired
 	})
 	if err != nil {
 		t.Fatalf("add expired request: %v", err)
 	}
-	
+
 	_, err = s.AddRequest(ctx, db.SchniffRequest{
-		UserID: "u2", 
-		Provider: "fake", 
-		CampgroundID: "cg", 
-		Checkin: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), 
-		Checkout: time.Date(2025, 12, 5, 0, 0, 0, 0, time.UTC), // Future
+		UserID:       "u2",
+		Provider:     "fake",
+		CampgroundID: "cg",
+		Checkin:      time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC),
+		Checkout:     time.Date(2025, 12, 5, 0, 0, 0, 0, time.UTC), // Future
 	})
 	if err != nil {
 		t.Fatalf("add future request: %v", err)
 	}
-	
+
 	// Verify both requests are initially active
 	reqs, err := s.ListActiveRequests(ctx)
 	if err != nil {
@@ -202,7 +202,7 @@ func Test_PollDeactivatesExpiredRequests(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("expected 2 active requests initially, got %d", len(reqs))
 	}
-	
+
 	// Create manager with fake provider
 	fp := &fakeProv{
 		name: "fake",
@@ -215,10 +215,10 @@ func Test_PollDeactivatesExpiredRequests(t *testing.T) {
 	reg := providers.NewRegistry()
 	reg.Register("fake", fp)
 	mgr := NewManager(s, reg)
-	
+
 	// Run one poll cycle - this should deactivate expired requests
 	res := mgr.PollOnceResult(ctx)
-	
+
 	// Verify only the future request remains active
 	reqs, err = s.ListActiveRequests(ctx)
 	if err != nil {
@@ -230,7 +230,7 @@ func Test_PollDeactivatesExpiredRequests(t *testing.T) {
 	if reqs[0].Checkout.Year() != 2025 || reqs[0].Checkout.Month() != 12 {
 		t.Fatalf("unexpected remaining request: %+v", reqs[0])
 	}
-	
+
 	// Should have 1 call for the future request
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected 1 upstream call, got %d", len(res.Calls))

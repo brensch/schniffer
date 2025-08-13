@@ -1,0 +1,18 @@
+services:
+  schniffer:
+    build: .
+    container_name: schniffer-bot
+    env_file:
+      - .env
+    volumes:
+      - schniffer_data:/app/data
+    restart: unless-stopped
+    # roll logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  schniffer_data:

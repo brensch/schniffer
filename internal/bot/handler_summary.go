@@ -82,10 +82,15 @@ func (b *Bot) handleSummaryCommand(s *discordgo.Session, i *discordgo.Interactio
 		},
 	}
 
-	_, err = s.ChannelMessageSendEmbed(i.ChannelID, embed)
+	// Respond to the interaction with the embed
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
 	if err != nil {
 		respond(s, i, "Failed to send summary")
 		return
 	}
-
 }
