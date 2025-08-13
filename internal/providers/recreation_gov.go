@@ -165,13 +165,18 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 					lon = v
 				}
 			}
+
+			// Create final name with parent info if available
+			name := r.Name
+			if r.ParentName != "" {
+				name = r.ParentName + ": " + r.Name
+			}
+
 			all = append(all, CampgroundInfo{
-				ID:         r.EntityID,
-				Name:       r.Name,
-				Lat:        lat,
-				Lon:        lon,
-				ParentID:   r.ParentID,
-				ParentName: r.ParentName,
+				ID:   r.EntityID,
+				Name: name,
+				Lat:  lat,
+				Lon:  lon,
 			})
 		}
 		if page.Size < size {

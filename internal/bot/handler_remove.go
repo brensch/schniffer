@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -35,11 +34,7 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 		}
 		name := r.CampgroundID
 		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), r.Provider, r.CampgroundID); ok {
-			if strings.TrimSpace(cg.ParentName) != "" {
-				name = cg.ParentName + " - " + cg.Name
-			} else {
-				name = cg.Name
-			}
+			name = cg.Name
 		}
 		nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
 		label := fmt.Sprintf("%s → %s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)

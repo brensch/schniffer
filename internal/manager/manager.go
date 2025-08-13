@@ -351,7 +351,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.ParentName, cg.ParentID, cg.Lat, cg.Lon); err != nil {
+		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon); err != nil {
 			// store failed sync
 			if err2 := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, Err: err.Error(), Count: int64(count)}); err2 != nil {
 				m.logger.Warn("record sync failed", slog.Any("err", err2))

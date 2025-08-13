@@ -1,3 +1,3 @@
 select * from campgrounds 
-where provider <> 'recreation_gov'
+where provider = 'recreation_gov'
 limit 100

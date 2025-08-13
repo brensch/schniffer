@@ -55,11 +55,7 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		// display name
 		name := it.campgroundID
 		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), it.provider, it.campgroundID); ok {
-			if strings.TrimSpace(cg.ParentName) != "" {
-				name = cg.ParentName + " - " + cg.Name
-			} else {
-				name = cg.Name
-			}
+			name = cg.Name
 		}
 		nights := int(it.checkout.Sub(it.checkin).Hours() / 24)
 		// total checks within request lifetime and date span

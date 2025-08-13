@@ -17,13 +17,10 @@ func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query stri
 	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(cgs))
 	for _, c := range cgs {
 		display := c.Name
-		if strings.TrimSpace(c.ParentName) != "" {
-			display = c.ParentName + " - " + c.Name
-		}
 		display = sanitizeChoiceName(display)
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 			Name:  display,
-			Value: strings.Join([]string{c.Provider, c.CampgroundID, c.Name}, "||"),
+			Value: strings.Join([]string{c.Provider, c.ID, c.Name}, "||"),
 		})
 		if len(choices) >= 25 { // Discord limit
 			break
@@ -47,11 +44,7 @@ func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo
 		}
 		name := r.CampgroundID
 		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), r.Provider, r.CampgroundID); ok {
-			if strings.TrimSpace(cg.ParentName) != "" {
-				name = cg.ParentName + " - " + cg.Name
-			} else {
-				name = cg.Name
-			}
+			name = cg.Name
 		}
 		label := r.Checkin.Format("2006-01-02") + "→" + r.Checkout.Format("2006-01-02")
 		display := sanitizeChoiceName(label + " • " + name)

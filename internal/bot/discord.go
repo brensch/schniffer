@@ -85,11 +85,7 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 	// Title should be the campground name if we have it
 	title := "Available"
 	if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), provider, campgroundID); ok {
-		if strings.TrimSpace(cg.ParentName) != "" {
-			title = "Available: " + cg.ParentName + " - " + cg.Name
-		} else {
-			title = "Available: " + cg.Name
-		}
+		title = "Available: " + cg.Name
 	} else {
 		title = "Available: " + campgroundID
 	}

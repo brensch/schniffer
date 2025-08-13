@@ -472,11 +472,11 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, campgroundID, name, parentName, parentID string, lat, lon float64) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon float64) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, parent_name, parent_id, lat, lon)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, provider, campgroundID, name, parentName, parentID, lat, lon)
+		INSERT OR REPLACE INTO campgrounds(provider, id, name, lat, lon)
+		VALUES (?, ?, ?, ?, ?)
+	`, provider, id, name, lat, lon)
 	return err
 }
 
@@ -489,31 +489,29 @@ func (s *Store) UpsertCampsiteMeta(ctx context.Context, provider, campgroundID, 
 }
 
 type Campground struct {
-	Provider     string
-	CampgroundID string
-	Name         string
-	ParentName   string
-	ParentID     string
-	Lat          float64
-	Lon          float64
+	Provider string
+	ID       string
+	Name     string
+	Lat      float64
+	Lon      float64
 }
 
 func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
-	// Fuzzy search across both name and parent_name with simple ranking.
+	// Fuzzy search across campground names with simple ranking.
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT provider, campground_id, name, coalesce(parent_name, '') AS parent_name, coalesce(parent_id, ''), coalesce(lat, 0.0), coalesce(lon, 0.0)
+		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
 		FROM campgrounds
-		WHERE lower(name) LIKE '%' || lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE '%' || lower(?) || '%'
+		WHERE lower(name) LIKE '%' || lower(?) || '%'
 		ORDER BY
 			CASE
-				WHEN lower(name) = lower(?) OR lower(coalesce(parent_name, '')) = lower(?) THEN 0
-				WHEN lower(name) LIKE lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE lower(?) || '%' THEN 1
-				WHEN lower(name) LIKE '%' || lower(?) || '%' OR lower(coalesce(parent_name, '')) LIKE '%' || lower(?) || '%' THEN 2
+				WHEN lower(name) = lower(?) THEN 0
+				WHEN lower(name) LIKE lower(?) || '%' THEN 1
+				WHEN lower(name) LIKE '%' || lower(?) || '%' THEN 2
 				ELSE 3
 			END,
 			name
 		LIMIT 25
-	`, like, like, like, like, like, like, like, like)
+	`, like, like, like, like)
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +519,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	var out []Campground
 	for rows.Next() {
 		var c Campground
-		if err := rows.Scan(&c.Provider, &c.CampgroundID, &c.Name, &c.ParentName, &c.ParentID, &c.Lat, &c.Lon); err != nil {
+		if err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -531,12 +529,12 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 
 func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID string) (Campground, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT provider, campground_id, name, coalesce(parent_name, ''), coalesce(parent_id, ''), coalesce(lat, 0.0), coalesce(lon, 0.0)
+		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
 		FROM campgrounds
-		WHERE provider=? AND campground_id=?
+		WHERE provider=? AND id=?
 	`, provider, campgroundID)
 	var c Campground
-	if err := row.Scan(&c.Provider, &c.CampgroundID, &c.Name, &c.ParentName, &c.ParentID, &c.Lat, &c.Lon); err != nil {
+	if err := row.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
 		if err == sql.ErrNoRows {
 			return Campground{}, false, nil
 		}

@@ -66,20 +66,12 @@ CREATE TABLE IF NOT EXISTS daily_summary (
 -- campground metadata
 CREATE TABLE IF NOT EXISTS campgrounds (
     provider       VARCHAR,
-    campground_id  VARCHAR,
+    id             VARCHAR,
     name           VARCHAR,
-    parent_name    VARCHAR,
-    parent_id      VARCHAR,
     lat            DOUBLE,
     lon            DOUBLE,
-    PRIMARY KEY (provider, campground_id)
+    PRIMARY KEY (provider, id)
 );
-
--- migrate existing installations: add columns if missing
-ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_name VARCHAR;
-ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS parent_id VARCHAR;
-ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lat DOUBLE;
-ALTER TABLE campgrounds ADD COLUMN IF NOT EXISTS lon DOUBLE;
 
 -- add new request columns if missing
 ALTER TABLE schniff_requests ADD COLUMN IF NOT EXISTS checkin DATE;

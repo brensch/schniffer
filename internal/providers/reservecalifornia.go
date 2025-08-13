@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
@@ -24,9 +25,17 @@ func NewReserveCalifornia() *ReserveCalifornia { return &ReserveCalifornia{clien
 
 func (r *ReserveCalifornia) Name() string { return "reservecalifornia" }
 
-// CampsiteURL returns a generic ReserveCalifornia URL. Deep links are not stable across sessions.
+// CampsiteURL returns a ReserveCalifornia URL for the campground.
+// campgroundID format: "parentID/facilityID" (e.g., "1260/2181")
 func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
-	return "https://reservecalifornia.com/" // fallback landing page
+	// Parse composite ID: parentID/facilityID
+	parts := strings.Split(campgroundID, "/")
+	if len(parts) != 2 {
+		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
+	}
+	parentID := parts[0]
+	facilityID := parts[1]
+	return fmt.Sprintf("https://reservecalifornia.com/Web/#!park/%s/%s", parentID, facilityID)
 }
 
 // PlanBuckets: ReserveCalifornia can query an arbitrary date range per facility, so collapse to a single [min..max] range.
@@ -86,6 +95,13 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 	if campgroundID == "" {
 		return nil, fmt.Errorf("facility/campground id required")
 	}
+
+	// Extract facility ID from composite ID format "parentID/facilityID"
+	facilityID := campgroundID
+	if parts := strings.Split(campgroundID, "/"); len(parts) == 2 {
+		facilityID = parts[1]
+	}
+
 	// API expects inclusive dates in YYYY-MM-DD local to PST; using UTC dates is fine for midnight day granularity.
 	payload := gridRequest{
 		IsADA:             false,
@@ -98,7 +114,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		EndDate:           end.UTC().Format("2006-01-02"),
 		UnitSort:          "orderby",
 		InSeasonOnly:      true,
-		FacilityId:        campgroundID,
+		FacilityId:        facilityID,
 		RestrictADA:       false,
 	}
 	body, _ := json.Marshal(payload)
@@ -229,13 +245,15 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		parentName := prParsed.SelectedPlace.Name
 		parentID := strconv.Itoa(prParsed.SelectedPlace.PlaceId)
 		for _, f := range prParsed.SelectedPlace.Facilities {
+			// Create composite ID and name for ReserveCalifornia
+			compositeID := parentID + "/" + strconv.Itoa(f.FacilityId)
+			compositeName := parentName + ": " + f.Name
+
 			out = append(out, CampgroundInfo{
-				ID:         strconv.Itoa(f.FacilityId),
-				Name:       f.Name,
-				Lat:        f.Latitude,
-				Lon:        f.Longitude,
-				ParentID:   parentID,
-				ParentName: parentName,
+				ID:   compositeID,
+				Name: compositeName,
+				Lat:  f.Latitude,
+				Lon:  f.Longitude,
 			})
 		}
 		checked++
