@@ -13,16 +13,17 @@ import (
 )
 
 type Bot struct {
-	s      *discordgo.Session
-	g      string
-	token  string
-	store  *db.Store
-	mgr    *manager.Manager
-	logger *slog.Logger
+	s        *discordgo.Session
+	g        string
+	token    string
+	store    *db.Store
+	mgr      *manager.Manager
+	logger   *slog.Logger
+	useGuild bool // use guild commands (default) vs global commands (production)
 }
 
-func New(token, guildID string, store *db.Store, mgr *manager.Manager) *Bot {
-	return &Bot{g: guildID, store: store, mgr: mgr, token: token, logger: slog.Default()}
+func New(token, guildID string, store *db.Store, mgr *manager.Manager, useGuild bool) *Bot {
+	return &Bot{g: guildID, store: store, mgr: mgr, token: token, logger: slog.Default(), useGuild: useGuild}
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -138,8 +139,15 @@ func (b *Bot) registerCommands() {
 		},
 	}
 	appID := b.s.State.Application.ID
+	guildID := ""
+	if b.useGuild {
+		guildID = b.g
+		b.logger.Info("registering commands for guild", slog.String("guild", b.g))
+	} else {
+		b.logger.Info("registering commands globally")
+	}
 	for _, c := range cmds {
-		_, err := b.s.ApplicationCommandCreate(appID, b.g, c)
+		_, err := b.s.ApplicationCommandCreate(appID, guildID, c)
 		if err != nil {
 			b.logger.Warn("command registration failed", slog.Any("err", err))
 		}

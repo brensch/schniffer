@@ -44,12 +44,13 @@ func main() {
 
 	discordToken := os.Getenv("DISCORD_TOKEN")
 	guildID := os.Getenv("GUILD_ID")
+	prod := os.Getenv("PROD") == "true"
 	if discordToken == "" {
 		slog.Error("DISCORD_TOKEN env var required")
 		os.Exit(1)
 	}
 
-	b := bot.New(discordToken, guildID, store, mgr)
+	b := bot.New(discordToken, guildID, store, mgr, !prod)
 	if err := b.Run(ctx); err != nil {
 		slog.Error("bot run failed", slog.Any("err", err))
 		os.Exit(1)

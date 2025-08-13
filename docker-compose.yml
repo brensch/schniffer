@@ -4,6 +4,8 @@ services:
     container_name: schniffer-bot
     env_file:
       - .env
+    environment:
+      - PROD=true
     volumes:
       - schniffer_data:/app/data
     restart: unless-stopped
