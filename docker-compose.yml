@@ -7,7 +7,7 @@ services:
     environment:
       - PROD=true
     volumes:
-      - schniffer_data:/app/data
+      - ./schniffer.duckdb:/app/schniffer.duckdb
     restart: unless-stopped
     # roll logs
     logging:
@@ -15,6 +15,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  schniffer_data:

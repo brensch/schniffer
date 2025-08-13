@@ -41,10 +41,5 @@ COPY --from=builder /app/internal/db/schema.sql ./internal/db/
 # Create directory for database
 RUN mkdir -p /app/data
 
-# Set environment variable for database path
-ENV DUCKDB_PATH=/app/data/schniffer.duckdb
-
-# Expose no ports since this is a Discord bot (no HTTP server)
-
 # Run the application
 CMD ["./schniffer"]
