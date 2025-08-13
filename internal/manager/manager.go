@@ -317,12 +317,12 @@ func itoa(i int64) string { return fmt.Sprintf("%d", i) }
 func (m *Manager) SetSummaryChannel(id string) { m.mu.Lock(); m.summaryChannelID = id; m.mu.Unlock() }
 
 // CampsiteURL exposes provider-specific campsite URLs for the bot to build embeds.
-func (m *Manager) CampsiteURL(provider, parentID, campgroundID, campsiteID string) string {
+func (m *Manager) CampsiteURL(provider, campgroundID, campsiteID string) string {
 	p, ok := m.reg.Get(provider)
 	if !ok || p == nil {
 		return ""
 	}
-	return p.CampsiteURL(parentID, campgroundID, campsiteID)
+	return p.CampsiteURL(campgroundID, campsiteID)
 }
 
 // SyncCampgrounds pulls all campgrounds from a provider and stores them in DB.

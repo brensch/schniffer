@@ -25,7 +25,7 @@ func NewReserveCalifornia() *ReserveCalifornia { return &ReserveCalifornia{clien
 func (r *ReserveCalifornia) Name() string { return "reservecalifornia" }
 
 // CampsiteURL returns a generic ReserveCalifornia URL. Deep links are not stable across sessions.
-func (r *ReserveCalifornia) CampsiteURL(_ string, _ string) string {
+func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
 	return "https://reservecalifornia.com/" // fallback landing page
 }
 
