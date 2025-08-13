@@ -68,8 +68,7 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		desc := strings.Builder{}
 		desc.WriteString(name + "\n")
 		desc.WriteString(fmt.Sprintf("%s (%s) -> %s (%s) (%d nights)\n", it.checkin.Format("2006-01-02"), weekday(it.checkin), it.checkout.Format("2006-01-02"), weekday(it.checkout), nights))
-		desc.WriteString("active: true\n")
-		desc.WriteString(fmt.Sprintf("total checks: %d\n", totalChecks))
+		desc.WriteString(fmt.Sprintf("total api calls: %d\n", totalChecks))
 
 		embeds = append(embeds, &discordgo.MessageEmbed{
 			Description: desc.String(),
