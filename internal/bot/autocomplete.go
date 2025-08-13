@@ -23,7 +23,7 @@ func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query stri
 		display = sanitizeChoiceName(display)
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 			Name:  display,
-			Value: c.Provider + "|" + c.CampgroundID,
+			Value: strings.Join([]string{c.Provider, c.CampgroundID, c.Name}, "||"),
 		})
 		if len(choices) >= 25 { // Discord limit
 			break

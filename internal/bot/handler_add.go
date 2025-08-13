@@ -11,24 +11,52 @@ import (
 
 func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
 	opts := optMap(sub.Options)
-	cg := opts["campground"].StringValue()
-	parts := strings.SplitN(cg, "|", 2)
-	if len(parts) != 2 {
+	campgroundResponse, ok := opts["campground"]
+	if !ok || campgroundResponse == nil {
+		respond(s, i, "campground selection is required")
+		return
+	}
+
+	checkinResponse, ok := opts["checkin"]
+	if !ok || checkinResponse == nil {
+		respond(s, i, "check-in date is required")
+		return
+	}
+
+	checkoutResponse, ok := opts["checkout"]
+	if !ok || checkoutResponse == nil {
+		respond(s, i, "check-out date is required")
+		return
+	}
+
+	campgroundIDAndProvider := campgroundResponse.StringValue()
+	parts := strings.SplitN(campgroundIDAndProvider, "||", 3)
+	if len(parts) != 3 {
 		respond(s, i, "invalid campground selection")
 		return
 	}
-	provider := parts[0]
-	campID := parts[1]
+	campgroundProvider := parts[0]
+	campgroundID := parts[1]
+	campgroundName := parts[2]
 	start, end, err := parseDates(opts["checkin"].StringValue(), opts["checkout"].StringValue())
 	if err != nil {
 		respond(s, i, "invalid dates: "+err.Error())
 		return
 	}
+
+	if !start.Before(end) {
+		respond(s, i, "checkin must be before checkout")
+		return
+	}
+
 	uid := getUserID(i)
-	id, err := b.store.AddRequest(context.Background(), db.SchniffRequest{UserID: uid, Provider: provider, CampgroundID: campID, Checkin: start, Checkout: end})
+	_, err = b.store.AddRequest(context.Background(), db.SchniffRequest{UserID: uid, Provider: campgroundProvider, CampgroundID: campgroundID, Checkin: start, Checkout: end})
 	if err != nil {
 		respond(s, i, "error: "+err.Error())
 		return
 	}
-	respond(s, i, fmt.Sprintf("added schniff %d", id))
+
+	// get the length of the stay
+	stayDuration := end.Sub(start)
+	respond(s, i, fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", campgroundName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24))
 }
