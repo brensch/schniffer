@@ -63,3 +63,14 @@ func sanitizeChoiceName(s string) string {
 	}
 	return string(runes) + "…"
 }
+
+// sanitizeChoiceValue ensures the choice value is at most 100 characters (bytes).
+// Discord's API limit is 100 characters for choice values.
+func sanitizeChoiceValue(s string) string {
+	if len(s) <= 100 {
+		return s
+	}
+	// Truncate to 100 bytes - this is safer than counting runes since
+	// Discord's limit is likely in terms of bytes/characters, not Unicode runes
+	return s[:100]
+}

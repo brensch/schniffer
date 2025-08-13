@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -18,9 +19,11 @@ func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query stri
 	for _, c := range cgs {
 		display := c.Name
 		display = sanitizeChoiceName(display)
+		value := strings.Join([]string{c.Provider, c.ID, c.Name}, "||")
+		value = sanitizeChoiceValue(value)
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 			Name:  display,
-			Value: strings.Join([]string{c.Provider, c.ID, c.Name}, "||"),
+			Value: value,
 		})
 		if len(choices) >= 25 { // Discord limit
 			break
@@ -48,13 +51,14 @@ func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo
 		}
 		label := r.Checkin.Format("2006-01-02") + "→" + r.Checkout.Format("2006-01-02")
 		display := sanitizeChoiceName(label + " • " + name)
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: display, Value: r.ID})
+		value := sanitizeChoiceValue(strconv.FormatInt(r.ID, 10))
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: display, Value: value})
 		if len(choices) >= 25 {
 			break
 		}
 	}
 	if len(choices) == 0 {
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: "No active schniffs", Value: 0})
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: "No active schniffs", Value: "0"})
 	}
 	return choices
 }
