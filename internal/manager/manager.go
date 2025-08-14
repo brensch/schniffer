@@ -333,6 +333,13 @@ func itoa(i int64) string { return fmt.Sprintf("%d", i) }
 // Configure summary channel id
 func (m *Manager) SetSummaryChannel(id string) { m.mu.Lock(); m.summaryChannelID = id; m.mu.Unlock() }
 
+// GetSummaryChannel returns the configured summary channel ID
+func (m *Manager) GetSummaryChannel() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.summaryChannelID
+}
+
 // CampsiteURL exposes provider-specific campsite URLs for the bot to build embeds.
 func (m *Manager) CampsiteURL(provider, campgroundID, campsiteID string) string {
 	p, ok := m.reg.Get(provider)

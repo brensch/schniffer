@@ -117,6 +117,30 @@ func (b *Bot) NotifySummary(channelID string, msg string) error {
 func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	b.logger.Info("bot ready", slog.String("user", s.State.User.Username))
 	b.registerCommands()
+
+	// Send startup message to the summary channel
+	summaryChannelID := b.mgr.GetSummaryChannel()
+	if summaryChannelID != "" {
+		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
+		if guild, err := s.Guild(summaryChannelID); err == nil {
+			// This is a guild ID, find the first text channel
+			channels, err := s.GuildChannels(guild.ID)
+			if err == nil {
+				for _, channel := range channels {
+					if channel.Type == discordgo.ChannelTypeGuildText {
+						summaryChannelID = channel.ID
+						b.logger.Info("Using first text channel for startup message", slog.String("channel", channel.Name), slog.String("id", channel.ID))
+						break
+					}
+				}
+			}
+		}
+
+		err := b.NotifySummary(summaryChannelID, "scniffbot online and ready to schniff")
+		if err != nil {
+			b.logger.Error("failed to send startup message", slog.Any("err", err))
+		}
+	}
 }
 
 func (b *Bot) registerCommands() {

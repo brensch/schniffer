@@ -33,17 +33,17 @@ func main() {
 	provRegistry.Register("recreation_gov", providers.NewRecreationGov())
 	provRegistry.Register("reservecalifornia", providers.NewReserveCalifornia())
 
+	discordToken := os.Getenv("DISCORD_TOKEN")
+	guildID := os.Getenv("GUILD_ID")
+
 	mgr := manager.NewManager(store, provRegistry)
-	mgr.SetSummaryChannel(os.Getenv("SUMMARY_CHANNEL_ID"))
+	mgr.SetSummaryChannel(guildID) // Use guild ID as the summary channel ID
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
 
 	// Background campground sync (daily)
 	go mgr.RunCampgroundSync(ctx, "recreation_gov", 24*60*60*1e9)
 	go mgr.RunCampgroundSync(ctx, "reservecalifornia", 24*60*60*1e9)
-
-	discordToken := os.Getenv("DISCORD_TOKEN")
-	guildID := os.Getenv("GUILD_ID")
 	prod := os.Getenv("PROD") == "true"
 	if discordToken == "" {
 		slog.Error("DISCORD_TOKEN env var required")
