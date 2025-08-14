@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/nonsense"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -104,7 +105,7 @@ func (b *Bot) buildNotificationEmbed(campgroundName string, checkin, checkout ti
 	}
 
 	embed := &discordgo.MessageEmbed{
-		Title:       "Look what the schniffer dragged in!",
+		Title:       nonsense.RandomSillyHeader(),
 		Description: description.String(),
 		Color:       0x00ff00, // Green color
 		Timestamp:   time.Now().Format(time.RFC3339),
