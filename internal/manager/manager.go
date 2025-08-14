@@ -198,9 +198,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 // Notifier must be provided by bot; here we define an interface to call back.
 
 type Notifier interface {
-	NotifyAvailability(userID string, msg string) error
 	// NotifyAvailabilityEmbed sends an embed with availability items; implementations may ignore extra fields.
-	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, items []db.AvailabilityItem) error
+	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, req db.SchniffRequest, items []db.AvailabilityItem) error
 	NotifySummary(channelID string, msg string) error
 	// ResolveUsernames converts user IDs to usernames
 	ResolveUsernames(userIDs []string) []string
@@ -220,66 +219,6 @@ func (m *Manager) SetNotifier(n Notifier) { // optional injection later
 }
 
 var _ = (*Manager).SetNotifier // avoid unused warning when bot not yet wired
-
-type notifyKey struct {
-	prov, cg, site string
-	date           time.Time
-}
-
-func (m *Manager) detectChangesAndNotify(ctx context.Context, reqs []db.SchniffRequest, states []providers.Campsite, prov, cg string) {
-	m.mu.Lock()
-	n := m.notifier
-	m.mu.Unlock()
-	if n == nil {
-		return
-	}
-	// Convert provider states to db-friendly incoming states
-	incoming := make([]db.IncomingCampsiteState, 0, len(states))
-	for _, s := range states {
-		incoming = append(incoming, db.IncomingCampsiteState{CampsiteID: s.ID, Date: s.Date, Available: s.Available})
-	}
-	// Ask DB to reconcile notifications and return per-user newly opened availability items
-	newlyOpenByUser, err := m.store.ReconcileNotifications(ctx, prov, cg, reqs, incoming)
-	if err != nil {
-		m.logger.Warn("reconcile notifications failed", slog.Any("err", err))
-		return
-	}
-	if len(newlyOpenByUser) == 0 {
-		return
-	}
-	// Bundle notifications per user (embed preferred, limit to first 10)
-	for userID, items := range newlyOpenByUser {
-		if len(items) == 0 {
-			continue
-		}
-		// cap to first 10
-		if len(items) > 10 {
-			items = items[:10]
-		}
-		// Try embed path first
-		if err := n.NotifyAvailabilityEmbed(userID, prov, cg, items); err != nil {
-			// fallback to plain text
-			b := strings.Builder{}
-			b.WriteString("Available: ")
-			b.WriteString(prov)
-			b.WriteString(" ")
-			b.WriteString(cg)
-			for _, it := range items {
-				b.WriteString("\n- ")
-				b.WriteString(it.Date.Format("2006-01-02"))
-				b.WriteString(" site ")
-				b.WriteString(it.CampsiteID)
-				if url := m.CampsiteURL(prov, cg, it.CampsiteID); url != "" {
-					b.WriteString(" ")
-					b.WriteString(url)
-				}
-			}
-			if err2 := n.NotifyAvailability(userID, b.String()); err2 != nil {
-				m.logger.Warn("notify availability failed", slog.Any("err", err2))
-			}
-		}
-	}
-}
 
 // Daily summary routine
 func (m *Manager) RunDailySummary(ctx context.Context) {

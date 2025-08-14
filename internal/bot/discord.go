@@ -3,12 +3,10 @@ package bot
 import (
 	"context"
 	"log/slog"
-	"sort"
-	"strings"
-	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
+	"github.com/brensch/schniffer/internal/nonsense"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -35,7 +33,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.mgr.SetNotifier(b)
 	s.AddHandler(b.onReady)
 	s.AddHandler(b.onInteraction)
-	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages
+	s.AddHandler(b.onGuildMemberAdd)
+	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
 	if err := s.Open(); err != nil {
 		return err
 	}
@@ -59,55 +58,6 @@ func (b *Bot) ResolveUsernames(userIDs []string) []string {
 }
 
 // Notifier implementation
-func (b *Bot) NotifyAvailability(userID string, msg string) error {
-	channel, err := b.s.UserChannelCreate(userID)
-	if err != nil {
-		return err
-	}
-	_, err = b.s.ChannelMessageSend(channel.ID, msg)
-	return err
-}
-
-// NotifyAvailabilityEmbed sends an embed with first 10 items, each as a line with date, site, and link.
-func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, items []db.AvailabilityItem) error {
-	channel, err := b.s.UserChannelCreate(userID)
-	if err != nil {
-		return err
-	}
-	// Sort by date ascending and cap 10
-	if len(items) > 1 {
-		sort.Slice(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
-	}
-	if len(items) > 10 {
-		items = items[:10]
-	}
-	weekday := func(t time.Time) string { return t.Format("Mon") }
-	desc := strings.Builder{}
-	for _, it := range items {
-		// Format: - 2025-08-12 (Tue) site [12345](link)
-		dateStr := it.Date.Format("2006-01-02") + " (" + weekday(it.Date) + ")"
-		url := b.mgr.CampsiteURL(provider, campgroundID, it.CampsiteID)
-		siteLabel := it.CampsiteID
-		if url != "" {
-			siteLabel = "[" + siteLabel + "](" + url + ")"
-		}
-		desc.WriteString("- ")
-		desc.WriteString(dateStr)
-		desc.WriteString(" site ")
-		desc.WriteString(siteLabel)
-		desc.WriteString("\n")
-	}
-	// Title should be the campground name if we have it
-	title := "Available"
-	if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), provider, campgroundID); ok {
-		title = "Available: " + cg.Name
-	} else {
-		title = "Available: " + campgroundID
-	}
-	embed := &discordgo.MessageEmbed{Title: title, Description: desc.String(), Timestamp: time.Now().Format(time.RFC3339)}
-	_, err = b.s.ChannelMessageSendEmbed(channel.ID, embed)
-	return err
-}
 
 func (b *Bot) NotifySummary(channelID string, msg string) error {
 	_, err := b.s.ChannelMessageSend(channelID, msg)
@@ -139,6 +89,73 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		err := b.NotifySummary(summaryChannelID, "scniffbot online and ready to schniff")
 		if err != nil {
 			b.logger.Error("failed to send startup message", slog.Any("err", err))
+		}
+	}
+}
+
+func (b *Bot) onGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
+	b.logger.Info("new member joined", slog.String("user", m.User.Username), slog.String("id", m.User.ID))
+
+	// Send a DM to the new user with instructions
+	dmChannel, err := s.UserChannelCreate(m.User.ID)
+	if err != nil {
+		b.logger.Error("failed to create DM channel", slog.Any("err", err))
+	} else {
+		// Add detailed instructions on how to use the bot
+		instructions := `
+
+**Hello schniffist**
+
+Congratulations! Being a schniffist is an honour.
+
+**How to schniff**
+
+👃 Add a schniff
+
+⏰ Wait
+
+🔍 I find you a campsite
+
+📨 I send you a message, you click the link to the freed website, and then book it
+
+Send all your commands directly to me privately (ie not in the schniffer channel).
+Type /schniff to see the commands available. You can figure it out from there.
+
+**Why can you find campsites that are free when they're all booked right now?**
+People make plans, those plans change. They cancel their booking. They normally do it on sunday night for some reason. I don't know why, i'm not a human and don't do human stuff, i'm a schniffer.
+`
+
+		_, err = s.ChannelMessageSend(dmChannel.ID, instructions)
+		if err != nil {
+			b.logger.Error("failed to send DM to new user", slog.Any("err", err))
+		} else {
+			b.logger.Info("sent welcome DM to new user", slog.String("user", m.User.Username))
+		}
+	}
+
+	// Send a brief public notification to the summary channel
+	summaryChannelID := b.mgr.GetSummaryChannel()
+	if summaryChannelID != "" {
+		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
+		if guild, err := s.Guild(summaryChannelID); err == nil {
+			// This is a guild ID, find the first text channel
+			channels, err := s.GuildChannels(guild.ID)
+			if err == nil {
+				for _, channel := range channels {
+					if channel.Type == discordgo.ChannelTypeGuildText {
+						summaryChannelID = channel.ID
+						break
+					}
+				}
+			}
+		}
+
+		// Generate public welcome message
+		welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
+
+		err := b.NotifySummary(summaryChannelID, welcomeMessage)
+		if err != nil {
+			b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 		}
 	}
 }
