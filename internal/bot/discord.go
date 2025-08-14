@@ -153,7 +153,14 @@ People make plans, those plans change. They cancel their booking. They normally 
 		// Generate public welcome message
 		welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
 
-		err := b.NotifySummary(summaryChannelID, welcomeMessage)
+		// Create an embed with "Welcome, schniffist" title
+		embed := &discordgo.MessageEmbed{
+			Title:       "Welcome, schniffist",
+			Description: welcomeMessage,
+			Color:       0x5865F2, // Discord blurple color
+		}
+
+		_, err := s.ChannelMessageSendEmbed(summaryChannelID, embed)
 		if err != nil {
 			b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 		}
@@ -182,6 +189,7 @@ func (b *Bot) registerCommands() {
 				}},
 				{Name: "state", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show current state for your schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get detailed schniffer summary"},
+				{Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
 			},
 		},
 	}
@@ -283,6 +291,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleStateCommand(s, i, sub)
 	case "summary":
 		b.handleSummaryCommand(s, i, sub)
+	case "nonsense":
+		b.handleNonsenseCommand(s, i, sub)
 	}
 }
 
