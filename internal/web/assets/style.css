@@ -3,145 +3,25 @@ body {
     padding: 0;
     font-family: Arial, sans-serif;
     background-color: #f5f5f5;
-}
-
-#header {
-    background-color: #eb8028;
-    color: white;
-    padding: 1rem;
-    text-align: center;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-#header h1 {
-    margin: 0;
-    font-size: 2rem;
-}
-
-#header p {
-    margin: 0.5rem 0 0 0;
-    opacity: 0.8;
-}
-
-#controls {
-    padding: 1rem;
-    background-color: white;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-}
-
-.search-container {
-    flex: 0 1 auto;
-    width: 30%;
-    min-width: 200px;
-    max-width: 400px;
-    position: relative;
-}
-
-#place-search {
-    width: 100%;
-    padding: 0.5rem;
-    border: 1px solid #007bff;
-    border-radius: 4px;
-    font-size: 1rem;
-    background-color: #f8f9fa;
-}
-
-#place-search:focus {
-    outline: none;
-    border-color: #0056b3;
-    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
-}
-
-.search-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: white;
-    border: 1px solid #ddd;
-    border-top: none;
-    border-radius: 0 0 4px 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    z-index: 1000;
-    max-height: 300px;
-    overflow-y: auto;
-}
-
-.search-option {
-    padding: 0.75rem;
-    cursor: pointer;
-    border-bottom: 1px solid #eee;
-    transition: background-color 0.2s;
-}
-
-.search-option:hover {
-    background-color: #f8f9fa;
-}
-
-.search-option:last-child {
-    border-bottom: none;
-}
-
-.option-name {
-    font-weight: 500;
-    color: #333;
-    margin-bottom: 0.2rem;
-}
-
-.option-location {
-    font-size: 0.85rem;
-    color: #666;
-    margin-bottom: 0.2rem;
-}
-
-.option-type {
-    font-size: 0.75rem;
-    color: #888;
-    text-transform: capitalize;
-    background-color: #e9ecef;
-    padding: 0.2rem 0.4rem;
-    border-radius: 3px;
-    display: inline-block;
-}
-
-.stats {
-    color: #666;
-    font-size: 0.9rem;
-    padding: 0 1rem;
+    overflow: hidden;
 }
 
 #map {
-    height: calc(100vh - 140px);
-    width: 100%;
+    height: 100vh;
+    width: 100vw;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
 }
 
 /* Mobile responsive styles */
 @media (max-width: 768px) {
-    #controls {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 0.5rem;
-        padding-right: 1.5rem;
-    }
-    
-    .search-container {
-        width: 100%;
-        max-width: none;
-    }
-    
     #save-group-btn {
-        padding: 0.875rem 1.5rem;
-        font-size: 1rem;
-        margin: 0.25rem 0;
-    }
-    
-    .stats {
-        padding: 0.5rem 0;
-        text-align: center;
+        bottom: 15px;
+        padding: 1rem 1.5rem;
+        font-size: 0.9rem;
+        min-width: 180px;
     }
 }
 
@@ -174,20 +54,27 @@ body {
 .recreation-gov { background-color: #27ae60; }
 .reservecalifornia { background-color: #e74c3c; }
 
-/* Save Group Button */
+/* Save Group Button - Floating at bottom */
 #save-group-btn {
-    padding: 0.75rem 1.5rem;
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    padding: 1rem 2rem;
     background-color: #c47331;
     color: white;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 0.9rem;
-    font-weight: 500;
-    transition: background-color 0.2s;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: all 0.2s;
     white-space: nowrap;
-    min-width: 120px;
+    min-width: 200px;
     text-align: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    backdrop-filter: blur(4px);
 }
 
 #save-group-btn:hover:not(:disabled) {
@@ -270,6 +157,7 @@ body {
     border: 1px solid #ddd;
     border-radius: 4px;
     font-size: 1rem;
+    box-sizing: border-box;
 }
 
 .campground-list {

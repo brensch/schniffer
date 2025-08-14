@@ -64,100 +64,69 @@ async function loadViewportData() {
         const result = await response.json();
         currentData = result;
         renderMarkersFromViewport(result);
-        updateStatsFromViewport(result);
+        updateSaveGroupButton();
     } catch (error) {
         console.error('Failed to load viewport data:', error);
-        document.getElementById('stats').textContent = 'Failed to load campgrounds';
+        updateSaveGroupButton();
     }
 }
 
-// Search for a place using Nominatim geocoding
-async function searchPlace(query) {
-    if (!query.trim()) {
-        hideSearchDropdown();
-        return;
-    }
-    
-    try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=us`);
-        const results = await response.json();
-        
-        showSearchDropdown(results);
-    } catch (error) {
-        console.error('Place search failed:', error);
-        hideSearchDropdown();
-    }
-}
+// Event listeners
+map.on('moveend zoomend', loadViewportData);
 
-function hideSearchDropdown() {
-    const existingDropdown = document.querySelector('.search-dropdown');
-    if (existingDropdown) {
-        existingDropdown.remove();
-    }
-}
-
-function showSearchDropdown(results) {
-    hideSearchDropdown();
+function renderMarkersFromViewport(result) {
+    // Clear existing markers
+    markers.forEach(marker => map.removeLayer(marker));
+    markers = [];
     
-    if (!results || results.length === 0) return;
-    
-    const searchContainer = document.querySelector('.search-container');
-    const dropdown = document.createElement('div');
-    dropdown.className = 'search-dropdown';
-    
-    results.forEach(result => {
-        const option = document.createElement('div');
-        option.className = 'search-option';
-        
-        // Extract main location name and type
-        const nameParts = result.display_name.split(',');
-        const mainName = nameParts[0];
-        const location = nameParts.slice(1, 3).join(',').trim();
-        
-        option.innerHTML = `
-            <div class="option-name">${mainName}</div>
-            <div class="option-location">${location}</div>
-            <div class="option-type">${result.type || result.class}</div>
-        `;
-        
-        option.addEventListener('click', () => {
-            const lat = parseFloat(result.lat);
-            const lon = parseFloat(result.lon);
+    if (result.type === 'clusters') {
+        // Render clusters
+        result.data.forEach(cluster => {
+            const marker = L.marker([cluster.lat, cluster.lon], { 
+                icon: createClusterIcon(cluster.count) 
+            }).bindPopup(`
+                <div class="custom-popup">
+                    <div class="popup-title">${cluster.count} Campgrounds</div>
+                    <div style="margin-top: 0.5rem;">
+                        ${cluster.names.slice(0, 3).map(name => `<div style="font-size: 0.9rem; margin: 0.2rem 0;">• ${name}</div>`).join('')}
+                        ${cluster.names.length > 3 ? `<div style="font-size: 0.8rem; color: #666; margin-top: 0.3rem;">... and ${cluster.count - 3} more</div>` : ''}
+                        <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">Zoom in to see individual campgrounds</div>
+                    </div>
+                </div>
+            `).addTo(map);
             
-            // Update search input with selected location name
-            document.getElementById('place-search').value = mainName;
-            
-            // Fly to the location
-            map.flyTo([lat, lon], 10, {
-                animate: true,
-                duration: 1.5
-            });
-            
-            // Add a temporary marker for the searched place
-            const marker = L.marker([lat, lon])
-                .addTo(map)
-                .bindPopup(`<div class="custom-popup"><div class="popup-title">${result.display_name}</div></div>`)
-                .openPopup();
-            
-            // Remove the marker after 5 seconds
-            setTimeout(() => {
-                map.removeLayer(marker);
-            }, 5000);
-            
-            hideSearchDropdown();
+            markers.push(marker);
         });
-        
-        dropdown.appendChild(option);
-    });
-    
-    searchContainer.appendChild(dropdown);
+    } else {
+        // Show all campgrounds without filtering
+        result.data.forEach(campground => {
+            const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
+            
+            const marker = L.marker([campground.lat, campground.lon], { icon })
+                .bindPopup(`
+                    <div class="custom-popup">
+                        <div class="popup-title">${campground.name}</div>
+                        <div class="popup-provider ${campground.provider}">${campground.provider.replace('_', ' ')}</div>
+                        <div class="popup-coordinates">
+                            ${campground.lat.toFixed(4)}, ${campground.lon.toFixed(4)}
+                        </div>
+                    </div>
+                `)
+                .addTo(map);
+            
+            markers.push(marker);
+        });
+    }
 }
+
+// Load initial data
+loadViewportData();
 
 function updateStatsFromViewport(result) {
     if (result.type === 'clusters') {
         const totalCount = result.data.reduce((sum, cluster) => sum + cluster.count, 0);
         document.getElementById('stats').textContent = 
-            `${totalCount} campgrounds in ${result.data.length} clusters (zoom in for details)`;
+            `${totalCount} campgrounds`;
     } else {
         document.getElementById('stats').textContent = 
             `${result.data.length} campgrounds in viewport`;
@@ -260,8 +229,9 @@ function updateSaveGroupButton() {
     }
     
     if (!currentData || currentData.type === 'clusters') {
+        const totalCount = currentData ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = 'Zoom in to save group';
+        saveGroupBtn.textContent = `Zoom in to save group (${totalCount} campgrounds)`;
         return;
     }
     
@@ -269,10 +239,10 @@ function updateSaveGroupButton() {
     
     if (campgroundCount > 100) {
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = 'Too many for a group bro';
+        saveGroupBtn.textContent = `Too many for a group (${campgroundCount} campgrounds)`;
     } else {
         saveGroupBtn.disabled = false;
-        saveGroupBtn.textContent = 'Save Group';
+        saveGroupBtn.textContent = `Save Group (${campgroundCount} campgrounds)`;
     }
 }
 
@@ -354,7 +324,7 @@ async function saveGroup() {
         }
         
         const group = await response.json();
-        alert(`Group "${group.name}" saved successfully!`);
+        alert(`Schniffomatic9000 saved the group "${group.name}".\n\nGo back to discord and use '/schniff group' to run a schniff against it.`);
         closeSaveGroupModal();
     } catch (error) {
         console.error('Failed to save group:', error);

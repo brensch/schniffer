@@ -115,16 +115,16 @@ func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.Intera
 
 	// Create an embed with the link
 	embed := &discordgo.MessageEmbed{
-		Title:       "🗺️ Create Campground Group",
-		Description: "Click the link below to open the interactive map and create a new campground group:",
+		Title:       "🐽🐽🐽 Create Schniff Group",
+		Description: "A schniffgroup allows you to schniff a group. Click the link below to create a group of campgrounds to monitor at once.",
 		Color:       0xc47331, // Orange color matching the theme
-		Fields: []*discordgo.MessageEmbedField{
-			{
-				Name:   "Instructions",
-				Value:  "1. Zoom in to see individual campgrounds\n2. Click 'Save Group' when ≤100 campgrounds are visible\n3. Select up to 10 campgrounds\n4. Give your group a name and save",
-				Inline: false,
-			},
-		},
+		// Fields: []*discordgo.MessageEmbedField{
+		// 	{
+		// 		Name:   "Instructions",
+		// 		Value:  "1. Zoom in to see individual campgrounds\n2. Click 'Save Group' when ≤100 campgrounds are visible\n3. Select up to 10 campgrounds\n4. Give your group a name and save",
+		// 		Inline: false,
+		// 	},
+		// },
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "This link is personalized for your account",
 		},
@@ -135,7 +135,7 @@ func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.Intera
 		discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
-					Label: "Open Schniffmap",
+					Label: "Open Schniffgroupomatic9000",
 					Style: discordgo.LinkButton,
 					URL:   groupCreationURL,
 					Emoji: discordgo.ComponentEmoji{
