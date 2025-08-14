@@ -171,6 +171,12 @@ func (b *Bot) registerCommands() {
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
+				{Name: "group", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff for all campgrounds in a group", Options: []*discordgo.ApplicationCommandOption{
+					{Name: "group", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select group", Autocomplete: true},
+					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
+					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
+				}},
+				{Name: "creategroup", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open web interface to create a new campground group"},
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
@@ -235,6 +241,8 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 	switch focused.Name {
 	case "campground":
 		choices = b.autocompleteCampgrounds(i, focused.StringValue())
+	case "group":
+		choices = b.autocompleteGroups(i, focused.StringValue())
 	case "ids":
 		choices = b.autocompleteRemoveIDs(i)
 	}
@@ -265,6 +273,10 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 	switch sub.Name {
 	case "add":
 		b.handleAddCommand(s, i, sub)
+	case "group":
+		b.handleGroupCommand(s, i, sub)
+	case "creategroup":
+		b.handleCreateGroupCommand(s, i, sub)
 	case "remove":
 		b.handleRemoveCommand(s, i, sub)
 	case "state":

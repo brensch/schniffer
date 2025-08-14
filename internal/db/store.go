@@ -775,7 +775,7 @@ func (s *Store) CreateGroup(ctx context.Context, userID, name string, campground
 
 func (s *Store) GetUserGroups(ctx context.Context, userID string) ([]Group, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, name, campgrounds, created_at, updated_at
+		SELECT id, user_id, name, CAST(campgrounds AS VARCHAR) as campgrounds_text, created_at, updated_at
 		FROM groups
 		WHERE user_id = $1
 		ORDER BY updated_at DESC
@@ -810,7 +810,7 @@ func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Gr
 	var campgroundsJSON string
 
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, user_id, name, campgrounds, created_at, updated_at
+		SELECT id, user_id, name, CAST(campgrounds AS VARCHAR) as campgrounds_text, created_at, updated_at
 		FROM groups
 		WHERE id = $1 AND user_id = $2
 	`, groupID, userID).Scan(&group.ID, &group.UserID, &group.Name, &campgroundsJSON, &group.CreatedAt, &group.UpdatedAt)
