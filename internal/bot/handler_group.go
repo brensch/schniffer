@@ -108,9 +108,7 @@ func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.Intera
 	uid := getUserID(i)
 
 	// Create the URL with the user's token
-	// You'll need to configure the base URL - this assumes localhost:8080 for now
-	// In production, you'd want to make this configurable
-	baseURL := "http://localhost:8080" // TODO: Make this configurable
+	baseURL := "https://schniff.snek2.ddns.net"
 	groupCreationURL := fmt.Sprintf("%s/?user=%s", baseURL, uid)
 
 	// Create an embed with the link
@@ -118,13 +116,6 @@ func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.Intera
 		Title:       "🐽🐽🐽 Create Schniff Group",
 		Description: "A schniffgroup allows you to schniff a group. Click the link below to create a group of campgrounds to monitor at once.",
 		Color:       0xc47331, // Orange color matching the theme
-		// Fields: []*discordgo.MessageEmbedField{
-		// 	{
-		// 		Name:   "Instructions",
-		// 		Value:  "1. Zoom in to see individual campgrounds\n2. Click 'Save Group' when ≤100 campgrounds are visible\n3. Select up to 10 campgrounds\n4. Give your group a name and save",
-		// 		Inline: false,
-		// 	},
-		// },
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "This link is personalized for your account",
 		},

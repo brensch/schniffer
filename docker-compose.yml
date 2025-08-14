@@ -11,7 +11,7 @@ services:
       - ./data:/app/data
     restart: unless-stopped
     ports:
-      - "8080:8080"  # Expose port 8080 for external Caddy access
+      - "8069:8069"  # Expose port 8069 for external Caddy access
     # roll logs
     logging:
       driver: "json-file"

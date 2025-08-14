@@ -49,7 +49,7 @@ func main() {
 	// Start web server
 	webAddr := os.Getenv("WEB_ADDR")
 	if webAddr == "" {
-		webAddr = ":8080"
+		webAddr = ":8069"
 	}
 	webServer := web.NewServer(store, webAddr)
 	go func() {
