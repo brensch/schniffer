@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS lookup_log (
     provider     VARCHAR,
     campground_id VARCHAR,
     month        DATE,
-    -- new: explicit request date span for this lookup
     start_date   DATE,
     end_date     DATE,
     checked_at   TIMESTAMPTZ,
@@ -72,17 +71,6 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     lon            DOUBLE,
     PRIMARY KEY (provider, id)
 );
-
--- add new request columns if missing
-ALTER TABLE schniff_requests ADD COLUMN IF NOT EXISTS checkin DATE;
-ALTER TABLE schniff_requests ADD COLUMN IF NOT EXISTS checkout DATE;
--- backfill from old columns if present and new ones are null
-UPDATE schniff_requests SET checkin = COALESCE(checkin, start_date);
-UPDATE schniff_requests SET checkout = COALESCE(checkout, end_date);
-
--- migrate lookup_log to add date range columns if missing
-ALTER TABLE lookup_log ADD COLUMN IF NOT EXISTS start_date DATE;
-ALTER TABLE lookup_log ADD COLUMN IF NOT EXISTS end_date DATE;
 
 CREATE TABLE IF NOT EXISTS campsites_meta (
     provider       VARCHAR,
