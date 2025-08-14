@@ -11,6 +11,7 @@ import (
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/providers"
+	"github.com/brensch/schniffer/internal/web"
 )
 
 func main() {
@@ -44,6 +45,19 @@ func main() {
 	// Background campground sync (daily)
 	go mgr.RunCampgroundSync(ctx, "recreation_gov", 24*60*60*1e9)
 	go mgr.RunCampgroundSync(ctx, "reservecalifornia", 24*60*60*1e9)
+
+	// Start web server
+	webAddr := os.Getenv("WEB_ADDR")
+	if webAddr == "" {
+		webAddr = ":8080"
+	}
+	webServer := web.NewServer(store, webAddr)
+	go func() {
+		if err := webServer.Run(ctx); err != nil {
+			slog.Error("web server failed", slog.Any("err", err))
+		}
+	}()
+
 	prod := os.Getenv("PROD") == "true"
 	if discordToken == "" {
 		slog.Error("DISCORD_TOKEN env var required")

@@ -547,6 +547,28 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	return out, rows.Err()
 }
 
+// GetAllCampgrounds returns all campgrounds without any limit
+func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
+		FROM campgrounds
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Campground
+	for rows.Next() {
+		var c Campground
+		if err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID string) (Campground, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
