@@ -220,18 +220,49 @@ func (m *Manager) SetNotifier(n Notifier) { // optional injection later
 
 var _ = (*Manager).SetNotifier // avoid unused warning when bot not yet wired
 
-// Daily summary routine
+// Daily summary routine - runs at 10 PM San Francisco time every night
 func (m *Manager) RunDailySummary(ctx context.Context) {
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
+	// Load San Francisco timezone
+	sfLocation, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		m.logger.Error("failed to load San Francisco timezone", slog.Any("err", err))
+		return
+	}
+
+	// Calculate next 10 PM SF time
+	nextRun := m.calculateNext10PMSF(sfLocation)
+	m.logger.Info("next daily summary scheduled", slog.Time("time", nextRun))
+
+	timer := time.NewTimer(time.Until(nextRun))
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			m.snapshotDaily(ctx)
+			// Calculate next 10 PM SF time (24 hours later, accounting for DST)
+			nextRun = m.calculateNext10PMSF(sfLocation)
+			m.logger.Info("next daily summary scheduled", slog.Time("time", nextRun))
+			timer.Reset(time.Until(nextRun))
 		}
 	}
+}
+
+// calculateNext10PMSF returns the next 10 PM San Francisco time
+func (m *Manager) calculateNext10PMSF(sfLocation *time.Location) time.Time {
+	now := time.Now().In(sfLocation)
+
+	// Get today at 10 PM SF time
+	today10PM := time.Date(now.Year(), now.Month(), now.Day(), 22, 0, 0, 0, sfLocation)
+
+	// If it's already past 10 PM today, schedule for tomorrow
+	if now.After(today10PM) {
+		return today10PM.AddDate(0, 0, 1)
+	}
+
+	return today10PM
 }
 
 func (m *Manager) snapshotDaily(ctx context.Context) {
