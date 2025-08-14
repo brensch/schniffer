@@ -11,22 +11,18 @@
 </head>
 <body>
     <div id="header">
-        <h1>🏕️ Schniffer Campground Map</h1>
-        <p>Explore campgrounds from Recreation.gov and ReserveCalifornia</p>
+        <h1>🐽 Schniffmap 🗺️</h1>
+        <p>Select the campgrounds you want to schniff.</p>
     </div>
     
     <div id="controls">
-        <input type="text" id="search" placeholder="Search campgrounds..." />
-        
-        <div class="provider-filter">
-            <input type="checkbox" id="recreation_gov" checked>
-            <label for="recreation_gov">Recreation.gov</label>
+        <div class="search-container">
+            <input type="text" id="place-search" placeholder="Search places (cities, parks, etc.)..." />
         </div>
         
-        <div class="provider-filter">
-            <input type="checkbox" id="reservecalifornia" checked>
-            <label for="reservecalifornia">ReserveCalifornia</label>
-        </div>
+        <button id="save-group-btn" onclick="openSaveGroupModal()" disabled>
+            Loading...
+        </button>
         
         <div class="stats" id="stats">
             Loading campgrounds...
@@ -34,6 +30,35 @@
     </div>
     
     <div id="map"></div>
+
+    <!-- Save Group Modal -->
+    <div id="save-group-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Save Campground Group</h2>
+                <span class="close" onclick="closeSaveGroupModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="group-name">Group Name:</label>
+                    <input type="text" id="group-name" placeholder="Enter group name..." onkeyup="updateSaveModalButton()">
+                </div>
+                
+                <div class="form-group">
+                    <label>Select Campgrounds (max 10):</label>
+                    <div id="campground-list" class="campground-list">
+                        <!-- Campgrounds will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-modal-btn" onclick="saveGroup()" disabled>
+                    Select campgrounds
+                </button>
+                <button onclick="closeSaveGroupModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
             integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" 

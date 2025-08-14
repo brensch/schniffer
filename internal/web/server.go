@@ -114,6 +114,10 @@ func (s *Server) Run(ctx context.Context) error {
 	// API endpoint to get campground details
 	mux.HandleFunc("/api/campground/", s.handleCampgroundDetail)
 
+	// Group API endpoints
+	mux.HandleFunc("/api/groups", s.handleGroups)
+	mux.HandleFunc("/api/groups/create", s.handleCreateGroup)
+
 	server := &http.Server{
 		Addr:    s.addr,
 		Handler: mux,
@@ -145,8 +149,8 @@ func (s *Server) handleMapPage(w http.ResponseWriter, r *http.Request) {
 		JS:  template.JS(s.js),
 	}
 
-	slog.Info("serving map page", 
-		slog.Int("css_length", len(data.CSS)), 
+	slog.Info("serving map page",
+		slog.Int("css_length", len(data.CSS)),
 		slog.Int("js_length", len(data.JS)))
 
 	w.Header().Set("Content-Type", "text/html")
@@ -323,4 +327,77 @@ func (s *Server) handleCampgroundDetail(w http.ResponseWriter, r *http.Request) 
 		"message": "Campground detail endpoint - to be implemented",
 		"path":    path,
 	})
+}
+
+func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		http.Error(w, "user parameter required", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		groups, err := s.store.GetUserGroups(r.Context(), userID)
+		if err != nil {
+			slog.Error("Failed to get user groups", "error", err)
+			http.Error(w, "Failed to get groups", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(groups)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type CreateGroupRequest struct {
+	Name        string             `json:"name"`
+	Campgrounds []db.CampgroundRef `json:"campgrounds"`
+}
+
+func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		http.Error(w, "user parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var req CreateGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Campgrounds) == 0 {
+		http.Error(w, "At least one campground is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Campgrounds) > 10 {
+		http.Error(w, "Maximum 10 campgrounds allowed per group", http.StatusBadRequest)
+		return
+	}
+
+	group, err := s.store.CreateGroup(r.Context(), userID, req.Name, req.Campgrounds)
+	if err != nil {
+		slog.Error("Failed to create group", "error", err)
+		http.Error(w, "Failed to create group", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(group)
 }

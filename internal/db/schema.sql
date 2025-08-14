@@ -103,3 +103,15 @@ CREATE TABLE IF NOT EXISTS sync_log (
     count        BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_sync_log_recent ON sync_log(sync_type, provider, finished_at);
+
+-- user groups for saving campground selections
+CREATE SEQUENCE IF NOT EXISTS groups_id_seq START 1;
+CREATE TABLE IF NOT EXISTS groups (
+    id          BIGINT PRIMARY KEY DEFAULT nextval('groups_id_seq'),
+    user_id     VARCHAR NOT NULL,
+    name        VARCHAR NOT NULL,
+    campgrounds JSON NOT NULL, -- array of {provider: string, campground_id: string}
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_groups_user ON groups(user_id);

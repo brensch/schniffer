@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -516,6 +517,20 @@ type Campground struct {
 	Lon      float64
 }
 
+type CampgroundRef struct {
+	Provider     string `json:"provider"`
+	CampgroundID string `json:"campground_id"`
+}
+
+type Group struct {
+	ID          int64           `json:"id"`
+	UserID      string          `json:"user_id"`
+	Name        string          `json:"name"`
+	Campgrounds []CampgroundRef `json:"campgrounds"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
 func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
 	// Fuzzy search across campground names with simple ranking.
 	rows, err := s.DB.QueryContext(ctx, `
@@ -722,4 +737,94 @@ func (s *Store) GetTrackedCampgrounds(ctx context.Context) ([]string, error) {
 		campgrounds = append(campgrounds, name)
 	}
 	return campgrounds, rows.Err()
+}
+
+// Group methods
+
+func (s *Store) CreateGroup(ctx context.Context, userID, name string, campgrounds []CampgroundRef) (*Group, error) {
+	if len(campgrounds) > 10 {
+		return nil, errors.New("cannot create group with more than 10 campgrounds")
+	}
+
+	campgroundsJSON, err := json.Marshal(campgrounds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal campgrounds: %w", err)
+	}
+
+	var id int64
+	var createdAt, updatedAt time.Time
+	err = s.DB.QueryRowContext(ctx, `
+		INSERT INTO groups (user_id, name, campgrounds, created_at, updated_at)
+		VALUES ($1, $2, $3, NOW(), NOW())
+		RETURNING id, created_at, updated_at
+	`, userID, name, string(campgroundsJSON)).Scan(&id, &createdAt, &updatedAt)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create group: %w", err)
+	}
+
+	return &Group{
+		ID:          id,
+		UserID:      userID,
+		Name:        name,
+		Campgrounds: campgrounds,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+	}, nil
+}
+
+func (s *Store) GetUserGroups(ctx context.Context, userID string) ([]Group, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id, user_id, name, campgrounds, created_at, updated_at
+		FROM groups
+		WHERE user_id = $1
+		ORDER BY updated_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query groups: %w", err)
+	}
+	defer rows.Close()
+
+	var groups []Group
+	for rows.Next() {
+		var group Group
+		var campgroundsJSON string
+
+		err := rows.Scan(&group.ID, &group.UserID, &group.Name, &campgroundsJSON, &group.CreatedAt, &group.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan group: %w", err)
+		}
+
+		if err := json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal campgrounds for group %d: %w", group.ID, err)
+		}
+
+		groups = append(groups, group)
+	}
+
+	return groups, rows.Err()
+}
+
+func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Group, error) {
+	var group Group
+	var campgroundsJSON string
+
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, user_id, name, campgrounds, created_at, updated_at
+		FROM groups
+		WHERE id = $1 AND user_id = $2
+	`, groupID, userID).Scan(&group.ID, &group.UserID, &group.Name, &campgroundsJSON, &group.CreatedAt, &group.UpdatedAt)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, errors.New("group not found")
+		}
+		return nil, fmt.Errorf("failed to get group: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal campgrounds for group %d: %w", group.ID, err)
+	}
+
+	return &group, nil
 }
