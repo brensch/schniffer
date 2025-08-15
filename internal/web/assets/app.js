@@ -61,12 +61,27 @@ async function loadViewportData() {
             body: JSON.stringify(viewport)
         });
         
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const result = await response.json();
-        currentData = result;
-        renderMarkersFromViewport(result);
+        
+        // Ensure result has the expected structure
+        if (!result || typeof result !== 'object') {
+            console.warn('Invalid viewport data received:', result);
+            currentData = { type: 'campgrounds', data: [] };
+        } else {
+            currentData = result;
+        }
+        
+        renderMarkersFromViewport(currentData);
         updateSaveGroupButton();
     } catch (error) {
         console.error('Failed to load viewport data:', error);
+        // Set empty data state on error
+        currentData = { type: 'campgrounds', data: [] };
+        renderMarkersFromViewport(currentData);
         updateSaveGroupButton();
     }
 }
@@ -78,6 +93,12 @@ function renderMarkersFromViewport(result) {
     // Clear existing markers
     markers.forEach(marker => map.removeLayer(marker));
     markers = [];
+    
+    // Handle empty results gracefully
+    if (!result || !result.data || result.data.length === 0) {
+        console.log('No campgrounds found in current viewport');
+        return;
+    }
     
     if (result.type === 'clusters') {
         // Render clusters
@@ -185,17 +206,24 @@ function updateSaveGroupButton() {
     }
     
     if (!currentData || currentData.type === 'clusters') {
-        const totalCount = currentData ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
+        const totalCount = currentData && currentData.data ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `🔍 Zoom in to create (${totalCount} spots found)`;
+        if (totalCount === 0) {
+            saveGroupBtn.textContent = `👃 No schniffgrounds here`;
+        } else {
+            saveGroupBtn.textContent = `🔍 Zoom in to create group (${totalCount} spots found)`;
+        }
         return;
     }
     
-    const campgroundCount = currentData.data.length;
+    const campgroundCount = currentData.data ? currentData.data.length : 0;
     
-    if (campgroundCount > 100) {
+    if (campgroundCount === 0) {
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `🐽 Too many spots! (${campgroundCount} campgrounds)`;
+        saveGroupBtn.textContent = `👃 No schniffgrounds here`;
+    } else if (campgroundCount > 100) {
+        saveGroupBtn.disabled = true;
+        saveGroupBtn.textContent = `🚫 Too many spots! (${campgroundCount} campgrounds)`;
     } else {
         saveGroupBtn.disabled = false;
         saveGroupBtn.textContent = `🐽 Create Schniffgroup (${campgroundCount} spots)`;

@@ -101,8 +101,11 @@ body {
 }
 
 #save-group-btn:disabled {
-    background-color: #ccc;
+    background-color: #999;
+    color: #666;
     cursor: not-allowed;
+    opacity: 0.6;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 
 /* Modal Styles */
