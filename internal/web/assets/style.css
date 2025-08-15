@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Epilogue:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 body {
     margin: 0;
     padding: 0;
-    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    font-family: 'Epilogue', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
     font-weight: 500;
     background-color: #f5f5f5;
     overflow: hidden;
@@ -37,7 +37,6 @@ body {
     font-size: 1.2rem;
     color: #000;
     margin-bottom: 0.5rem;
-    text-transform: uppercase;
     letter-spacing: 0.5px;
     text-shadow: 2px 2px 0px #fff, 3px 3px 0px #000;
 }
@@ -45,7 +44,7 @@ body {
 .popup-provider {
     background-color: #3498db;
     color: #000 !important;
-    padding: 0.3rem 0.6rem;
+    padding: 0.4rem 0.8rem;
     border-radius: 0px;
     font-size: 0.9rem;
     font-weight: 600;
@@ -57,7 +56,6 @@ body {
     transition: all 0.1s ease;
     border: 3px solid #000;
     box-shadow: 4px 4px 0px #000;
-    text-transform: uppercase;
     letter-spacing: 1px;
 }
 
@@ -108,26 +106,25 @@ body {
 /* Save Group Button - Floating at bottom */
 #save-group-btn {
     position: fixed;
-    bottom: 20px;
+    bottom: 30px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 1000;
-    padding: 1.2rem 2.5rem;
+    padding: 1rem 2rem;
     background-color: #ffff00;
     color: #000;
     border: 4px solid #000;
     border-radius: 0px;
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 1rem;
     font-weight: 700;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Epilogue', sans-serif;
     transition: all 0.1s ease;
     white-space: nowrap;
-    min-width: 220px;
+    min-width: 200px;
     text-align: center;
     box-shadow: 6px 6px 0px #000;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
 }
 
 #save-group-btn:hover:not(:disabled) {
@@ -173,7 +170,7 @@ body {
 .modal-header {
     background-color: #00ff88;
     color: #000;
-    padding: 1.5rem;
+    padding: 1.2rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -182,31 +179,30 @@ body {
 
 .modal-header h2 {
     margin: 0;
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     font-weight: 700;
-    font-family: 'Space Grotesk', sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    font-family: 'Epilogue', sans-serif;
+    letter-spacing: 0.5px;
     text-shadow: 2px 2px 0px #fff;
 }
 
 .close {
-    font-size: 2.5rem;
+    font-size: 2.2rem;
     cursor: pointer;
     line-height: 1;
-    padding: 0.2rem;
+    padding: 0.3rem;
     font-weight: 900;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Epilogue', sans-serif;
     transition: all 0.1s ease;
 }
 
 .close:hover {
-    transform: scale(1.2);
+    transform: scale(1.1);
     text-shadow: 2px 2px 0px #fff;
 }
 
 .modal-body {
-    padding: 1rem;
+    padding: 1.5rem;
     max-height: 50vh;
     overflow-y: auto;
 }
@@ -217,20 +213,19 @@ body {
 
 .form-group label {
     display: block;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.6rem;
     font-weight: 600;
-    font-family: 'Space Grotesk', sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-family: 'Epilogue', sans-serif;
+    letter-spacing: 0.3px;
     color: #000;
 }
 
 .form-group input[type="text"] {
     width: 100%;
-    padding: 0.8rem;
+    padding: 0.9rem;
     border: 3px solid #000;
     border-radius: 0px;
-    font-size: 1.1rem;
+    font-size: 1rem;
     font-weight: 500;
     font-family: 'JetBrains Mono', monospace;
     box-sizing: border-box;
@@ -247,7 +242,7 @@ body {
 }
 
 .campground-item {
-    padding: 0.8rem;
+    padding: 1rem;
     border-bottom: 2px solid #000;
     background: #fff;
     transition: all 0.1s ease;
@@ -262,7 +257,7 @@ body {
     align-items: center;
     cursor: pointer;
     margin: 0;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Epilogue', sans-serif;
     font-weight: 500;
 }
 
@@ -280,19 +275,18 @@ body {
     font-size: 0.8rem;
     color: #000;
     background: #ffff00;
-    padding: 0.3rem 0.6rem;
+    padding: 0.4rem 0.7rem;
     border-radius: 0px;
     border: 2px solid #000;
     margin-left: 0.5rem;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 .modal-footer {
     background-color: #fff;
-    padding: 1.5rem;
+    padding: 1.2rem;
     border-top: 3px solid #000;
     display: flex;
     gap: 1rem;
@@ -300,15 +294,14 @@ body {
 }
 
 .modal-footer button {
-    padding: 0.8rem 1.5rem;
+    padding: 0.9rem 1.4rem;
     border: 3px solid #000;
     border-radius: 0px;
     cursor: pointer;
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 600;
-    font-family: 'Space Grotesk', sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-family: 'Epilogue', sans-serif;
+    letter-spacing: 0.3px;
     transition: all 0.1s ease;
 }
 
@@ -359,7 +352,7 @@ body {
 
 .success-content {
     text-align: center;
-    padding: 1rem 0;
+    padding: 1.5rem 0;
 }
 
 .success-emoji {
@@ -381,53 +374,50 @@ body {
 }
 
 .success-message {
-    font-size: 1.5rem;
+    font-size: 1.4rem;
     font-weight: 700;
     color: #000;
     margin: 1rem 0;
     text-shadow: 3px 3px 0px #fff, 4px 4px 0px #000;
-    font-family: 'Space Grotesk', sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    font-family: 'Epilogue', sans-serif;
+    letter-spacing: 0.5px;
 }
 
 .success-instructions {
-    font-size: 1.2rem;
+    font-size: 1.1rem;
     color: #000;
     margin: 1.5rem 0;
     line-height: 1.6;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Epilogue', sans-serif;
     font-weight: 500;
 }
 
 .discord-command {
     background: #5865f2;
     color: #fff;
-    padding: 0.4rem 0.8rem;
+    padding: 0.5rem 0.9rem;
     border-radius: 0px;
     border: 3px solid #000;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 700;
     box-shadow: 3px 3px 0px #000;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.8px;
 }
 
 .success-btn {
     background: #00ff88;
     color: #000;
     border: 4px solid #000;
-    padding: 1.2rem 2.5rem;
+    padding: 1rem 2rem;
     border-radius: 0px;
-    font-size: 1.2rem;
+    font-size: 1.1rem;
     font-weight: 700;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Epilogue', sans-serif;
     cursor: pointer;
     transition: all 0.1s ease;
     text-shadow: none;
     box-shadow: 6px 6px 0px #000;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
 }
 
 .success-btn:hover {
@@ -439,7 +429,7 @@ body {
 .success-footer {
     background: transparent;
     border: none;
-    padding: 2rem;
+    padding: 1.5rem;
     justify-content: center;
 }
 
