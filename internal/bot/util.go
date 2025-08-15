@@ -85,11 +85,11 @@ func (b *Bot) formatCampgroundWithLink(ctx context.Context, provider, campground
 	if cg, ok, _ := b.store.GetCampgroundByID(ctx, provider, campgroundID); ok {
 		name = cg.Name
 	}
-	
+
 	// Get campground URL
 	if url := b.mgr.CampgroundURL(provider, campgroundID); url != "" {
 		return fmt.Sprintf("[%s](%s)", name, url)
 	}
-	
+
 	return name
 }

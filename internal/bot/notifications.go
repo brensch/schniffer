@@ -84,7 +84,7 @@ func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, check
 func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string, campsiteStats []CampsiteStats, provider, campgroundID string) *discordgo.MessageEmbed {
 	// Format campground name with link
 	campgroundNameWithLink := b.formatCampgroundWithLink(context.Background(), provider, campgroundID, campgroundID)
-	
+
 	// Main description with header info
 	var description strings.Builder
 	description.WriteString(campgroundNameWithLink + "\n")
