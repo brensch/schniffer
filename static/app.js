@@ -208,33 +208,38 @@ function updateSaveGroupButton() {
         return;
     }
     
-    if (!currentData || currentData.type === 'clusters') {
-        const totalCount = currentData && currentData.data ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
+    if (!currentData) {
         saveGroupBtn.disabled = true;
-        if (totalCount === 0) {
-            saveGroupBtn.textContent = `👃 No schniffgrounds here`;
-        } else {
-            saveGroupBtn.textContent = `🔍 Zoom in (${totalCount} spots found)`;
-        }
+        saveGroupBtn.textContent = `👃 No schniffgrounds here`;
         return;
     }
     
-    const campgroundCount = currentData.data ? currentData.data.length : 0;
-    
-    if (campgroundCount === 0) {
+    // Since backend now sends individual campgrounds when ≤100, we can check directly
+    if (currentData.type === 'clusters') {
+        // If we still have clusters, it means >100 campgrounds
+        const totalCount = currentData.data ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `👃 No schniffgrounds here`;
-    } else if (campgroundCount > 100) {
-        saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `🚫 Too many spots! (${campgroundCount} campgrounds)`;
+        saveGroupBtn.textContent = `� Zoom in (${totalCount} spots found)`;
     } else {
-        saveGroupBtn.disabled = false;
-        saveGroupBtn.textContent = `🐽 Create Schniffgroup (${campgroundCount} spots)`;
+        // We have individual campgrounds (≤100)
+        const campgroundCount = currentData.data ? currentData.data.length : 0;
+        if (campgroundCount === 0) {
+            saveGroupBtn.disabled = true;
+            saveGroupBtn.textContent = `� No schniffgrounds here`;
+        } else {
+            saveGroupBtn.disabled = false;
+            saveGroupBtn.textContent = `� Create Schniffgroup (${campgroundCount} spots)`;
+        }
     }
 }
 
 function openSaveGroupModal() {
-    if (!currentData || currentData.type === 'clusters' || !userToken) {
+    if (!currentData || !userToken) {
+        return;
+    }
+    
+    // Only allow if we have individual campgrounds (backend now handles this automatically)
+    if (currentData.type === 'clusters') {
         return;
     }
     

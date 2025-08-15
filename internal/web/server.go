@@ -140,8 +140,8 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine if we should cluster based on zoom level and count
-	shouldCluster := req.Zoom < 10 || len(campgrounds) > 50
+	// Determine if we should cluster based on count only
+	shouldCluster := len(campgrounds) > 100
 
 	w.Header().Set("Content-Type", "application/json")
 
