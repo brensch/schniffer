@@ -35,12 +35,18 @@ body {
     border-radius: 0px !important;
     box-shadow: 6px 6px 0px #000 !important;
     padding: 0 !important;
+    max-width: 300px !important;
+}
+
+.narrow-popup .leaflet-popup-content-wrapper {
+    max-width: 270px !important;
 }
 
 .leaflet-popup-content {
     margin: 0 !important;
-    padding: 1.5rem !important;
+    padding: 1rem !important;
     font-family: 'Epilogue', sans-serif !important;
+    width: auto !important;
 }
 
 .leaflet-popup-tip {
@@ -48,31 +54,118 @@ body {
     border: 4px solid #000 !important;
     border-top: none !important;
     border-right: none !important;
-    box-shadow: -2px 2px 0px #000 !important;
 }
 
+/* Hide close button completely */
 .leaflet-popup-close-button {
-    background-color: #ff4757 !important;
-    color: #000 !important;
-    border: 3px solid #000 !important;
-    border-radius: 0px !important;
-    width: 30px !important;
-    height: 30px !important;
-    font-size: 18px !important;
-    font-weight: 900 !important;
-    font-family: 'Epilogue', sans-serif !important;
-    right: 8px !important;
-    top: 8px !important;
-    text-align: center !important;
-    line-height: 24px !important;
-    box-shadow: 3px 3px 0px #000 !important;
-    transition: all 0.1s ease !important;
+    display: none !important;
 }
 
-.leaflet-popup-close-button:hover {
-    background-color: #ff3742 !important;
-    transform: translate(-2px, -2px) !important;
-    box-shadow: 5px 5px 0px #000 !important;
+/* Enhanced popup content for park focus */
+.popup-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #2d5a3d;
+    margin-bottom: 0.6rem;
+    line-height: 1.2;
+    word-wrap: break-word;
+}
+
+.popup-details {
+    margin-bottom: 0.8rem;
+}
+
+.popup-coordinates {
+    font-size: 0.75rem;
+    color: #666;
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 0.4rem;
+    padding: 0.3rem 0.4rem;
+    background-color: #f8f9fa;
+    border: 2px solid #e9ecef;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.popup-provider {
+    padding: 0.5rem 0.6rem;
+    background-color: #2d5a3d;
+    color: white;
+    text-decoration: none;
+    display: inline-block;
+    font-weight: 600;
+    font-size: 0.8rem;
+    border: 2px solid #000;
+    transition: all 0.2s ease;
+    margin-bottom: 0.8rem;
+    width: 100%;
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.popup-provider:hover {
+    background-color: #1e3d28;
+    transform: translate(-2px, -2px);
+    box-shadow: 4px 4px 0px #000;
+}
+
+.popup-provider.recreation_gov {
+    background-color: #2d5a3d;
+}
+
+.popup-provider.reservecalifornia {
+    background-color: #8b4513;
+}
+
+.popup-provider.reservecalifornia:hover {
+    background-color: #6b3410;
+}
+
+.popup-actions {
+    display: flex;
+    gap: 0.3rem;
+    margin-top: 0.8rem;
+    flex-wrap: wrap;
+}
+
+.map-action-btn {
+    padding: 0.4rem 0.5rem;
+    background-color: #f8f9fa;
+    border: 2px solid #000;
+    color: #333;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: 'Epilogue', sans-serif;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
+    min-width: 70px;
+    text-align: center;
+}
+
+.map-action-btn:hover {
+    background-color: #e9ecef;
+    transform: translate(-1px, -1px);
+    box-shadow: 2px 2px 0px #000;
+}
+
+/* Layer control styling to match park theme */
+.leaflet-control-layers {
+    border: 3px solid #000 !important;
+    border-radius: 0 !important;
+    box-shadow: 4px 4px 0px #000 !important;
+    background-color: #fff !important;
+}
+
+.leaflet-control-layers-expanded {
+    padding: 0.8rem !important;
+    font-family: 'Epilogue', sans-serif !important;
+}
+
+.leaflet-control-layers label {
+    font-weight: 600 !important;
+    color: #2d5a3d !important;
+    margin-bottom: 0.4rem !important;
 }
 
 .custom-popup {

@@ -5,10 +5,35 @@ const userToken = urlParams.get('user');
 // Initialize the map
 const map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
 
-// Add OpenStreetMap tiles
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+// Create different tile layers for park-focused viewing
+const outdoorLayer = L.tileLayer('https://{s}.tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_API_KEY', {
+    attribution: '&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    apikey: 'your-thunderforest-api-key'
+});
+
+// Cleaner topographic layer with reduced detail at low zoom levels
+const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
+});
+
+// Enhanced OSM layer that highlights parks and nature areas
+const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-}).addTo(map);
+});
+
+// Add the standard layer as default
+osmLayer.addTo(map);
+
+// Create layer control to let users switch between map styles
+const baseLayers = {
+    "🗺️ Standard": osmLayer,
+    "🏔️ Topographic (Parks & Terrain)": topoLayer
+};
+
+const layerControl = L.control.layers(baseLayers).addTo(map);
+
+// Configure popup options globally to remove close button but allow closing on map click
+map.options.closePopupOnClick = true;
 
 let markers = [];
 let currentData = null;
@@ -113,11 +138,18 @@ function renderMarkersFromViewport(result) {
             }).bindPopup(`
                 <div class="custom-popup">
                     <div class="popup-title">${cluster.count} Schniffgrounds</div>
-                    <div style="margin-top: 0.5rem;">
-                        <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">🔍 Zoom in to see the individual schniffgrounds</div>
+                    <div class="popup-details">
+                        <div style="margin: 0.8rem 0; padding: 0.6rem; background-color: #f0f8f0; border: 2px solid #2d5a3d; border-radius: 4px;">
+                            <div style="font-size: 0.9rem; color: #2d5a3d; font-weight: 600;">🔍 Zoom in to explore individual schniffgrounds</div>
+                        </div>
                     </div>
                 </div>
-            `).addTo(map);
+            `, {
+                closeButton: false,
+                maxWidth: 300,
+                className: 'narrow-popup',
+                autoPan: false
+            }).addTo(map);
             
             markers.push(marker);
         });
@@ -126,17 +158,47 @@ function renderMarkersFromViewport(result) {
         result.data.forEach(campground => {
             const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
             
+            // Create enhanced popup with park-relevant information
+            const providerName = campground.provider === 'recreation_gov' ? 'Recreation.gov' : 'Reserve California';
+            const providerEmoji = campground.provider === 'recreation_gov' ? '🏞️' : '🌲';
+            
+            // Parse coordinates for display
+            const latDisplay = campground.lat.toFixed(4);
+            const lonDisplay = campground.lon.toFixed(4);
+            
             const linkHtml = campground.url ? 
-                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">🔗 ${campground.provider.replace('_', ' ')}</a>` : 
-                `<div class="popup-provider ${campground.provider}">${campground.provider.replace('_', ' ')}</div>`;
+                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
+                    ${providerName} →
+                </a>` : 
+                `<div class="popup-provider ${campground.provider}">
+                    ${providerName}
+                </div>`;
             
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
                         <div class="popup-title">${campground.name}</div>
+                        <div class="popup-details">
+                            <div class="popup-coordinates">
+                                📍 ${latDisplay}, ${lonDisplay}
+                            </div>
+                        </div>
                         ${linkHtml}
+                        <div class="popup-actions">
+                            <button onclick="showOnMap(${campground.lat}, ${campground.lon})" class="map-action-btn">
+                                🗺️ Center
+                            </button>
+                            <button onclick="getDirections(${campground.lat}, ${campground.lon})" class="map-action-btn">
+                                🧭 Directions
+                            </button>
+                        </div>
                     </div>
-                `)
+                `, {
+                    closeButton: false,
+                    maxWidth: 300,
+                    className: 'narrow-popup',
+                    autoPan: false
+                })
                 .addTo(map);
             
             markers.push(marker);
@@ -418,4 +480,24 @@ function closeSaveGroupModal() {
 function closeInstructionsModal() {
     const modal = document.getElementById('instructions-modal');
     modal.style.display = 'none';
+}
+
+// Map utility functions for enhanced park features
+function showOnMap(lat, lon) {
+    map.setView([lat, lon], Math.max(map.getZoom(), 14));
+}
+
+function getDirections(lat, lon) {
+    // Open directions in user's preferred mapping app
+    const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+        // On mobile, try to open native apps
+        const url = `geo:${lat},${lon}?q=${lat},${lon}`;
+        window.open(url);
+    } else {
+        // On desktop, open Google Maps
+        const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
+        window.open(url, '_blank');
+    }
 }
