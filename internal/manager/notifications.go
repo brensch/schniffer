@@ -88,8 +88,10 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 				if !ca.Date.Before(req.Checkin) && ca.Date.Before(req.Checkout) {
 					reqNewlyBooked = append(reqNewlyBooked, ca)
 				}
-			} // Only send notification if there are changes or available sites
-			if len(reqAvailable) > 0 || len(reqNewlyBooked) > 0 {
+			}
+
+			// Only send notification if there are actual changes
+			if len(reqNewlyAvailable) > 0 || len(reqNewlyBooked) > 0 {
 				// Send notification to user
 				if err := m.sendBatchNotification(ctx, req, reqAvailable, reqNewlyAvailable, reqNewlyBooked); err != nil {
 					m.logger.Warn("send batch notification failed",
