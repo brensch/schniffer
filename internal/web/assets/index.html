@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Schiffmap</title>
+    <title>🗺️ Schiffmap - Find Your Schniffgroup 🐽</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" 
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" 
           crossorigin=""/>
@@ -20,16 +20,15 @@
     <div id="save-group-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Save Schniffgroup</h2>
+                <h2>Create schniffgroup 🐽</h2>
                 <span class="close" onclick="closeSaveGroupModal()">&times;</span>
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <input type="text" id="group-name" placeholder="Enter group name..." onkeyup="updateSaveModalButton()">
+                    <input type="text" id="group-name" placeholder="schniffgroup name" onkeyup="updateSaveModalButton()">
                 </div>
                 
                 <div class="form-group">
-                    <label>Select Campgrounds (max 10):</label>
                     <div id="campground-list" class="campground-list">
                         <!-- Campgrounds will be populated by JavaScript -->
                     </div>
@@ -37,9 +36,34 @@
             </div>
             <div class="modal-footer">
                 <button id="save-modal-btn" onclick="saveGroup()" disabled>
-                    Select campgrounds
+                    📍 Select your spots
                 </button>
-                <button onclick="closeSaveGroupModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div id="success-modal" class="modal">
+        <div class="modal-content success-modal">
+            <div class="modal-header success-header">
+                <h2 id="success-title">🐽 Schniffgroup Created! 🎉</h2>
+                <span class="close" onclick="closeSuccessModal()">&times;</span>
+            </div>
+            <div class="modal-body success-body">
+                <div class="success-content">
+                    <div class="success-emoji">👃</div>
+                    <div class="success-message" id="success-message">
+                        Your schniffgroup is waiting for you in discord.
+                    </div>
+                    <div class="success-instructions">
+                        💬 Head to Discord and use <span class="discord-command">/schniff group</span> to start schniffing for spots at these sites 🐽
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer success-footer">
+                <button onclick="openDiscordAndClose()" class="success-btn">
+                    🐽 Open Discord & Schniffff 🐽
+                </button>
             </div>
         </div>
     </div>

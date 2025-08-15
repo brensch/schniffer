@@ -283,13 +283,100 @@ async function saveGroup() {
         }
         
         const group = await response.json();
-        alert(`Schniffomatic9000 saved the group "${group.name}".\n\nGo back to discord and use '/schniff group' to run a schniff against it.`);
+        showSuccessModal(group.name, campgrounds.length);
         closeSaveGroupModal();
     } catch (error) {
         console.error('Failed to save group:', error);
-        alert('Failed to save group: ' + error.message);
+        showErrorModal('Failed to save group: ' + error.message);
     }
 }
+
+function showSuccessModal(groupName, campgroundCount) {
+    const modal = document.getElementById('success-modal');
+    const messageEl = document.getElementById('success-message');
+    
+    const funkyMessages = [
+        `🐽 For fame to the eye of heaven, "${groupName}" is anointed with the oils of schniffing! 🐽`,
+        `🎉 The humble consequence of carbon turned diamond by the sun - "${groupName}" burns bright with the desire to schniff! 🎉`,
+        `💫 "${groupName}" is the vortex at the center of the vortex, selected for greatness by the finger of schniffing power! 💫`,
+        `🐽 "${groupName}" operates from a platform of power and has zero respect for indecision! 🐽`,
+        `✨ "${groupName}" is the shining arc of schniffing, ready to curse and spit their name at the heavens! ✨`,
+        `🎪 "${groupName}" has traveled this nation and learned the common denominator is American schniffing exceptionalism! 🎪`,
+        `🐽 "${groupName}" is the eighth archangel of schniffing, seven feet from tip of wing to tip of wing! 🐽`
+    ];
+    
+    const randomMessage = funkyMessages[Math.floor(Math.random() * funkyMessages.length)];
+    messageEl.textContent = `${randomMessage} With ${campgroundCount} epic schniffgrounds ready to explore!`;
+    
+    modal.style.display = 'block';
+}
+
+function showErrorModal(errorMessage) {
+    // For now, fall back to alert for errors - could create an error modal later
+    alert('🐽 Oops! Something went sideways: ' + errorMessage);
+}
+
+function closeSuccessModal() {
+    const modal = document.getElementById('success-modal');
+    modal.style.display = 'none';
+}
+
+function openDiscordAndClose() {
+    const guildId = '1124196592531034173'; // Your Discord server ID
+    
+    // Track if the page loses focus (indicating an app opened)
+    let appOpened = false;
+    let fallbackTimeout;
+    
+    // Listen for page visibility changes
+    const handleVisibilityChange = () => {
+        if (document.hidden) {
+            // Page lost focus, likely because Discord app opened
+            appOpened = true;
+            clearTimeout(fallbackTimeout);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        }
+    };
+    
+    // Listen for page blur (another way to detect app opening)
+    const handleBlur = () => {
+        appOpened = true;
+        clearTimeout(fallbackTimeout);
+        window.removeEventListener('blur', handleBlur);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    
+    // Try to open Discord app
+    const discordAppUrl = `discord://discord.com/channels/${guildId}`;
+    
+    // Create a temporary link and try to open the app
+    const link = document.createElement('a');
+    link.href = discordAppUrl;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Set up fallback with longer delay
+    fallbackTimeout = setTimeout(() => {
+        // Clean up listeners
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        window.removeEventListener('blur', handleBlur);
+        
+        // Only open web version if app didn't open
+        if (!appOpened) {
+            const discordWebUrl = `https://discord.com/channels/${guildId}`;
+            window.open(discordWebUrl, '_blank');
+        }
+    }, 4000); // Longer delay to give user time to respond to prompt
+    
+    // Close the modal
+    closeSuccessModal();
+}
+
 
 function closeSaveGroupModal() {
     const modal = document.getElementById('save-group-modal');
