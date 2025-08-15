@@ -219,16 +219,16 @@ function updateSaveGroupButton() {
         // If we still have clusters, it means >100 campgrounds
         const totalCount = currentData.data ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `� Zoom in (${totalCount} spots found)`;
+        saveGroupBtn.textContent = `🔍 Zoom in (${totalCount})`;
     } else {
         // We have individual campgrounds (≤100)
         const campgroundCount = currentData.data ? currentData.data.length : 0;
         if (campgroundCount === 0) {
             saveGroupBtn.disabled = true;
-            saveGroupBtn.textContent = `� No schniffgrounds here`;
+            saveGroupBtn.textContent = `🚫 No schniffgrounds here`;
         } else {
             saveGroupBtn.disabled = false;
-            saveGroupBtn.textContent = `� Create Schniffgroup (${campgroundCount} spots)`;
+            saveGroupBtn.textContent = `🚀 Refine Schniffgroup (${campgroundCount})`;
         }
     }
 }
