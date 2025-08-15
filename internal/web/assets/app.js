@@ -86,11 +86,11 @@ function renderMarkersFromViewport(result) {
                 icon: createClusterIcon(cluster.count) 
             }).bindPopup(`
                 <div class="custom-popup">
-                    <div class="popup-title">${cluster.count} Campgrounds</div>
+                    <div class="popup-title">🏕️ ${cluster.count} Schniffgrounds</div>
                     <div style="margin-top: 0.5rem;">
-                        ${cluster.names.slice(0, 3).map(name => `<div style="font-size: 0.9rem; margin: 0.2rem 0;">• ${name}</div>`).join('')}
-                        ${cluster.names.length > 3 ? `<div style="font-size: 0.8rem; color: #666; margin-top: 0.3rem;">... and ${cluster.count - 3} more</div>` : ''}
-                        <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">Zoom in to see individual campgrounds</div>
+                        ${cluster.names.slice(0, 3).map(name => `<div style="font-size: 0.9rem; margin: 0.2rem 0;">🎪 ${name}</div>`).join('')}
+                        ${cluster.names.length > 3 ? `<div style="font-size: 0.8rem; color: #666; margin-top: 0.3rem;">✨ ... and ${cluster.count - 3} more magical places</div>` : ''}
+                        <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">🔍 Zoom in to see the individual schniffgrounds</div>
                     </div>
                 </div>
             `).addTo(map);
@@ -103,16 +103,13 @@ function renderMarkersFromViewport(result) {
             const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
             
             const linkHtml = campground.url ? 
-                `<div class="popup-link"><a href="${campground.url}" target="_blank" rel="noopener noreferrer">View on ${campground.provider.replace('_', ' ')}</a></div>` : '';
+                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">🔗 ${campground.provider.replace('_', ' ')}</a>` : 
+                `<div class="popup-provider ${campground.provider}">${campground.provider.replace('_', ' ')}</div>`;
             
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
-                        <div class="popup-title">${campground.name}</div>
-                        <div class="popup-provider ${campground.provider}">${campground.provider.replace('_', ' ')}</div>
-                        <div class="popup-coordinates">
-                            ${campground.lat.toFixed(4)}, ${campground.lon.toFixed(4)}
-                        </div>
+                        <div class="popup-title">🏕️ ${campground.name}</div>
                         ${linkHtml}
                     </div>
                 `)
@@ -190,7 +187,7 @@ function updateSaveGroupButton() {
     if (!currentData || currentData.type === 'clusters') {
         const totalCount = currentData ? currentData.data.reduce((sum, cluster) => sum + cluster.count, 0) : 0;
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `Zoom in to save group (${totalCount} campgrounds)`;
+        saveGroupBtn.textContent = `🔍 Zoom in to create (${totalCount} spots found)`;
         return;
     }
     
@@ -198,10 +195,10 @@ function updateSaveGroupButton() {
     
     if (campgroundCount > 100) {
         saveGroupBtn.disabled = true;
-        saveGroupBtn.textContent = `Too many for a group (${campgroundCount} campgrounds)`;
+        saveGroupBtn.textContent = `🐽 Too many spots! (${campgroundCount} campgrounds)`;
     } else {
         saveGroupBtn.disabled = false;
-        saveGroupBtn.textContent = `Save Group (${campgroundCount} campgrounds)`;
+        saveGroupBtn.textContent = `🐽 Create Schniffgroup (${campgroundCount} spots)`;
     }
 }
 
@@ -245,13 +242,13 @@ function updateSaveModalButton() {
     saveBtn.disabled = !hasName || campgroundCount === 0 || campgroundCount > 10;
     
     if (campgroundCount > 10) {
-        saveBtn.textContent = `Too many selected (${campgroundCount}/10)`;
+        saveBtn.textContent = `🐽 Too many! (${campgroundCount}/10)`;
     } else if (campgroundCount === 0) {
-        saveBtn.textContent = 'Select campgrounds';
+        saveBtn.textContent = '📍 Pick your spots';
     } else if (!hasName) {
-        saveBtn.textContent = 'Enter group name';
+        saveBtn.textContent = '🐽 Name your schniffgroup';
     } else {
-        saveBtn.textContent = `Save Group (${campgroundCount})`;
+        saveBtn.textContent = `🐽 Create It (${campgroundCount})`;
     }
 }
 
@@ -294,20 +291,9 @@ async function saveGroup() {
 function showSuccessModal(groupName, campgroundCount) {
     const modal = document.getElementById('success-modal');
     const messageEl = document.getElementById('success-message');
-    
-    const funkyMessages = [
-        `🐽 For fame to the eye of heaven, "${groupName}" is anointed with the oils of schniffing! 🐽`,
-        `🎉 The humble consequence of carbon turned diamond by the sun - "${groupName}" burns bright with the desire to schniff! 🎉`,
-        `💫 "${groupName}" is the vortex at the center of the vortex, selected for greatness by the finger of schniffing power! 💫`,
-        `🐽 "${groupName}" operates from a platform of power and has zero respect for indecision! 🐽`,
-        `✨ "${groupName}" is the shining arc of schniffing, ready to curse and spit their name at the heavens! ✨`,
-        `🎪 "${groupName}" has traveled this nation and learned the common denominator is American schniffing exceptionalism! 🎪`,
-        `🐽 "${groupName}" is the eighth archangel of schniffing, seven feet from tip of wing to tip of wing! 🐽`
-    ];
-    
-    const randomMessage = funkyMessages[Math.floor(Math.random() * funkyMessages.length)];
-    messageEl.textContent = `${randomMessage} With ${campgroundCount} epic schniffgrounds ready to explore!`;
-    
+
+    messageEl.textContent = `🐽 ${groupName} is ready to schniff with ${campgroundCount} epic spots!`;
+
     modal.style.display = 'block';
 }
 
