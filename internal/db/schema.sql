@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS campgrounds (
 );
 
 CREATE INDEX IF NOT EXISTS idx_campgrounds_name ON campgrounds(name);
+CREATE INDEX IF NOT EXISTS idx_campgrounds_location ON campgrounds(lat, lon);
 
 -- Metadata sync log (for campground syncing)
 CREATE TABLE IF NOT EXISTS metadata_sync_log (
