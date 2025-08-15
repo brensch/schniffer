@@ -132,7 +132,7 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 		return PollResult{}
 	}
 	// dedupe by provider+campground, then provider decides how to bucket dates
-	datesByPC, reqsByPC := collectDatesByPC(requests)
+	datesByPC, _ := collectDatesByPC(requests)
 	var result PollResult
 	for k, datesSet := range datesByPC {
 		prov, ok := m.reg.Get(k.prov)
@@ -174,24 +174,40 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			}
 			// collect for later bundled change detection and notification
 			collectedStates = append(collectedStates, states...)
-			// persist states after detecting changes
-			batch := make([]db.CampsiteAvailability, 0, len(states))
+		}
+
+		// Process all collected states for this provider+campground at once
+		if len(collectedStates) > 0 {
+			// Convert to db format
+			batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
 			now := time.Now()
-			for _, s := range states {
+			for _, s := range collectedStates {
 				batch = append(batch, db.CampsiteAvailability{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, LastChecked: now})
 			}
-			if err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch); err != nil {
+
+			// Upsert states
+			start := time.Now()
+			err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			if err != nil {
 				m.logger.Error("upsert states failed", slog.Any("err", err))
 			} else {
-				m.logger.Info("persisted campsite states", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Int("count", len(batch)))
+				m.logger.Info("persisted campsite states",
+					slog.String("provider", k.prov),
+					slog.String("campground", k.cg),
+					slog.Int("count", len(batch)),
+					slog.Duration("duration_ms", time.Since(start)),
+				)
 			}
 		}
-		// change detection and bundled notification across all buckets for this provider+campground
-		if len(collectedStates) > 0 {
-			reqs := reqsByPC[k]
-			m.detectChangesAndNotify(ctx, reqs, collectedStates, k.prov, k.cg)
+	}
+
+	// After processing all states, check for notifications
+	if len(requests) > 0 {
+		if err := m.ProcessNotificationsWithBatches(ctx, requests); err != nil {
+			m.logger.Warn("process notifications failed", slog.Any("err", err))
 		}
 	}
+
 	return result
 }
 

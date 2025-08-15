@@ -47,6 +47,7 @@ CREATE INDEX IF NOT EXISTS idx_lookup_log_provider ON lookup_log(provider, campg
 -- Notifications history
 CREATE TABLE IF NOT EXISTS notifications (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id     TEXT NOT NULL,  -- UUID to group notifications sent together
     request_id   INTEGER NOT NULL,
     user_id      TEXT NOT NULL,
     provider     TEXT NOT NULL,
@@ -61,6 +62,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_time ON notifications(sent_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_request ON notifications(request_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_batch ON notifications(batch_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_last_batch ON notifications(request_id, sent_at);
 
 -- Campground metadata
 CREATE TABLE IF NOT EXISTS campgrounds (

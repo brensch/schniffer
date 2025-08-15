@@ -93,15 +93,28 @@ type LookupLog struct {
 }
 
 type Notification struct {
-	ID           int64
-	RequestID    int64
-	UserID       string
-	Provider     string
-	CampgroundID string
-	CampsiteID   string
-	Date         time.Time
-	State        string // available|unavailable
-	SentAt       time.Time
+	ID           int64     `db:"id"`
+	BatchID      string    `db:"batch_id"`
+	RequestID    int64     `db:"request_id"`
+	UserID       string    `db:"user_id"`
+	Provider     string    `db:"provider"`
+	CampgroundID string    `db:"campground_id"`
+	CampsiteID   string    `db:"campsite_id"`
+	Date         time.Time `db:"date"`
+	State        string    `db:"state"`
+	SentAt       time.Time `db:"sent_at"`
+}
+
+// NotificationResult represents the result of checking if notifications should be sent
+type NotificationResult struct {
+	RequestID          int64
+	UserID             string
+	Provider           string
+	CampgroundID       string
+	ShouldNotify       bool
+	CurrentlyAvailable []AvailabilityItem
+	NewlyAvailable     []AvailabilityItem // marked as "new"
+	NewlyUnavailable   []AvailabilityItem // marked as "booked"
 }
 
 // IncomingCampsiteState represents the latest observed state for a campsite on a date.
@@ -126,6 +139,27 @@ type MetadataSyncLog struct {
 	Success    bool
 	ErrorMsg   string
 	Count      int
+}
+
+type StateChange struct {
+	ID           int64
+	Provider     string
+	CampgroundID string
+	CampsiteID   string
+	Date         time.Time
+	OldAvailable *bool // nil if first time seeing this campsite
+	NewAvailable bool
+	ChangedAt    time.Time
+}
+
+type NotificationData struct {
+	RequestID        int64
+	UserID           string
+	Provider         string
+	CampgroundID     string
+	NewlyAvailable   []AvailabilityItem // campsites that just became available
+	NewlyUnavailable []AvailabilityItem // campsites that just became unavailable
+	StillAvailable   []AvailabilityItem // other campsites still available at this campground
 }
 
 type DetailedSummaryStats struct {
@@ -216,6 +250,7 @@ func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// UpsertCampsiteAvailabilityBatch updates availability (back to simple approach)
 func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []CampsiteAvailability) error {
 	if len(states) == 0 {
 		return nil
@@ -224,22 +259,192 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
+	defer stmt.Close()
+
 	for _, st := range states {
 		if _, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked); err != nil {
-			stmt.Close()
-			tx.Rollback()
 			return err
 		}
 	}
-	stmt.Close()
+
+	return tx.Commit()
+}
+
+// GetAvailabilityChangesForNotifications finds what has changed since the last notification batch for a schniff request
+// Returns: available campsites, newly available ones, newly booked ones
+func (s *Store) GetAvailabilityChangesForNotifications(ctx context.Context, providerName string, campgroundIds []string, startDate, endDate time.Time) ([]CampsiteAvailability, []CampsiteAvailability, []CampsiteAvailability, error) {
+	// Build placeholders for campground IDs
+	placeholders := make([]string, len(campgroundIds))
+	args := []interface{}{providerName}
+	for i, id := range campgroundIds {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, startDate, endDate)
+
+	// Get current available campsites in date range
+	availableQuery := fmt.Sprintf(`
+		SELECT provider, campground_id, campsite_id, date, available, last_checked
+		FROM campsite_availability 
+		WHERE provider=? AND campground_id IN (%s) AND date >= ? AND date <= ? AND available=1
+	`, strings.Join(placeholders, ","))
+
+	availableRows, err := s.DB.QueryContext(ctx, availableQuery, args...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer availableRows.Close()
+
+	var currentAvailable []CampsiteAvailability
+	for availableRows.Next() {
+		var ca CampsiteAvailability
+		if err := availableRows.Scan(&ca.Provider, &ca.CampgroundID, &ca.CampsiteID, &ca.Date, &ca.Available, &ca.LastChecked); err != nil {
+			return nil, nil, nil, err
+		}
+		currentAvailable = append(currentAvailable, ca)
+	}
+
+	// Get the most recent notification batch for these campgrounds in this date range
+	lastBatchQuery := fmt.Sprintf(`
+		SELECT DISTINCT campground_id, campsite_id, date 
+		FROM notifications 
+		WHERE provider=? AND campground_id IN (%s) AND date >= ? AND date <= ?
+		AND batch_id = (
+			SELECT batch_id 
+			FROM notifications 
+			WHERE provider=? AND campground_id IN (%s) AND date >= ? AND date <= ?
+			ORDER BY sent_at DESC 
+			LIMIT 1
+		)
+	`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
+
+	// Args for last batch query: provider, campground_ids, start, end, provider, campground_ids, start, end
+	lastBatchArgs := []interface{}{providerName}
+	lastBatchArgs = append(lastBatchArgs, args[1:len(args)]...) // campground_ids, start, end
+	lastBatchArgs = append(lastBatchArgs, providerName)
+	lastBatchArgs = append(lastBatchArgs, args[1:len(args)]...) // campground_ids, start, end again
+
+	lastBatchRows, err := s.DB.QueryContext(ctx, lastBatchQuery, lastBatchArgs...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer lastBatchRows.Close()
+
+	// Build set of previously notified campsites
+	previouslyNotified := make(map[string]bool)
+	for lastBatchRows.Next() {
+		var campgroundID, campsiteID string
+		var date time.Time
+		if err := lastBatchRows.Scan(&campgroundID, &campsiteID, &date); err != nil {
+			return nil, nil, nil, err
+		}
+		key := fmt.Sprintf("%s_%s_%s", campgroundID, campsiteID, date.Format("2006-01-02"))
+		previouslyNotified[key] = true
+	}
+
+	// Categorize current availability
+	var newlyAvailable []CampsiteAvailability
+	for _, ca := range currentAvailable {
+		key := fmt.Sprintf("%s_%s_%s", ca.CampgroundID, ca.CampsiteID, ca.Date.Format("2006-01-02"))
+		if !previouslyNotified[key] {
+			newlyAvailable = append(newlyAvailable, ca)
+		}
+	}
+
+	// Get newly booked (were available in last batch, now not available)
+	newlyBookedQuery := fmt.Sprintf(`
+		SELECT DISTINCT n.campground_id, n.campsite_id, n.date
+		FROM notifications n
+		LEFT JOIN campsite_availability ca ON (
+			n.provider = ca.provider AND 
+			n.campground_id = ca.campground_id AND 
+			n.campsite_id = ca.campsite_id AND 
+			n.date = ca.date
+		)
+		WHERE n.provider=? AND n.campground_id IN (%s) AND n.date >= ? AND n.date <= ?
+		AND n.batch_id = (
+			SELECT batch_id 
+			FROM notifications 
+			WHERE provider=? AND campground_id IN (%s) AND date >= ? AND date <= ?
+			ORDER BY sent_at DESC 
+			LIMIT 1
+		)
+		AND (ca.available = 0 OR ca.available IS NULL)
+	`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
+
+	newlyBookedRows, err := s.DB.QueryContext(ctx, newlyBookedQuery, lastBatchArgs...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer newlyBookedRows.Close()
+
+	var newlyBooked []CampsiteAvailability
+	for newlyBookedRows.Next() {
+		var campgroundID, campsiteID string
+		var date time.Time
+		if err := newlyBookedRows.Scan(&campgroundID, &campsiteID, &date); err != nil {
+			return nil, nil, nil, err
+		}
+		// Create a placeholder availability entry to represent the booked site
+		newlyBooked = append(newlyBooked, CampsiteAvailability{
+			Provider:     providerName,
+			CampgroundID: campgroundID,
+			CampsiteID:   campsiteID,
+			Date:         date,
+			Available:    false,
+			LastChecked:  time.Now(),
+		})
+	}
+
+	return currentAvailable, newlyAvailable, newlyBooked, nil
+}
+
+// InsertNotificationsBatch inserts notifications as a batch with shared batch ID
+func (s *Store) InsertNotificationsBatch(ctx context.Context, notifications []Notification, batchID string) error {
+	if len(notifications) == 0 {
+		return nil
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO notifications(
+			batch_id, request_id, user_id, provider, campground_id, 
+			campsite_id, date, state, sent_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, n := range notifications {
+		if _, err := stmt.ExecContext(ctx,
+			batchID, n.RequestID, n.UserID, n.Provider, n.CampgroundID,
+			n.CampsiteID, n.Date, n.State, n.SentAt,
+		); err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -347,6 +552,152 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 		return nil, err
 	}
 	return newly, nil
+}
+
+// GetCurrentlyAvailableCampsites returns all currently available campsites for a campground within date range
+func (s *Store) GetCurrentlyAvailableCampsites(ctx context.Context, provider, campgroundID string, startDate, endDate time.Time) ([]AvailabilityItem, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT campsite_id, date
+		FROM campsite_availability
+		WHERE provider=? AND campground_id=? AND date BETWEEN ? AND ? AND available=true
+		ORDER BY date, campsite_id
+	`, provider, campgroundID, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []AvailabilityItem
+	for rows.Next() {
+		var item AvailabilityItem
+		if err := rows.Scan(&item.CampsiteID, &item.Date); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// ProcessStateChangesForNotifications processes state changes and generates notifications
+func (s *Store) ProcessStateChangesForNotifications(ctx context.Context, stateChanges []StateChange, requests []SchniffRequest) ([]NotificationData, error) {
+	if len(stateChanges) == 0 {
+		return nil, nil
+	}
+
+	// Group state changes by provider+campground
+	changesByPC := make(map[string][]StateChange)
+	for _, change := range stateChanges {
+		key := change.Provider + "|" + change.CampgroundID
+		changesByPC[key] = append(changesByPC[key], change)
+	}
+
+	var notifications []NotificationData
+
+	for key, changes := range changesByPC {
+		parts := strings.Split(key, "|")
+		provider, campgroundID := parts[0], parts[1]
+
+		// Find requests that match this provider+campground
+		var relevantRequests []SchniffRequest
+		for _, req := range requests {
+			if req.Provider == provider && req.CampgroundID == campgroundID && req.Active {
+				relevantRequests = append(relevantRequests, req)
+			}
+		}
+
+		if len(relevantRequests) == 0 {
+			continue
+		}
+
+		// Get date range from all relevant requests
+		var minDate, maxDate time.Time
+		for i, req := range relevantRequests {
+			if i == 0 {
+				minDate, maxDate = req.Checkin, req.Checkout
+			} else {
+				if req.Checkin.Before(minDate) {
+					minDate = req.Checkin
+				}
+				if req.Checkout.After(maxDate) {
+					maxDate = req.Checkout
+				}
+			}
+		}
+
+		// Get all currently available campsites in the date range
+		allAvailable, err := s.GetCurrentlyAvailableCampsites(ctx, provider, campgroundID, minDate, maxDate)
+		if err != nil {
+			return nil, err
+		}
+
+		// Process changes for each user
+		userNotifications := make(map[string]*NotificationData)
+
+		for _, req := range relevantRequests {
+			if _, exists := userNotifications[req.UserID]; !exists {
+				userNotifications[req.UserID] = &NotificationData{
+					RequestID:        req.ID,
+					UserID:           req.UserID,
+					Provider:         provider,
+					CampgroundID:     campgroundID,
+					NewlyAvailable:   []AvailabilityItem{},
+					NewlyUnavailable: []AvailabilityItem{},
+					StillAvailable:   []AvailabilityItem{},
+				}
+			}
+
+			notification := userNotifications[req.UserID]
+
+			// Check each state change against this request's date range
+			for _, change := range changes {
+				if change.Date.Before(req.Checkin) || !change.Date.Before(req.Checkout) {
+					continue // outside request date range
+				}
+
+				item := AvailabilityItem{
+					CampsiteID: change.CampsiteID,
+					Date:       change.Date,
+				}
+
+				if change.NewAvailable && (change.OldAvailable == nil || !*change.OldAvailable) {
+					// Became available (new or changed from unavailable)
+					notification.NewlyAvailable = append(notification.NewlyAvailable, item)
+				} else if !change.NewAvailable && change.OldAvailable != nil && *change.OldAvailable {
+					// Became unavailable (changed from available)
+					notification.NewlyUnavailable = append(notification.NewlyUnavailable, item)
+				}
+			}
+
+			// Add still available campsites (within user's date range, excluding newly changed ones)
+			changeMap := make(map[string]bool)
+			for _, change := range changes {
+				if change.Date.Before(req.Checkin) || !change.Date.Before(req.Checkout) {
+					continue
+				}
+				key := change.CampsiteID + "|" + change.Date.Format("2006-01-02")
+				changeMap[key] = true
+			}
+
+			for _, avail := range allAvailable {
+				if avail.Date.Before(req.Checkin) || !avail.Date.Before(req.Checkout) {
+					continue // outside request date range
+				}
+				key := avail.CampsiteID + "|" + avail.Date.Format("2006-01-02")
+				if !changeMap[key] {
+					notification.StillAvailable = append(notification.StillAvailable, avail)
+				}
+			}
+		}
+
+		// Add notifications that have actual changes
+		for _, notification := range userNotifications {
+			if len(notification.NewlyAvailable) > 0 || len(notification.NewlyUnavailable) > 0 {
+				notifications = append(notifications, *notification)
+			}
+		}
+	}
+
+	return notifications, nil
 }
 
 // normalizeDay returns time truncated to 00:00:00 UTC
