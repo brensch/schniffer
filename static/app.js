@@ -13,30 +13,34 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 let markers = [];
 let currentData = null;
 
-// Custom icons for different providers - emoji style when zoomed in
+// Custom icons for different providers - 🐽 emoji for all sites
 const recreationIcon = L.divIcon({
     className: 'custom-div-icon',
-    html: '<div style="font-size: 24px; filter: drop-shadow(2px 2px 0px #000);">🏕️</div>',
+    html: '<div style="font-size: 24px;">🐽</div>',
     iconSize: [30, 30],
     iconAnchor: [15, 15]
 });
 
 const californiaIcon = L.divIcon({
     className: 'custom-div-icon',
-    html: '<div style="font-size: 24px; filter: drop-shadow(2px 2px 0px #000);">🏞️</div>',
+    html: '<div style="font-size: 24px;">🐽</div>',
     iconSize: [30, 30],
     iconAnchor: [15, 15]
 });
 
-// Create cluster icon with count - neubrutalist style
+// Create cluster icon - 🐽 emoji for aggregate view with count below
 function createClusterIcon(count) {
-    const size = Math.min(Math.max(30 + Math.log10(count) * 8, 35), 60);
-    const fontSize = Math.min(size/2.5, 16);
+    const size = Math.min(Math.max(25 + Math.log10(count) * 15, 30), 70);
+    const fontSize = Math.min(size/1.3, 40);
+    const numberSize = Math.min(size/4, 12);
     return L.divIcon({
         className: 'custom-div-icon',
-        html: `<div style="background-color: #ffff00; color: #000; border-radius: 0px; width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 4px solid #000; box-shadow: 6px 6px 0px #000; font-size: ${fontSize}px; font-family: 'Epilogue', sans-serif;">${count}</div>`,
-        iconSize: [size, size],
-        iconAnchor: [size/2, size/2]
+        html: `<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'Epilogue', sans-serif;">
+                <div style="font-size: ${fontSize}px;">🐽</div>
+                <div style="font-size: ${numberSize}px; font-weight: 700; color: #000; margin-top: -3px;">${count}</div>
+               </div>`,
+        iconSize: [size, size + 10],
+        iconAnchor: [size/2, (size + 10)/2]
     });
 }
 

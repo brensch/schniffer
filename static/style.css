@@ -38,7 +38,6 @@ body {
     color: #000;
     margin-bottom: 0.5rem;
     letter-spacing: 0.5px;
-    text-shadow: 2px 2px 0px #fff, 3px 3px 0px #000;
     font-family: 'Syne', sans-serif;
 }
 
@@ -184,7 +183,6 @@ body {
     font-weight: 700;
     font-family: 'Syne', sans-serif;
     letter-spacing: 0.5px;
-    text-shadow: 2px 2px 0px #fff;
 }
 
 .close {
@@ -199,7 +197,6 @@ body {
 
 .close:hover {
     transform: scale(1.1);
-    text-shadow: 2px 2px 0px #fff;
 }
 
 .modal-body {
@@ -379,7 +376,6 @@ body {
     font-weight: 700;
     color: #000;
     margin: 1rem 0;
-    text-shadow: 3px 3px 0px #fff, 4px 4px 0px #000;
     font-family: 'Syne', sans-serif;
     letter-spacing: 0.5px;
 }
@@ -440,10 +436,6 @@ body {
     box-shadow: 4px 4px 0px #000;
     outline: none;
     background-color: #ffff00;
-}
-
-.modal-header h2 {
-    text-shadow: 2px 2px 0px #fff;
 }
 
 /* Funky checkboxes - neubrutalism style */
