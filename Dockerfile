@@ -38,6 +38,9 @@ COPY --from=builder /app/schniffer .
 # Copy database schema if needed
 COPY --from=builder /app/internal/db/schema.sql ./internal/db/
 
+# Copy static files for web server
+COPY --from=builder /app/static ./static/
+
 # Create directory for database
 RUN mkdir -p /app/data
 
