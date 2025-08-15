@@ -1,12 +1,9 @@
 package web
 
 import (
-	"bytes"
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,16 +12,10 @@ import (
 	"github.com/brensch/schniffer/internal/manager"
 )
 
-//go:embed assets/*
-var assets embed.FS
-
 type Server struct {
 	store *db.Store
 	mgr   *manager.Manager
 	addr  string
-	tmpl  *template.Template
-	css   string
-	js    string
 }
 
 type CampgroundMapData struct {
@@ -52,63 +43,19 @@ type ViewportRequest struct {
 }
 
 func NewServer(store *db.Store, mgr *manager.Manager, addr string) *Server {
-	// Read CSS and JS files
-	cssBytes, err := assets.ReadFile("assets/style.css")
-	if err != nil {
-		panic(fmt.Sprintf("failed to read CSS file: %v", err))
-	}
-	slog.Info("loaded CSS", slog.Int("bytes", len(cssBytes)))
-
-	jsBytes, err := assets.ReadFile("assets/app.js")
-	if err != nil {
-		panic(fmt.Sprintf("failed to read JS file: %v", err))
-	}
-	slog.Info("loaded JS", slog.Int("bytes", len(jsBytes)))
-
-	htmlBytes, err := assets.ReadFile("assets/index.html")
-	if err != nil {
-		panic(fmt.Sprintf("failed to read HTML file: %v", err))
-	}
-	slog.Info("loaded HTML", slog.Int("bytes", len(htmlBytes)))
-
-	// Parse template
-	tmpl, err := template.New("index").Parse(string(htmlBytes))
-	if err != nil {
-		panic(fmt.Sprintf("failed to parse template: %v", err))
-	}
-
-	// Create template data
-	tmplData := struct {
-		CSS template.CSS
-		JS  template.JS
-	}{
-		CSS: template.CSS(string(cssBytes)),
-		JS:  template.JS(string(jsBytes)),
-	}
-
-	// Pre-execute template to check for errors
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, tmplData)
-	if err != nil {
-		panic(fmt.Sprintf("failed to execute template: %v", err))
-	}
-	slog.Info("template test execution successful", slog.Int("output_bytes", buf.Len()))
-
 	return &Server{
 		store: store,
 		mgr:   mgr,
 		addr:  addr,
-		tmpl:  tmpl,
-		css:   string(cssBytes),
-		js:    string(jsBytes),
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// Serve the main map page
-	mux.HandleFunc("/", s.handleMapPage)
+	// Serve static files from the static directory
+	fs := http.FileServer(http.Dir("./static/"))
+	mux.Handle("/", fs)
 
 	// API endpoint to get all campgrounds as JSON (for initial load/fallback)
 	mux.HandleFunc("/api/campgrounds", s.handleCampgroundsAPI)
@@ -137,33 +84,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	slog.Info("starting web server", slog.String("addr", s.addr))
 	return server.ListenAndServe()
-}
-
-func (s *Server) handleMapPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
-	// Template data
-	data := struct {
-		CSS template.CSS
-		JS  template.JS
-	}{
-		CSS: template.CSS(s.css),
-		JS:  template.JS(s.js),
-	}
-
-	slog.Info("serving map page",
-		slog.Int("css_length", len(data.CSS)),
-		slog.Int("js_length", len(data.JS)))
-
-	w.Header().Set("Content-Type", "text/html")
-	err := s.tmpl.Execute(w, data)
-	if err != nil {
-		slog.Error("failed to execute template", slog.Any("err", err))
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
 }
 
 func (s *Server) handleCampgroundsAPI(w http.ResponseWriter, r *http.Request) {

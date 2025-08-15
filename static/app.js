@@ -13,27 +13,28 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 let markers = [];
 let currentData = null;
 
-// Custom icons for different providers
+// Custom icons for different providers - emoji style when zoomed in
 const recreationIcon = L.divIcon({
     className: 'custom-div-icon',
-    html: '<div style="background-color: #27ae60; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">R</div>',
-    iconSize: [20, 20],
-    iconAnchor: [10, 10]
+    html: '<div style="font-size: 24px; filter: drop-shadow(2px 2px 0px #000);">🏕️</div>',
+    iconSize: [30, 30],
+    iconAnchor: [15, 15]
 });
 
 const californiaIcon = L.divIcon({
     className: 'custom-div-icon',
-    html: '<div style="background-color: #e74c3c; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">C</div>',
-    iconSize: [20, 20],
-    iconAnchor: [10, 10]
+    html: '<div style="font-size: 24px; filter: drop-shadow(2px 2px 0px #000);">🏞️</div>',
+    iconSize: [30, 30],
+    iconAnchor: [15, 15]
 });
 
-// Create cluster icon with count
+// Create cluster icon with count - neubrutalist style
 function createClusterIcon(count) {
-    const size = Math.min(Math.max(20 + Math.log10(count) * 10, 25), 50);
+    const size = Math.min(Math.max(30 + Math.log10(count) * 8, 35), 60);
+    const fontSize = Math.min(size/2.5, 16);
     return L.divIcon({
         className: 'custom-div-icon',
-        html: `<div style="background-color: #3498db; color: white; border-radius: 50%; width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 3px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.4); font-size: ${Math.min(size/3, 14)}px;">${count}</div>`,
+        html: `<div style="background-color: #ffff00; color: #000; border-radius: 0px; width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center; font-weight: 900; border: 4px solid #000; box-shadow: 6px 6px 0px #000; font-size: ${fontSize}px; font-family: 'Epilogue', sans-serif;">${count}</div>`,
         iconSize: [size, size],
         iconAnchor: [size/2, size/2]
     });

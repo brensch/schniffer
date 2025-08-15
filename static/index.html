@@ -1,17 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🗺️🐽 Schniffmap</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" 
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" 
-          crossorigin=""/>
-    <style>{{.CSS}}</style>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <div id="map"></div>
-    
+
     <button id="save-group-btn" onclick="openSaveGroupModal()" disabled>
         Loading...
     </button>
@@ -20,14 +21,15 @@
     <div id="save-group-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Create schniffgroup</h2>
+                <h2>Create schniffgroup 🐽</h2>
                 <span class="close" onclick="closeSaveGroupModal()">&times;</span>
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <input type="text" id="group-name" placeholder="schniffgroup name" onkeyup="updateSaveModalButton()">
+                    <input type="text" id="group-name" placeholder="schniffgroup name"
+                        onkeyup="updateSaveModalButton()">
                 </div>
-                
+
                 <div class="form-group">
                     <div id="campground-list" class="campground-list">
                         <!-- Campgrounds will be populated by JavaScript -->
@@ -53,11 +55,12 @@
                 <div class="success-content">
                     <div class="success-emoji">👃</div>
                     <div class="success-message" id="success-message">
-                        Your schniffgroup is waiting for you in discord.
+                        Your schniffgroup is ready.
                     </div>
                     <div class="success-instructions">
-                        Use <span class="discord-command">/schniff group</span> to schniff all these sites at once
+                        Use it to schniff all these sites at once in discord using:
                     </div>
+                    <span class="discord-command">/schniff group</span>
                 </div>
             </div>
             <div class="modal-footer success-footer">
@@ -68,9 +71,9 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" 
-            crossorigin=""></script>
-    <script>{{.JS}}</script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="app.js"></script>
 </body>
+
 </html>
