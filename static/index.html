@@ -17,6 +17,36 @@
         Loading...
     </button>
 
+    <!-- Instructions Modal -->
+    <div id="instructions-modal" class="modal" style="display: block;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Welcome to Schniffmap! 🐽</h2>
+            </div>
+            <div class="modal-body">
+                <div class="instructions-content">
+                    <div class="instruction-step">
+                        Schniffgroups allow you to search across multiple sites at once for the days you want to camp.
+                    </div>
+                    <div class="instruction-step">
+                        🔍 Find the area you want to go on the map
+                    </div>
+                    <div class="instruction-step">
+                        🐽 Select the sites you're interested in, and name the group
+                    </div>
+                    <div class="instruction-step">
+                        🗨️ Use it in Discord with the command '/schniff group'
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="start-schniffing-btn" onclick="closeInstructionsModal()">
+                    👃 Let's schniff!
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Save Group Modal -->
     <div id="save-group-modal" class="modal">
         <div class="modal-content">

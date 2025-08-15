@@ -562,3 +562,47 @@ body {
     background-color: #ffff00;
     transition: background-color 0.1s ease;
 }
+
+/* Instructions Modal Styles */
+.instructions-content {
+    padding: 1rem;
+}
+
+.instruction-step {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0.5rem 0;
+    margin-bottom: 1rem;
+    font-family: 'Epilogue', Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.4;
+    box-shadow: none;
+}
+
+.instruction-step:last-child {
+    margin-bottom: 0;
+}
+
+.instruction-step code {
+    background: #ffff00;
+    padding: 0.2rem 0.4rem;
+    border: 2px solid #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+}
+
+#start-schniffing-btn {
+    background-color: #00ff88;
+    color: #000;
+    box-shadow: 4px 4px 0px #000;
+    width: 100%;
+    font-size: 1.1rem;
+    padding: 1.5rem 2rem;
+}
+
+#start-schniffing-btn:hover {
+    background-color: #ffff00;
+    transform: translateY(-2px);
+    box-shadow: 6px 6px 0px #000;
+}

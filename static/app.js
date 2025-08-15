@@ -409,3 +409,8 @@ function closeSaveGroupModal() {
     document.getElementById('group-name').value = '';
     document.querySelectorAll('#campground-list input[type="checkbox"]').forEach(cb => cb.checked = false);
 }
+
+function closeInstructionsModal() {
+    const modal = document.getElementById('instructions-modal');
+    modal.style.display = 'none';
+}
