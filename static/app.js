@@ -185,10 +185,10 @@ function renderMarkersFromViewport(result) {
                         </div>
                         ${linkHtml}
                         <div class="popup-actions">
-                            <button onclick="showOnMap(${campground.lat}, ${campground.lon})" class="map-action-btn">
+                            <button onclick="showOnMap(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
                                 🗺️ Center
                             </button>
-                            <button onclick="getDirections(${campground.lat}, ${campground.lon})" class="map-action-btn">
+                            <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
                                 🧭 Directions
                             </button>
                         </div>
@@ -483,21 +483,18 @@ function closeInstructionsModal() {
 }
 
 // Map utility functions for enhanced park features
-function showOnMap(lat, lon) {
+function showOnMap(event, lat, lon) {
+    // Prevent event bubbling to avoid closing popup
+    event.stopPropagation();
     map.setView([lat, lon], Math.max(map.getZoom(), 14));
 }
 
-function getDirections(lat, lon) {
-    // Open directions in user's preferred mapping app
-    const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+function getDirections(event, lat, lon) {
+    // Prevent event bubbling to avoid closing popup
+    event.stopPropagation();
     
-    if (isMobile) {
-        // On mobile, try to open native apps
-        const url = `geo:${lat},${lon}?q=${lat},${lon}`;
-        window.open(url);
-    } else {
-        // On desktop, open Google Maps
-        const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
-        window.open(url, '_blank');
-    }
+    // Use Google Maps for all platforms - it works reliably everywhere
+    // On mobile, Google Maps web will offer to open the native app
+    const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
+    window.open(url, '_blank');
 }
