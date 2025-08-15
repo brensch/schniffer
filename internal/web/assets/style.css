@@ -1,7 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 body {
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    font-weight: 500;
     background-color: #f5f5f5;
     overflow: hidden;
 }
@@ -30,65 +33,76 @@ body {
 }
 
 .popup-title {
-    font-weight: bold;
-    font-size: 1.1rem;
-    color: #2c3e50;
+    font-weight: 700;
+    font-size: 1.2rem;
+    color: #000;
     margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    text-shadow: 2px 2px 0px #fff, 3px 3px 0px #000;
 }
 
 .popup-provider {
     background-color: #3498db;
-    color: black !important;
-    padding: 0.2rem 0.5rem;
-    border-radius: 3px;
-    font-size: 0.8rem;
+    color: #000 !important;
+    padding: 0.3rem 0.6rem;
+    border-radius: 0px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
     display: inline-block;
     margin-bottom: 0.5rem;
     text-decoration: none;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all 0.1s ease;
+    border: 3px solid #000;
+    box-shadow: 4px 4px 0px #000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .popup-provider:hover {
-    transform: scale(1.05);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    color: black !important;
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0px #000;
+    color: #000 !important;
 }
 
 .popup-provider:visited {
-    color: black !important;
+    color: #000 !important;
 }
 
 .popup-provider:active {
-    color: black !important;
+    color: #000 !important;
+    transform: translate(0px, 0px);
+    box-shadow: 2px 2px 0px #000;
 }
 
 .popup-provider.recreation-gov { 
-    background-color: #27ae60; 
-    color: black !important;
+    background-color: #00ff88; 
+    color: #000 !important;
 }
 
 .popup-provider.recreation-gov:hover { 
-    background-color: #219a52;
-    color: black !important;
+    background-color: #00ff88;
+    color: #000 !important;
 }
 
 .popup-provider.recreation-gov:visited { 
-    color: black !important;
+    color: #000 !important;
 }
 
 .popup-provider.reservecalifornia { 
-    background-color: #e74c3c; 
-    color: black !important;
+    background-color: #ff4757; 
+    color: #000 !important;
 }
 
 .popup-provider.reservecalifornia:hover { 
-    background-color: #c0392b;
-    color: black !important;
+    background-color: #ff4757;
+    color: #000 !important;
 }
 
 .popup-provider.reservecalifornia:visited { 
-    color: black !important;
+    color: #000 !important;
 }
 
 /* Save Group Button - Floating at bottom */
@@ -98,32 +112,37 @@ body {
     left: 50%;
     transform: translateX(-50%);
     z-index: 1000;
-    padding: 1rem 2rem;
-    background-color: #c47331;
-    color: white;
-    border: none;
-    border-radius: 8px;
+    padding: 1.2rem 2.5rem;
+    background-color: #ffff00;
+    color: #000;
+    border: 4px solid #000;
+    border-radius: 0px;
     cursor: pointer;
-    font-size: 1rem;
-    font-weight: 600;
-    transition: all 0.2s;
+    font-size: 1.1rem;
+    font-weight: 700;
+    font-family: 'Space Grotesk', sans-serif;
+    transition: all 0.1s ease;
     white-space: nowrap;
-    min-width: 200px;
+    min-width: 220px;
     text-align: center;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    backdrop-filter: blur(4px);
+    box-shadow: 6px 6px 0px #000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 #save-group-btn:hover:not(:disabled) {
-    background-color: #a66228;
+    transform: translateX(-50%) translate(-3px, -3px);
+    box-shadow: 9px 9px 0px #000;
+    background-color: #ff00ff;
 }
 
 #save-group-btn:disabled {
-    background-color: #999;
-    color: #666;
+    background-color: #666;
+    color: #ccc;
     cursor: not-allowed;
-    opacity: 0.6;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    opacity: 0.7;
+    box-shadow: 3px 3px 0px #333;
+    border-color: #333;
 }
 
 /* Modal Styles */
@@ -142,37 +161,48 @@ body {
     background-color: white;
     margin: 5% auto;
     padding: 0;
-    border-radius: 8px;
+    border-radius: 0px;
+    border: 5px solid #000;
     width: 90%;
     max-width: 600px;
     max-height: 80vh;
     overflow: hidden;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    box-shadow: 10px 10px 0px #000;
 }
 
 .modal-header {
-    background-color: #c47331;
-    color: white;
-    padding: 1rem;
+    background-color: #00ff88;
+    color: #000;
+    padding: 1.5rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    border-bottom: 4px solid #000;
 }
 
 .modal-header h2 {
     margin: 0;
-    font-size: 1.2rem;
+    font-size: 1.4rem;
+    font-weight: 700;
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 2px 2px 0px #fff;
 }
 
 .close {
-    font-size: 2rem;
+    font-size: 2.5rem;
     cursor: pointer;
     line-height: 1;
     padding: 0.2rem;
+    font-weight: 900;
+    font-family: 'Space Grotesk', sans-serif;
+    transition: all 0.1s ease;
 }
 
 .close:hover {
-    opacity: 0.7;
+    transform: scale(1.2);
+    text-shadow: 2px 2px 0px #fff;
 }
 
 .modal-body {
@@ -188,29 +218,39 @@ body {
 .form-group label {
     display: block;
     margin-bottom: 0.5rem;
-    font-weight: 500;
+    font-weight: 600;
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #000;
 }
 
 .form-group input[type="text"] {
     width: 100%;
-    padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 1rem;
+    padding: 0.8rem;
+    border: 3px solid #000;
+    border-radius: 0px;
+    font-size: 1.1rem;
+    font-weight: 500;
+    font-family: 'JetBrains Mono', monospace;
     box-sizing: border-box;
+    background-color: #fff;
+    transition: all 0.1s ease;
 }
 
 .campground-list {
     max-height: 300px;
     overflow-y: auto;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    background: #f9f9f9;
+    border: 3px solid #000;
+    border-radius: 0px;
+    background: #fff;
 }
 
 .campground-item {
-    padding: 0.5rem;
-    border-bottom: 1px solid #eee;
+    padding: 0.8rem;
+    border-bottom: 2px solid #000;
+    background: #fff;
+    transition: all 0.1s ease;
 }
 
 .campground-item:last-child {
@@ -222,6 +262,8 @@ body {
     align-items: center;
     cursor: pointer;
     margin: 0;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
 }
 
 .campground-item input[type="checkbox"] {
@@ -230,63 +272,83 @@ body {
 
 .campground-name {
     flex: 1;
-    font-weight: 500;
+    font-weight: 600;
+    color: #000;
 }
 
 .campground-provider {
     font-size: 0.8rem;
-    color: #666;
-    background: #e9ecef;
-    padding: 0.2rem 0.4rem;
-    border-radius: 3px;
+    color: #000;
+    background: #ffff00;
+    padding: 0.3rem 0.6rem;
+    border-radius: 0px;
+    border: 2px solid #000;
     margin-left: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .modal-footer {
-    background-color: #f8f9fa;
-    padding: 1rem;
-    border-top: 1px solid #ddd;
+    background-color: #fff;
+    padding: 1.5rem;
+    border-top: 3px solid #000;
     display: flex;
-    gap: 0.5rem;
+    gap: 1rem;
     justify-content: flex-end;
 }
 
 .modal-footer button {
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 4px;
+    padding: 0.8rem 1.5rem;
+    border: 3px solid #000;
+    border-radius: 0px;
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.1s ease;
 }
 
 #save-modal-btn {
-    background-color: #c47331;
-    color: white;
+    background-color: #00ff88;
+    color: #000;
+    box-shadow: 4px 4px 0px #000;
 }
 
 #save-modal-btn:hover:not(:disabled) {
-    background-color: #a66228;
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0px #000;
+    background-color: #ff00ff;
 }
 
 #save-modal-btn:disabled {
-    background-color: #ccc;
+    background-color: #666;
+    color: #ccc;
     cursor: not-allowed;
+    box-shadow: 2px 2px 0px #333;
+    border-color: #333;
 }
 
 .modal-footer button:last-child {
-    background-color: #6c757d;
-    color: white;
+    background-color: #ff4757;
+    color: #000;
+    box-shadow: 4px 4px 0px #000;
 }
 
 .modal-footer button:last-child:hover {
-    background-color: #5a6268;
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0px #000;
+    background-color: #ff3742;
 }
 
 /* Success Modal Styles */
 .success-modal .modal-header {
-    background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1, #f9ca24);
-    background-size: 300% 300%;
-    animation: gradientShift 3s ease infinite;
+    background: #ffff00;
+    color: #000;
+    border-bottom: 4px solid #000;
 }
 
 @keyframes gradientShift {
@@ -319,90 +381,88 @@ body {
 }
 
 .success-message {
-    font-size: 1.3rem;
-    font-weight: bold;
-    color: #2c3e50;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #000;
     margin: 1rem 0;
-    text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    text-shadow: 3px 3px 0px #fff, 4px 4px 0px #000;
+    font-family: 'Space Grotesk', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .success-instructions {
-    font-size: 1.1rem;
-    color: #34495e;
+    font-size: 1.2rem;
+    color: #000;
     margin: 1.5rem 0;
     line-height: 1.6;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
 }
 
 .discord-command {
-    background: linear-gradient(45deg, #7289da, #5865f2);
-    color: white;
-    padding: 0.3rem 0.6rem;
-    border-radius: 6px;
-    font-family: 'Courier New', monospace;
-    font-weight: bold;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    background: #5865f2;
+    color: #fff;
+    padding: 0.4rem 0.8rem;
+    border-radius: 0px;
+    border: 3px solid #000;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    box-shadow: 3px 3px 0px #000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .success-btn {
-    background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-    color: white;
-    border: none;
-    padding: 1rem 2rem;
-    border-radius: 25px;
-    font-size: 1.1rem;
-    font-weight: bold;
+    background: #00ff88;
+    color: #000;
+    border: 4px solid #000;
+    padding: 1.2rem 2.5rem;
+    border-radius: 0px;
+    font-size: 1.2rem;
+    font-weight: 700;
+    font-family: 'Space Grotesk', sans-serif;
     cursor: pointer;
-    transition: all 0.3s ease;
-    text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    transition: all 0.1s ease;
+    text-shadow: none;
+    box-shadow: 6px 6px 0px #000;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .success-btn:hover {
-    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+    transform: translate(-3px, -3px);
+    box-shadow: 9px 9px 0px #000;
+    background: #ff00ff;
 }
 
 .success-footer {
     background: transparent;
     border: none;
-    padding: 1.5rem;
+    padding: 2rem;
     justify-content: center;
 }
 
-/* Make the save group button more funky */
-#save-group-btn {
-    background: linear-gradient(45deg, #c47331, #e67e22);
-    box-shadow: 0 4px 15px rgba(196, 115, 49, 0.3);
-    transition: all 0.3s ease;
-}
-
-#save-group-btn:hover:not(:disabled) {
-    background: linear-gradient(45deg, #a66228, #d35400);
-    box-shadow: 0 6px 20px rgba(196, 115, 49, 0.4);
-}
-
-/* Add some funky styling to the form */
-#group-name {
-    border: 2px solid #ddd;
-    transition: all 0.3s ease;
-}
-
+/* Remove the old funky styling section and replace with neubrutalism */
 #group-name:focus {
-    border-color: #4ecdc4;
-    box-shadow: 0 0 10px rgba(78, 205, 196, 0.3);
+    border-color: #00ff88;
+    box-shadow: 4px 4px 0px #000;
     outline: none;
+    background-color: #ffff00;
 }
 
 .modal-header h2 {
-    text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+    text-shadow: 2px 2px 0px #fff;
 }
 
-/* Funky checkboxes */
+/* Funky checkboxes - neubrutalism style */
 .campground-item input[type="checkbox"] {
-    transform: scale(1.2);
-    accent-color: #4ecdc4;
+    transform: scale(1.5);
+    accent-color: #00ff88;
+    border: 2px solid #000;
 }
 
 .campground-item:hover {
-    background-color: rgba(78, 205, 196, 0.1);
-    transition: background-color 0.2s ease;
+    background-color: #ffff00;
+    transition: background-color 0.1s ease;
 }
