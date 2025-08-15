@@ -211,7 +211,7 @@ function updateSaveGroupButton() {
         if (totalCount === 0) {
             saveGroupBtn.textContent = `👃 No schniffgrounds here`;
         } else {
-            saveGroupBtn.textContent = `🔍 Zoom in to create group (${totalCount} spots found)`;
+            saveGroupBtn.textContent = `🔍 Zoom in (${totalCount} spots found)`;
         }
         return;
     }
@@ -320,7 +320,7 @@ function showSuccessModal(groupName, campgroundCount) {
     const modal = document.getElementById('success-modal');
     const messageEl = document.getElementById('success-message');
 
-    messageEl.textContent = `🐽 ${groupName} is ready to schniff with ${campgroundCount} epic spots!`;
+    messageEl.textContent = `${groupName} is ready to schniff`;
 
     modal.style.display = 'block';
 }
@@ -337,6 +337,7 @@ function closeSuccessModal() {
 
 function openDiscordAndClose() {
     const guildId = '1124196592531034173'; // Your Discord server ID
+    const botId = '1124195902123413524'; // Schniffomatic9000 bot ID
     
     // Track if the page loses focus (indicating an app opened)
     let appOpened = false;
@@ -363,7 +364,7 @@ function openDiscordAndClose() {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleBlur);
     
-    // Try to open Discord app
+    // Try Discord app first - go to server since DM links are unreliable
     const discordAppUrl = `discord://discord.com/channels/${guildId}`;
     
     // Create a temporary link and try to open the app
@@ -382,6 +383,7 @@ function openDiscordAndClose() {
         
         // Only open web version if app didn't open
         if (!appOpened) {
+            // Try web Discord - go to server
             const discordWebUrl = `https://discord.com/channels/${guildId}`;
             window.open(discordWebUrl, '_blank');
         }
