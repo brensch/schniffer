@@ -58,8 +58,8 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 			name = cg.Name
 		}
 		nights := int(it.checkout.Sub(it.checkin).Hours() / 24)
-		// total checks within request lifetime and date span
-		totalChecks, err := b.store.CountLookupsForRequest(context.Background(), it.provider, it.campgroundID, it.created, it.checkin, it.checkout)
+		// total checks for this campground in last 24h
+		totalChecks, err := b.store.CountLookupsLast24h(context.Background(), it.provider, it.campgroundID)
 		if err != nil {
 			b.logger.Warn("count request checks failed", "err", err)
 			totalChecks = 0

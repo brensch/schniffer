@@ -25,15 +25,15 @@ func main() {
 	flag.StringVar(&query, "e", "", "SQL to execute (e.g. -e 'SELECT 1')")
 	flag.StringVar(&file, "f", "", "SQL file to execute (read whole file)")
 	flag.BoolVar(&csv, "csv", false, "Output results as CSV")
-	flag.StringVar(&duck, "db", "", "Path to DuckDB file (defaults to DUCKDB_PATH env or ./schniffer.duckdb)")
+	flag.StringVar(&duck, "db", "", "Path to SQLite file (defaults to DB_PATH env or ./schniffer.sqlite)")
 	flag.Var(&args, "arg", "Query argument (repeatable). Example: -e 'SELECT ?' -arg 123")
 	flag.BoolVar(&rw, "rw", false, "Open DB read-write (default is read-only)")
 	flag.Parse()
 
 	if duck == "" {
-		duck = os.Getenv("DUCKDB_PATH")
+		duck = os.Getenv("DB_PATH")
 		if duck == "" {
-			duck = "./schniffer.duckdb"
+			duck = "./schniffer.sqlite"
 		}
 	}
 

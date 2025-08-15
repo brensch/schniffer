@@ -11,7 +11,7 @@ import (
 
 	"strings"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql
@@ -22,30 +22,27 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	return OpenWithMode(path, "READ_WRITE")
-}
-
-// OpenReadOnly opens the database in READ_ONLY mode (no write lock)
-func OpenReadOnly(path string) (*Store, error) { return OpenWithMode(path, "READ_ONLY") }
-
-// OpenWithMode allows specifying DuckDB access_mode (READ_WRITE or READ_ONLY)
-func OpenWithMode(path, mode string) (*Store, error) {
-	if mode == "" {
-		mode = "READ_WRITE"
-	}
-	dsn := fmt.Sprintf("%s?access_mode=%s", path, mode)
-	fmt.Println("Connecting to DuckDB:", dsn)
-	db, err := sql.Open("duckdb", dsn)
+	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
 	if err != nil {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	if strings.EqualFold(mode, "READ_WRITE") {
-		if err := migrate(db); err != nil {
-			return nil, err
-		}
+	if err := migrate(db); err != nil {
+		return nil, err
+	}
+	return &Store{DB: db}, nil
+}
+
+// OpenReadOnly opens the database in READ_ONLY mode
+func OpenReadOnly(path string) (*Store, error) {
+	db, err := sql.Open("sqlite3", path+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return nil, err
 	}
 	return &Store{DB: db}, nil
 }
@@ -68,34 +65,35 @@ type SchniffRequest struct {
 	UserID       string
 	Provider     string
 	CampgroundID string
-	// Checkin is the arrival date (inclusive), Checkout is the departure date (exclusive)
-	Checkin   time.Time
-	Checkout  time.Time
-	CreatedAt time.Time
-	Active    bool
+	Checkin      time.Time
+	Checkout     time.Time
+	CreatedAt    time.Time
+	Active       bool
 }
 
-type CampsiteState struct {
+type CampsiteAvailability struct {
 	Provider     string
 	CampgroundID string
 	CampsiteID   string
 	Date         time.Time
 	Available    bool
-	CheckedAt    time.Time
+	LastChecked  time.Time
 }
 
 type LookupLog struct {
-	Provider     string
-	CampgroundID string
-	Month        time.Time
-	StartDate    time.Time
-	EndDate      time.Time
-	CheckedAt    time.Time
-	Success      bool
-	Err          string
+	ID            int64
+	Provider      string
+	CampgroundID  string
+	StartDate     time.Time
+	EndDate       time.Time
+	CheckedAt     time.Time
+	Success       bool
+	ErrorMsg      string
+	CampsiteCount int
 }
 
 type Notification struct {
+	ID           int64
 	RequestID    int64
 	UserID       string
 	Provider     string
@@ -119,14 +117,15 @@ type AvailabilityItem struct {
 	Date       time.Time
 }
 
-type SyncLog struct {
+type MetadataSyncLog struct {
+	ID         int64
 	SyncType   string
 	Provider   string
 	StartedAt  time.Time
 	FinishedAt time.Time
 	Success    bool
-	Err        string
-	Count      int64
+	ErrorMsg   string
+	Count      int
 }
 
 type DetailedSummaryStats struct {
@@ -139,21 +138,19 @@ type DetailedSummaryStats struct {
 // CRUD
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
-	row := s.DB.QueryRowContext(ctx, `
-		INSERT INTO schniff_requests(user_id, provider, campground_id, start_date, end_date, checkin, checkout, created_at, active)
-		VALUES (?, ?, ?, ?, ?, ?, ?, now(), true)
-		RETURNING id
-	`, r.UserID, r.Provider, r.CampgroundID, r.Checkin, r.Checkout, r.Checkin, r.Checkout)
-	var id int64
-	if err := row.Scan(&id); err != nil {
+	result, err := s.DB.ExecContext(ctx, `
+		INSERT INTO schniff_requests(user_id, provider, campground_id, checkin, checkout, created_at, active)
+		VALUES (?, ?, ?, ?, ?, datetime('now'), true)
+	`, r.UserID, r.Provider, r.CampgroundID, r.Checkin, r.Checkout)
+	if err != nil {
 		return 0, err
 	}
-	return id, nil
+	return result.LastInsertId()
 }
 
 func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-	SELECT id, user_id, provider, campground_id, coalesce(checkin, start_date) as checkin, coalesce(checkout, end_date) as checkout, created_at, active
+		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active
 		FROM schniff_requests WHERE active=true
 	`)
 	if err != nil {
@@ -188,7 +185,7 @@ func (s *Store) DeactivateRequest(ctx context.Context, id int64, userID string) 
 // Convenience: list active requests for a specific user
 func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]SchniffRequest, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, provider, campground_id, coalesce(checkin, start_date) as checkin, coalesce(checkout, end_date) as checkout, created_at, active
+		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active
 		FROM schniff_requests WHERE active=true AND user_id=?
 	`, userID)
 	if err != nil {
@@ -211,7 +208,7 @@ func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE schniff_requests 
 		SET active=false 
-		WHERE active=true AND coalesce(checkout, end_date) < CURRENT_DATE
+		WHERE active=true AND checkout < date('now')
 	`)
 	if err != nil {
 		return 0, err
@@ -219,7 +216,7 @@ func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
-func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteState) error {
+func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []CampsiteAvailability) error {
 	if len(states) == 0 {
 		return nil
 	}
@@ -228,7 +225,7 @@ func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteS
 		return err
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO campsite_state(provider, campground_id, campsite_id, date, available, checked_at)
+		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -236,7 +233,7 @@ func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteS
 		return err
 	}
 	for _, st := range states {
-		if _, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.CheckedAt); err != nil {
+		if _, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked); err != nil {
 			stmt.Close()
 			tx.Rollback()
 			return err
@@ -248,29 +245,21 @@ func (s *Store) UpsertCampsiteStateBatch(ctx context.Context, states []CampsiteS
 
 func (s *Store) RecordLookup(ctx context.Context, l LookupLog) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO lookup_log(provider, campground_id, month, start_date, end_date, checked_at, success, err)
+		INSERT INTO lookup_log(provider, campground_id, start_date, end_date, checked_at, success, error_msg, campsite_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, l.Provider, l.CampgroundID, l.Month, l.StartDate, l.EndDate, l.CheckedAt, l.Success, l.Err)
+	`, l.Provider, l.CampgroundID, l.StartDate, l.EndDate, l.CheckedAt, l.Success, l.ErrorMsg, l.CampsiteCount)
 	return err
 }
 
 func (s *Store) RecordNotification(ctx context.Context, n Notification) error {
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO notifications(request_id, user_id, provider, campground_id, campsite_id, date, state, sent_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, n.RequestID, n.UserID, n.Provider, n.CampgroundID, n.CampsiteID, n.Date, n.State, n.SentAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	`, n.RequestID, n.UserID, n.Provider, n.CampgroundID, n.CampsiteID, n.Date, n.State)
 	return err
 }
 
 // ReconcileNotifications uses current campsite states to open or close notifications per user.
-// For each (campsite_id,date):
-//   - If current Available=true and the user's last recorded notification state is not "available",
-//     insert an "available" row and include it in the return for bundling.
-//   - If current Available=false and the user's last state is "available",
-//     insert an "unavailable" row to close it.
-//
-// Dedup is per user (even if they have multiple overlapping requests). We record the row with
-// the smallest request_id among the user's matching active requests for that date.
 func (s *Store) ReconcileNotifications(ctx context.Context, provider, campgroundID string, reqs []SchniffRequest, states []IncomingCampsiteState) (map[string][]AvailabilityItem, error) {
 	// Build per-date user -> requestID mapping from active requests
 	perDateUserReq := map[string]map[string]int64{}
@@ -315,7 +304,7 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 
 	stInsert, err := tx.PrepareContext(ctx, `
 		INSERT INTO notifications(request_id, user_id, provider, campground_id, campsite_id, date, state, sent_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`)
 	if err != nil {
 		return nil, err
@@ -323,7 +312,6 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 	defer stInsert.Close()
 
 	newly := map[string][]AvailabilityItem{}
-	now := time.Now()
 	for _, st := range states {
 		dateKey := normalizeDay(st.Date).Format("2006-01-02")
 		userReqs, ok := perDateUserReq[dateKey]
@@ -340,14 +328,14 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 			hadOpen := (err == nil && strings.EqualFold(last, "available"))
 			if st.Available {
 				if !hadOpen { // open it
-					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "available", now); err != nil {
+					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "available"); err != nil {
 						return nil, err
 					}
 					newly[userID] = append(newly[userID], AvailabilityItem{CampsiteID: st.CampsiteID, Date: normalizeDay(st.Date)})
 				}
 			} else { // unavailable
 				if hadOpen { // close it
-					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "unavailable", now); err != nil {
+					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "unavailable"); err != nil {
 						return nil, err
 					}
 				}
@@ -373,39 +361,8 @@ func (s *Store) CountLookupsLast24h(ctx context.Context, provider, campgroundID 
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT coalesce(count(*),0)
 		FROM lookup_log
-	WHERE provider=? AND campground_id=? AND CAST(checked_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+		WHERE provider=? AND campground_id=? AND checked_at >= datetime('now', '-1 day')
 	`, provider, campgroundID)
-	var n int64
-	return n, row.Scan(&n)
-}
-
-// CountLookupsTotal returns total number of lookup_log rows for a provider+campground.
-func (s *Store) CountLookupsTotal(ctx context.Context, provider, campgroundID string) (int64, error) {
-	row := s.DB.QueryRowContext(ctx, `
-		SELECT coalesce(count(*),0)
-		FROM lookup_log
-		WHERE provider=? AND campground_id=?
-	`, provider, campgroundID)
-	var n int64
-	return n, row.Scan(&n)
-}
-
-// CountLookupsForRequest returns the number of lookup_log rows for a provider+campground
-// bounded by the schniff's lifecycle and date span. We consider checks with checked_at >= createdAt
-// (start of schniff) up to now (for active schniffs) and only those where the lookup month/start
-// falls within [checkin .. checkout] to approximate the relevant date span.
-func (s *Store) CountLookupsForRequest(ctx context.Context, provider, campgroundID string, createdAt, checkin, checkout time.Time) (int64, error) {
-	row := s.DB.QueryRowContext(ctx, `
-		SELECT coalesce(count(*),0)
-		FROM lookup_log
-		WHERE provider=? AND campground_id=?
-					AND CAST(checked_at AS TIMESTAMP) >= CAST(? AS TIMESTAMP)
-					AND (
-						-- any overlap between logged lookup date span and schniff date span
-						(start_date IS NOT NULL AND end_date IS NOT NULL AND start_date < ? AND end_date > ?)
-						OR (start_date IS NULL AND end_date IS NULL AND month BETWEEN ? AND ?)
-					)
-		`, provider, campgroundID, createdAt, checkout, checkin, checkin, checkout)
 	var n int64
 	return n, row.Scan(&n)
 }
@@ -414,7 +371,7 @@ func (s *Store) CountNotificationsLast24hByRequest(ctx context.Context, requestI
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT coalesce(count(*),0)
 		FROM notifications
-	WHERE request_id=? AND CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+		WHERE request_id=? AND sent_at >= datetime('now', '-1 day')
 	`, requestID)
 	var n int64
 	return n, row.Scan(&n)
@@ -431,13 +388,8 @@ func (s *Store) LatestAvailabilityByDate(ctx context.Context, provider, campgrou
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT date, COUNT(DISTINCT campsite_id) AS total,
 			   SUM(CASE WHEN available THEN 1 ELSE 0 END) AS free
-		FROM (
-			SELECT provider, campground_id, campsite_id, date, available,
-				   ROW_NUMBER() OVER (PARTITION BY provider, campground_id, campsite_id, date ORDER BY checked_at DESC) AS rn
-			FROM campsite_state
-			WHERE provider=? AND campground_id=? AND date BETWEEN ? AND ?
-		) t
-		WHERE rn = 1
+		FROM campsite_availability
+		WHERE provider=? AND campground_id=? AND date BETWEEN ? AND ?
 		GROUP BY date
 		ORDER BY date
 	`, provider, campgroundID, start, end)
@@ -459,9 +411,10 @@ func (s *Store) LatestAvailabilityByDate(ctx context.Context, provider, campgrou
 // StatsToday returns active, lookups today, notifications today
 func (s *Store) StatsToday(ctx context.Context) (active int64, lookups int64, notes int64, err error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT coalesce((SELECT count(*) FROM schniff_requests WHERE active=true),0),
-			   coalesce((SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),0),
-			   coalesce((SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),0)
+		SELECT 
+			coalesce((SELECT count(*) FROM schniff_requests WHERE active=true),0),
+			coalesce((SELECT count(*) FROM lookup_log WHERE date(checked_at)=date('now')),0),
+			coalesce((SELECT count(*) FROM notifications WHERE date(sent_at)=date('now')),0)
 	`)
 	err = row.Scan(&active, &lookups, &notes)
 	return
@@ -476,9 +429,8 @@ func (s *Store) CountTotalRequests(ctx context.Context) (int64, error) {
 
 func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsiteID string, date time.Time) (bool, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT available FROM campsite_state
+		SELECT available FROM campsite_availability
 		WHERE provider=? AND campground_id=? AND campsite_id=? AND date=?
-		ORDER BY checked_at DESC LIMIT 1
 	`, provider, campgroundID, campsiteID, date)
 	var available bool
 	switch err := row.Scan(&available); err {
@@ -498,14 +450,6 @@ func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string,
 		INSERT OR REPLACE INTO campgrounds(provider, id, name, lat, lon)
 		VALUES (?, ?, ?, ?, ?)
 	`, provider, id, name, lat, lon)
-	return err
-}
-
-func (s *Store) UpsertCampsiteMeta(ctx context.Context, provider, campgroundID, campsiteID, name string) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campsites_meta(provider, campground_id, campsite_id, name)
-		VALUES (?, ?, ?, ?)
-	`, provider, campgroundID, campsiteID, name)
 	return err
 }
 
@@ -601,17 +545,17 @@ func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID st
 }
 
 // Sync helpers
-func (s *Store) RecordSync(ctx context.Context, l SyncLog) error {
+func (s *Store) RecordMetadataSync(ctx context.Context, l MetadataSyncLog) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO sync_log(sync_type, provider, started_at, finished_at, success, err, count)
+		INSERT INTO metadata_sync_log(sync_type, provider, started_at, finished_at, success, error_msg, count)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, l.SyncType, l.Provider, l.StartedAt, l.FinishedAt, l.Success, l.Err, l.Count)
+	`, l.SyncType, l.Provider, l.StartedAt, l.FinishedAt, l.Success, l.ErrorMsg, l.Count)
 	return err
 }
 
-func (s *Store) GetLastSuccessfulSync(ctx context.Context, syncType, provider string) (time.Time, bool, error) {
+func (s *Store) GetLastSuccessfulMetadataSync(ctx context.Context, syncType, provider string) (time.Time, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT finished_at FROM sync_log
+		SELECT finished_at FROM metadata_sync_log
 		WHERE sync_type=? AND provider=? AND success=true
 		ORDER BY finished_at DESC LIMIT 1
 	`, syncType, provider)
@@ -626,27 +570,13 @@ func (s *Store) GetLastSuccessfulSync(ctx context.Context, syncType, provider st
 	}
 }
 
-// InsertDailySummarySnapshot aggregates and inserts today's snapshot into daily_summary.
-func (s *Store) InsertDailySummarySnapshot(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO daily_summary(date, total_requests, active_requests, lookups, notifications, created_at)
-		SELECT current_date,
-			(SELECT count(*) FROM schniff_requests),
-			(SELECT count(*) FROM schniff_requests WHERE active=true),
-			(SELECT count(*) FROM lookup_log WHERE date(checked_at)=current_date),
-			(SELECT count(*) FROM notifications WHERE date(sent_at)=current_date),
-			now()
-	`)
-	return err
-}
-
 // GetDetailedSummaryStats returns comprehensive stats for the detailed summary
 func (s *Store) GetDetailedSummaryStats(ctx context.Context) (DetailedSummaryStats, error) {
 	// Get basic stats for last 24 hours
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT 
-			coalesce((SELECT count(*) FROM notifications WHERE CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day' AND state = 'available'), 0) as notifications_24h,
-			coalesce((SELECT count(*) FROM lookup_log WHERE CAST(checked_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'), 0) as lookups_24h,
+			coalesce((SELECT count(*) FROM notifications WHERE sent_at >= datetime('now', '-1 day') AND state = 'available'), 0) as notifications_24h,
+			coalesce((SELECT count(*) FROM lookup_log WHERE checked_at >= datetime('now', '-1 day')), 0) as lookups_24h,
 			coalesce((SELECT count(*) FROM schniff_requests WHERE active=true), 0) as active_requests
 	`)
 
@@ -671,7 +601,7 @@ func (s *Store) GetUsersWithNotifications(ctx context.Context) ([]string, error)
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT DISTINCT user_id 
 		FROM notifications 
-		WHERE CAST(sent_at AS TIMESTAMP) >= CAST(now() AS TIMESTAMP) - INTERVAL '1 day'
+		WHERE sent_at >= datetime('now', '-1 day')
 		ORDER BY user_id
 	`)
 	if err != nil {
@@ -751,16 +681,17 @@ func (s *Store) CreateGroup(ctx context.Context, userID, name string, campground
 		return nil, fmt.Errorf("failed to marshal campgrounds: %w", err)
 	}
 
-	var id int64
-	var createdAt, updatedAt time.Time
-	err = s.DB.QueryRowContext(ctx, `
+	result, err := s.DB.ExecContext(ctx, `
 		INSERT INTO groups (user_id, name, campgrounds, created_at, updated_at)
-		VALUES ($1, $2, $3, NOW(), NOW())
-		RETURNING id, created_at, updated_at
-	`, userID, name, string(campgroundsJSON)).Scan(&id, &createdAt, &updatedAt)
-
+		VALUES (?, ?, ?, datetime('now'), datetime('now'))
+	`, userID, name, string(campgroundsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
 	}
 
 	return &Group{
@@ -768,16 +699,16 @@ func (s *Store) CreateGroup(ctx context.Context, userID, name string, campground
 		UserID:      userID,
 		Name:        name,
 		Campgrounds: campgrounds,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}, nil
 }
 
 func (s *Store) GetUserGroups(ctx context.Context, userID string) ([]Group, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, name, CAST(campgrounds AS VARCHAR) as campgrounds_text, created_at, updated_at
+		SELECT id, user_id, name, campgrounds, created_at, updated_at
 		FROM groups
-		WHERE user_id = $1
+		WHERE user_id = ?
 		ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -810,9 +741,9 @@ func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Gr
 	var campgroundsJSON string
 
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, user_id, name, CAST(campgrounds AS VARCHAR) as campgrounds_text, created_at, updated_at
+		SELECT id, user_id, name, campgrounds, created_at, updated_at
 		FROM groups
-		WHERE id = $1 AND user_id = $2
+		WHERE id = ? AND user_id = ?
 	`, groupID, userID).Scan(&group.ID, &group.UserID, &group.Name, &campgroundsJSON, &group.CreatedAt, &group.UpdatedAt)
 
 	if err != nil {

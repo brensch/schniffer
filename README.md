@@ -17,7 +17,7 @@ A Go Discord bot that monitors campground availability, records all activity to 
 Environment variables:
 
 - DISCORD_TOKEN: Bot token.
-- DUCKDB_PATH: Path to DuckDB file (e.g., ./schniffer.duckdb).
+- DB_PATH: Path to SQLite database file (e.g., ./schniffer.sqlite).
 - SUMMARY_CHANNEL_ID: Discord channel ID for daily summary messages (optional).
 - GUILD_ID: Optional; if provided, slash commands will be registered guild-scoped for faster availability.
 
@@ -28,7 +28,7 @@ Run:
 go build ./cmd/schniffer
 
 # run
-DISCORD_TOKEN=... DUCKDB_PATH=./schniffer.duckdb go run ./cmd/schniffer
+DISCORD_TOKEN=... DB_PATH=./schniffer.sqlite go run ./cmd/schniffer
 ```
 
 ## Commands

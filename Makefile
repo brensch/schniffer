@@ -2,4 +2,4 @@ build:
 	go build -o schniffer ./cmd/schniffer
 
 run:
-	DUCKDB_PATH=./schniffer.duckdb go run ./cmd/schniffer
+	DB_PATH=./schniffer.sqlite go run ./cmd/schniffer

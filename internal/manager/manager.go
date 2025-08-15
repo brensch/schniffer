@@ -157,14 +157,14 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
 			if err != nil {
 				call.Error = err.Error()
-				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, Err: err.Error()}); err2 != nil {
+				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, ErrorMsg: err.Error(), CampsiteCount: 0}); err2 != nil {
 					m.logger.Warn("record lookup failed", slog.Any("err", err2))
 				}
 				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
 				result.Calls = append(result.Calls, call)
 				continue
 			}
-			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, Month: b.Start, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true}); err2 != nil {
+			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true, CampsiteCount: len(states)}); err2 != nil {
 				m.logger.Warn("record lookup failed", slog.Any("err", err2))
 			}
 			result.Calls = append(result.Calls, call)
@@ -175,12 +175,12 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			// collect for later bundled change detection and notification
 			collectedStates = append(collectedStates, states...)
 			// persist states after detecting changes
-			batch := make([]db.CampsiteState, 0, len(states))
+			batch := make([]db.CampsiteAvailability, 0, len(states))
 			now := time.Now()
 			for _, s := range states {
-				batch = append(batch, db.CampsiteState{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, CheckedAt: now})
+				batch = append(batch, db.CampsiteAvailability{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, LastChecked: now})
 			}
-			if err := m.store.UpsertCampsiteStateBatch(ctx, batch); err != nil {
+			if err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch); err != nil {
 				m.logger.Error("upsert states failed", slog.Any("err", err))
 			} else {
 				m.logger.Info("persisted campsite states", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Int("count", len(batch)))
@@ -266,10 +266,6 @@ func (m *Manager) calculateNext10PMSF(sfLocation *time.Location) time.Time {
 }
 
 func (m *Manager) snapshotDaily(ctx context.Context) {
-	// aggregate and store
-	if err := m.store.InsertDailySummarySnapshot(ctx); err != nil {
-		m.logger.Error("daily summary insert failed", slog.Any("err", err))
-	}
 	// post summary to channel if configured
 	m.mu.Lock()
 	n := m.notifier
@@ -326,7 +322,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 		return 0, fmt.Errorf("unknown provider: %s", providerName)
 	}
 	// Check last successful sync within 24h
-	if last, ok, err := m.store.GetLastSuccessfulSync(ctx, "campgrounds", providerName); err == nil && ok {
+	if last, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, "campgrounds", providerName); err == nil && ok {
 		if time.Since(last) < 24*time.Hour {
 			m.logger.Info("skip campground sync; recently synced", slog.String("provider", providerName), slog.Time("last", last))
 			return 0, nil
@@ -338,7 +334,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	all, err := prov.FetchAllCampgrounds(ctx)
 	if err != nil {
 		// store failed sync
-		if err2 := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, Err: err.Error(), Count: 0}); err2 != nil {
+		if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: 0}); err2 != nil {
 			m.logger.Warn("record sync failed", slog.Any("err", err2))
 		}
 		return 0, err
@@ -347,14 +343,14 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	for _, cg := range all {
 		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon); err != nil {
 			// store failed sync
-			if err2 := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, Err: err.Error(), Count: int64(count)}); err2 != nil {
+			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
 				m.logger.Warn("record sync failed", slog.Any("err", err2))
 			}
 			return count, err
 		}
 		count++
 	}
-	if err := m.store.RecordSync(ctx, db.SyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: int64(count)}); err != nil {
+	if err := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: count}); err != nil {
 		m.logger.Warn("record sync failed", slog.Any("err", err))
 	}
 	return count, nil

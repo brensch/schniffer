@@ -18,12 +18,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	duckPath := os.Getenv("DUCKDB_PATH")
-	if duckPath == "" {
-		duckPath = "./schniffer.duckdb"
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "./schniffer.sqlite"
 	}
 
-	store, err := db.Open(duckPath)
+	store, err := db.Open(dbPath)
 	if err != nil {
 		slog.Error("open db failed", slog.Any("err", err))
 		os.Exit(1)

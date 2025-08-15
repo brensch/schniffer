@@ -37,3 +37,5 @@ auto.duckdb
 # Editor/IDE
 # .idea/
 # .vscode/
+
+*.sqlite

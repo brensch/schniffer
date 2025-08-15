@@ -29,7 +29,7 @@ The application reads configuration from the `.env` file:
 
 - `DISCORD_TOKEN`: Your Discord bot token
 - `GUILD_ID`: Your Discord guild/server ID  
-- `DUCKDB_PATH`: Database file path (defaults to `/app/data/schniffer.duckdb`)
+- `DB_PATH`: Database file path (defaults to `/app/data/schniffer.sqlite`)
 
 ## Commands
 
@@ -40,4 +40,4 @@ The application reads configuration from the `.env` file:
 
 ## Database
 
-The DuckDB database is stored in the `schniffer_data` Docker volume at `/app/data/schniffer.duckdb` inside the container.
+The SQLite database is stored in the `schniffer_data` Docker volume at `/app/data/schniffer.sqlite` inside the container.
