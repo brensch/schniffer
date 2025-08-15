@@ -20,6 +20,8 @@ type Provider interface {
 	// CampsiteURL returns a link to the campsite details page for this provider.
 	// campgroundID may be ignored by providers that only key by campsiteID.
 	CampsiteURL(campgroundID, campsiteID string) string
+	// CampgroundURL returns a link to the campground page for this provider.
+	CampgroundURL(campgroundID string) string
 	// PlanBuckets tells the manager how to split a set of exact dates (UTC days) into
 	// the minimal set of upstream requests (inclusive day ranges) for this provider.
 	// The input dates are unique and normalized to YYYY-MM-DD UTC.

@@ -52,11 +52,9 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 	weekday := func(t time.Time) string { return t.Format("Mon") }
 	embeds := make([]*discordgo.MessageEmbed, 0, len(items))
 	for _, it := range items {
-		// display name
-		name := it.campgroundID
-		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), it.provider, it.campgroundID); ok {
-			name = cg.Name
-		}
+		// display name with link
+		name := b.formatCampgroundWithLink(context.Background(), it.provider, it.campgroundID, it.campgroundID)
+		
 		nights := int(it.checkout.Sub(it.checkin).Hours() / 24)
 		// total checks for this campground in last 24h
 		totalChecks, err := b.store.CountLookupsLast24h(context.Background(), it.provider, it.campgroundID)

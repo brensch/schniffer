@@ -27,15 +27,8 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 		return err
 	}
 
-	// Get campground name
-	campground, found, err := b.store.GetCampgroundByID(context.Background(), provider, campgroundID)
-	if err != nil {
-		return fmt.Errorf("failed to get campground: %w", err)
-	}
-	campgroundName := campgroundID // fallback to ID if name not found
-	if found {
-		campgroundName = campground.Name
-	}
+	// Get campground info (we'll use the helper function in buildNotificationEmbed)
+	// No need to get the name here since the helper function will handle it
 
 	// Group items by campsite and calculate availability stats
 	campsiteStats := b.calculateCampsiteStats(items, req.Checkin, req.Checkout)
@@ -51,7 +44,7 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 	}
 
 	// Build the single embed with fields for each campsite
-	embed := b.buildNotificationEmbed(campgroundName, req.Checkin, req.Checkout, userID, campsiteStats, provider, campgroundID)
+	embed := b.buildNotificationEmbed(req.Checkin, req.Checkout, userID, campsiteStats, provider, campgroundID)
 
 	_, err = b.s.ChannelMessageSendEmbed(channel.ID, embed)
 	return err
@@ -88,10 +81,13 @@ func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, check
 }
 
 // buildNotificationEmbed creates a single embed with fields for each campsite
-func (b *Bot) buildNotificationEmbed(campgroundName string, checkin, checkout time.Time, userID string, campsiteStats []CampsiteStats, provider, campgroundID string) *discordgo.MessageEmbed {
+func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string, campsiteStats []CampsiteStats, provider, campgroundID string) *discordgo.MessageEmbed {
+	// Format campground name with link
+	campgroundNameWithLink := b.formatCampgroundWithLink(context.Background(), provider, campgroundID, campgroundID)
+	
 	// Main description with header info
 	var description strings.Builder
-	description.WriteString(campgroundName + "\n")
+	description.WriteString(campgroundNameWithLink + "\n")
 	description.WriteString(checkin.Format("2006-01-02") + " to " + checkout.Format("2006-01-02") + "\n")
 	description.WriteString(fmt.Sprintf("<@%s>, I just schniffed some available campsites for you.\n\n", userID))
 

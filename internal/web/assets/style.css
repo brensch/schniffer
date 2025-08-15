@@ -51,6 +51,22 @@ body {
     font-size: 0.8rem;
 }
 
+.popup-link {
+    margin-top: 0.5rem;
+}
+
+.popup-link a {
+    color: #3498db;
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.popup-link a:hover {
+    text-decoration: underline;
+    color: #2980b9;
+}
+
 .recreation-gov { background-color: #27ae60; }
 .reservecalifornia { background-color: #e74c3c; }
 

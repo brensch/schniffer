@@ -102,6 +102,9 @@ function renderMarkersFromViewport(result) {
         result.data.forEach(campground => {
             const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
             
+            const linkHtml = campground.url ? 
+                `<div class="popup-link"><a href="${campground.url}" target="_blank" rel="noopener noreferrer">View on ${campground.provider.replace('_', ' ')}</a></div>` : '';
+            
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
@@ -110,6 +113,7 @@ function renderMarkersFromViewport(result) {
                         <div class="popup-coordinates">
                             ${campground.lat.toFixed(4)}, ${campground.lon.toFixed(4)}
                         </div>
+                        ${linkHtml}
                     </div>
                 `)
                 .addTo(map);
@@ -134,51 +138,6 @@ function updateStatsFromViewport(result) {
     
     // Update the save group button
     updateSaveGroupButton();
-}
-
-function renderMarkersFromViewport(result) {
-    // Clear existing markers
-    markers.forEach(marker => map.removeLayer(marker));
-    markers = [];
-    
-    if (result.type === 'clusters') {
-        // Render clusters
-        result.data.forEach(cluster => {
-            const marker = L.marker([cluster.lat, cluster.lon], { 
-                icon: createClusterIcon(cluster.count) 
-            }).bindPopup(`
-                <div class="custom-popup">
-                    <div class="popup-title">${cluster.count} Campgrounds</div>
-                    <div style="margin-top: 0.5rem;">
-                        ${cluster.names.slice(0, 3).map(name => `<div style="font-size: 0.9rem; margin: 0.2rem 0;">• ${name}</div>`).join('')}
-                        ${cluster.names.length > 3 ? `<div style="font-size: 0.8rem; color: #666; margin-top: 0.3rem;">... and ${cluster.count - 3} more</div>` : ''}
-                        <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">Zoom in to see individual campgrounds</div>
-                    </div>
-                </div>
-            `).addTo(map);
-            
-            markers.push(marker);
-        });
-    } else {
-        // Show all campgrounds without filtering
-        result.data.forEach(campground => {
-            const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
-            
-            const marker = L.marker([campground.lat, campground.lon], { icon })
-                .bindPopup(`
-                    <div class="custom-popup">
-                        <div class="popup-title">${campground.name}</div>
-                        <div class="popup-provider ${campground.provider}">${campground.provider.replace('_', ' ')}</div>
-                        <div class="popup-coordinates">
-                            ${campground.lat.toFixed(4)}, ${campground.lon.toFixed(4)}
-                        </div>
-                    </div>
-                `)
-                .addTo(map);
-            
-            markers.push(marker);
-        });
-    }
 }
 
 // Event listeners

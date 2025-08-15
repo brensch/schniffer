@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/manager"
 )
 
 //go:embed assets/*
@@ -19,6 +20,7 @@ var assets embed.FS
 
 type Server struct {
 	store *db.Store
+	mgr   *manager.Manager
 	addr  string
 	tmpl  *template.Template
 	css   string
@@ -31,6 +33,7 @@ type CampgroundMapData struct {
 	Provider string  `json:"provider"`
 	Lat      float64 `json:"lat"`
 	Lon      float64 `json:"lon"`
+	URL      string  `json:"url"`
 }
 
 type ClusterData struct {
@@ -48,7 +51,7 @@ type ViewportRequest struct {
 	Zoom  int     `json:"zoom"`
 }
 
-func NewServer(store *db.Store, addr string) *Server {
+func NewServer(store *db.Store, mgr *manager.Manager, addr string) *Server {
 	// Read CSS and JS files
 	cssBytes, err := assets.ReadFile("assets/style.css")
 	if err != nil {
@@ -93,6 +96,7 @@ func NewServer(store *db.Store, addr string) *Server {
 
 	return &Server{
 		store: store,
+		mgr:   mgr,
 		addr:  addr,
 		tmpl:  tmpl,
 		css:   string(cssBytes),
@@ -177,12 +181,14 @@ func (s *Server) handleCampgroundsAPI(w http.ResponseWriter, r *http.Request) {
 
 	var result []CampgroundMapData
 	for _, c := range campgrounds {
+		url := s.mgr.CampgroundURL(c.Provider, c.ID)
 		result = append(result, CampgroundMapData{
 			ID:       c.ID,
 			Name:     c.Name,
 			Provider: c.Provider,
 			Lat:      c.Lat,
 			Lon:      c.Lon,
+			URL:      url,
 		})
 	}
 
@@ -254,6 +260,7 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		if err != nil {
 			return nil, err
 		}
+		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)
 		result = append(result, c)
 	}
 	return result, rows.Err()

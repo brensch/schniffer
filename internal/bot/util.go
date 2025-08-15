@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -73,4 +75,21 @@ func sanitizeChoiceValue(s string) string {
 	// Truncate to 100 bytes - this is safer than counting runes since
 	// Discord's limit is likely in terms of bytes/characters, not Unicode runes
 	return s[:100]
+}
+
+// formatCampgroundWithLink returns a formatted campground name with a link if available.
+// If a campground URL can be generated, it creates a markdown link format.
+func (b *Bot) formatCampgroundWithLink(ctx context.Context, provider, campgroundID, fallbackName string) string {
+	// Try to get campground info for better name
+	name := fallbackName
+	if cg, ok, _ := b.store.GetCampgroundByID(ctx, provider, campgroundID); ok {
+		name = cg.Name
+	}
+	
+	// Get campground URL
+	if url := b.mgr.CampgroundURL(provider, campgroundID); url != "" {
+		return fmt.Sprintf("[%s](%s)", name, url)
+	}
+	
+	return name
 }

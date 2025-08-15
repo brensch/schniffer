@@ -22,6 +22,7 @@ type fakeProv struct {
 
 func (f *fakeProv) Name() string                   { return f.name }
 func (f *fakeProv) CampsiteURL(_, _ string) string { return "" }
+func (f *fakeProv) CampgroundURL(_ string) string  { return "" }
 func (f *fakeProv) FetchAllCampgrounds(ctx context.Context) ([]providers.CampgroundInfo, error) {
 	return nil, nil
 }

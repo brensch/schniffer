@@ -164,7 +164,7 @@ People make plans, those plans change. They cancel their booking. They normally 
 			Color:       0x5865F2, // Discord blurple color
 		}
 
-		_, err := s.ChannelMessageSendEmbed(summaryChannelID, embed)
+		_, err = s.ChannelMessageSendEmbed(summaryChannelID, embed)
 		if err != nil {
 			b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 		}

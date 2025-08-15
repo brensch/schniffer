@@ -38,6 +38,19 @@ func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
 	return fmt.Sprintf("https://reservecalifornia.com/Web/#!park/%s/%s", parentID, facilityID)
 }
 
+// CampgroundURL returns a ReserveCalifornia URL for the campground.
+// campgroundID format: "parentID/facilityID" (e.g., "1260/2181")
+func (r *ReserveCalifornia) CampgroundURL(campgroundID string) string {
+	// Parse composite ID: parentID/facilityID
+	parts := strings.Split(campgroundID, "/")
+	if len(parts) != 2 {
+		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
+	}
+	parentID := parts[0]
+	facilityID := parts[1]
+	return fmt.Sprintf("https://reservecalifornia.com/Web/#!park/%s/%s", parentID, facilityID)
+}
+
 // PlanBuckets: ReserveCalifornia can query an arbitrary date range per facility, so collapse to a single [min..max] range.
 func (r *ReserveCalifornia) PlanBuckets(dates []time.Time) []DateRange {
 	if len(dates) == 0 {

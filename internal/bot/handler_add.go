@@ -58,5 +58,6 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 
 	// get the length of the stay
 	stayDuration := end.Sub(start)
-	respond(s, i, fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", campgroundName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24))
+	formattedName := b.formatCampgroundWithLink(context.Background(), campgroundProvider, campgroundID, campgroundName)
+	respond(s, i, fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", formattedName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24))
 }

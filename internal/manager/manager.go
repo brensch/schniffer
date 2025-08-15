@@ -333,6 +333,15 @@ func (m *Manager) CampsiteURL(provider, campgroundID, campsiteID string) string 
 	return p.CampsiteURL(campgroundID, campsiteID)
 }
 
+// CampgroundURL exposes provider-specific campground URLs for the bot to build embeds.
+func (m *Manager) CampgroundURL(provider, campgroundID string) string {
+	p, ok := m.reg.Get(provider)
+	if !ok || p == nil {
+		return ""
+	}
+	return p.CampgroundURL(campgroundID)
+}
+
 // SyncCampgrounds pulls all campgrounds from a provider and stores them in DB.
 func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int, error) {
 	prov, ok := m.reg.Get(providerName)

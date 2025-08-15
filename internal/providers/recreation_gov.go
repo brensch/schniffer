@@ -33,6 +33,14 @@ func (r *RecreationGov) CampsiteURL(_ string, campsiteID string) string {
 	return "https://www.recreation.gov/camping/campsites/" + campsiteID
 }
 
+// CampgroundURL implements providers.Provider
+func (r *RecreationGov) CampgroundURL(campgroundID string) string {
+	if campgroundID == "" {
+		return ""
+	}
+	return "https://www.recreation.gov/camping/campgrounds/" + campgroundID
+}
+
 // minimal response structs following campbot logic: availability is monthly and keyed by campsite id and date
 type recGovResp struct {
 	Campsites map[string]struct {

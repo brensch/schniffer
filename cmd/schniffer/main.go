@@ -51,7 +51,7 @@ func main() {
 	if webAddr == "" {
 		webAddr = ":8069"
 	}
-	webServer := web.NewServer(store, webAddr)
+	webServer := web.NewServer(store, mgr, webAddr)
 	go func() {
 		err := webServer.Run(ctx)
 		if err != nil {
