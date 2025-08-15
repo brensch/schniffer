@@ -38,7 +38,7 @@ body {
 
 .popup-provider {
     background-color: #3498db;
-    color: black;
+    color: black !important;
     padding: 0.2rem 0.5rem;
     border-radius: 3px;
     font-size: 0.8rem;
@@ -52,25 +52,43 @@ body {
 .popup-provider:hover {
     transform: scale(1.05);
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    color: black;
+    color: black !important;
+}
+
+.popup-provider:visited {
+    color: black !important;
+}
+
+.popup-provider:active {
+    color: black !important;
 }
 
 .popup-provider.recreation-gov { 
     background-color: #27ae60; 
+    color: black !important;
 }
 
 .popup-provider.recreation-gov:hover { 
     background-color: #219a52;
-    color: black;
+    color: black !important;
+}
+
+.popup-provider.recreation-gov:visited { 
+    color: black !important;
 }
 
 .popup-provider.reservecalifornia { 
     background-color: #e74c3c; 
+    color: black !important;
 }
 
 .popup-provider.reservecalifornia:hover { 
     background-color: #c0392b;
-    color: black;
+    color: black !important;
+}
+
+.popup-provider.reservecalifornia:visited { 
+    color: black !important;
 }
 
 /* Save Group Button - Floating at bottom */
