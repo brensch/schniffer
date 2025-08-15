@@ -90,7 +90,8 @@ func main() {
 	}
 
 	if looksLikeSelect(sqlText) {
-		if err := runSelect(store.DB, sqlText, args.values(), csv); err != nil {
+		err := runSelect(store.DB, sqlText, args.values(), csv)
+		if err != nil {
 			fatalf("query failed: %v", err)
 		}
 		return
@@ -131,7 +132,8 @@ func runSelect(dbx *sql.DB, q string, args []any, csv bool) error {
 		ptrs[i] = &vals[i]
 	}
 	for rows.Next() {
-		if err := rows.Scan(ptrs...); err != nil {
+		err := rows.Scan(ptrs...)
+		if err != nil {
 			return err
 		}
 		out := make([]string, len(cols))
@@ -186,7 +188,8 @@ func copyToTemp(src string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	if _, err := f.Write(b); err != nil {
+	_, err = f.Write(b)
+	if err != nil {
 		return "", err
 	}
 	return f.Name(), nil

@@ -53,7 +53,8 @@ func main() {
 	}
 	webServer := web.NewServer(store, webAddr)
 	go func() {
-		if err := webServer.Run(ctx); err != nil {
+		err := webServer.Run(ctx)
+		if err != nil {
 			slog.Error("web server failed", slog.Any("err", err))
 		}
 	}()
@@ -65,7 +66,8 @@ func main() {
 	}
 
 	b := bot.New(discordToken, guildID, store, mgr, !prod)
-	if err := b.Run(ctx); err != nil {
+	err = b.Run(ctx)
+	if err != nil {
 		slog.Error("bot run failed", slog.Any("err", err))
 		os.Exit(1)
 	}

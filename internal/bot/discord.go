@@ -35,7 +35,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	s.AddHandler(b.onInteraction)
 	s.AddHandler(b.onGuildMemberAdd)
 	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
-	if err := s.Open(); err != nil {
+	err = s.Open()
+	if err != nil {
 		return err
 	}
 	defer s.Close()
@@ -47,7 +48,8 @@ func (b *Bot) Run(ctx context.Context) error {
 func (b *Bot) ResolveUsernames(userIDs []string) []string {
 	usernames := make([]string, len(userIDs))
 	for i, userID := range userIDs {
-		if user, err := b.s.User(userID); err == nil {
+		user, err := b.s.User(userID)
+		if err == nil {
 			usernames[i] = user.Username
 		} else {
 			// Fallback to user ID if we can't resolve the username
@@ -72,7 +74,8 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	summaryChannelID := b.mgr.GetSummaryChannel()
 	if summaryChannelID != "" {
 		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
-		if guild, err := s.Guild(summaryChannelID); err == nil {
+		guild, err := s.Guild(summaryChannelID)
+		if err == nil {
 			// This is a guild ID, find the first text channel
 			channels, err := s.GuildChannels(guild.ID)
 			if err == nil {
@@ -86,7 +89,7 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			}
 		}
 
-		err := b.NotifySummary(summaryChannelID, "scniffbot online and ready to schniff")
+		err = b.NotifySummary(summaryChannelID, "scniffbot online and ready to schniff")
 		if err != nil {
 			b.logger.Error("failed to send startup message", slog.Any("err", err))
 		}
@@ -137,7 +140,8 @@ People make plans, those plans change. They cancel their booking. They normally 
 	summaryChannelID := b.mgr.GetSummaryChannel()
 	if summaryChannelID != "" {
 		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
-		if guild, err := s.Guild(summaryChannelID); err == nil {
+		guild, err := s.Guild(summaryChannelID)
+		if err == nil {
 			// This is a guild ID, find the first text channel
 			channels, err := s.GuildChannels(guild.ID)
 			if err == nil {

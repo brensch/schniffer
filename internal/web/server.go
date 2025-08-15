@@ -85,7 +85,8 @@ func NewServer(store *db.Store, addr string) *Server {
 
 	// Pre-execute template to check for errors
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, tmplData); err != nil {
+	err = tmpl.Execute(&buf, tmplData)
+	if err != nil {
 		panic(fmt.Sprintf("failed to execute template: %v", err))
 	}
 	slog.Info("template test execution successful", slog.Int("output_bytes", buf.Len()))
@@ -154,7 +155,8 @@ func (s *Server) handleMapPage(w http.ResponseWriter, r *http.Request) {
 		slog.Int("js_length", len(data.JS)))
 
 	w.Header().Set("Content-Type", "text/html")
-	if err := s.tmpl.Execute(w, data); err != nil {
+	err := s.tmpl.Execute(w, data)
+	if err != nil {
 		slog.Error("failed to execute template", slog.Any("err", err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
@@ -185,7 +187,8 @@ func (s *Server) handleCampgroundsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(result); err != nil {
+	err = json.NewEncoder(w).Encode(result)
+	if err != nil {
 		slog.Error("failed to encode campgrounds", slog.Any("err", err))
 	}
 }
@@ -197,7 +200,8 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ViewportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -246,7 +250,8 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	var result []CampgroundMapData
 	for rows.Next() {
 		var c CampgroundMapData
-		if err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, c)
@@ -371,7 +376,8 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req CreateGroupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}

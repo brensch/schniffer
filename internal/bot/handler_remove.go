@@ -13,7 +13,8 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 	opts := optMap(sub.Options)
 	if opt, ok := opts["ids"]; ok && opt != nil {
 		id := int64(opt.IntValue())
-		if err := b.store.DeactivateRequest(context.Background(), id, uid); err != nil {
+		err := b.store.DeactivateRequest(context.Background(), id, uid)
+		if err != nil {
 			respond(s, i, "error: "+err.Error())
 			return
 		}
@@ -58,14 +59,15 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 			},
 		},
 	}
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content:    "Pick a schniff to remove. You'll get a confirmation after selection.",
 			Components: []discordgo.MessageComponent{selectMenu},
 			Flags:      1 << 6,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		b.logger.Warn("remove respond failed", "err", err)
 	}
 }

@@ -26,10 +26,12 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
+	err = db.Ping()
+	if err != nil {
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
+	err = migrate(db)
+	if err != nil {
 		return nil, err
 	}
 	return &Store{DB: db}, nil
@@ -41,7 +43,8 @@ func OpenReadOnly(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
+	err = db.Ping()
+	if err != nil {
 		return nil, err
 	}
 	return &Store{DB: db}, nil
@@ -194,7 +197,8 @@ func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error
 	var out []SchniffRequest
 	for rows.Next() {
 		var r SchniffRequest
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active); err != nil {
+		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -229,7 +233,8 @@ func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]Sc
 	var out []SchniffRequest
 	for rows.Next() {
 		var r SchniffRequest
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active); err != nil {
+		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -273,7 +278,8 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	defer stmt.Close()
 
 	for _, st := range states {
-		if _, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked); err != nil {
+		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked)
+		if err != nil {
 			return err
 		}
 	}
@@ -309,7 +315,8 @@ func (s *Store) GetAvailabilityChangesForNotifications(ctx context.Context, prov
 	var currentAvailable []CampsiteAvailability
 	for availableRows.Next() {
 		var ca CampsiteAvailability
-		if err := availableRows.Scan(&ca.Provider, &ca.CampgroundID, &ca.CampsiteID, &ca.Date, &ca.Available, &ca.LastChecked); err != nil {
+		err := availableRows.Scan(&ca.Provider, &ca.CampgroundID, &ca.CampsiteID, &ca.Date, &ca.Available, &ca.LastChecked)
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		currentAvailable = append(currentAvailable, ca)
@@ -346,7 +353,8 @@ func (s *Store) GetAvailabilityChangesForNotifications(ctx context.Context, prov
 	for lastBatchRows.Next() {
 		var campgroundID, campsiteID string
 		var date time.Time
-		if err := lastBatchRows.Scan(&campgroundID, &campsiteID, &date); err != nil {
+		err := lastBatchRows.Scan(&campgroundID, &campsiteID, &date)
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		key := fmt.Sprintf("%s_%s_%s", campgroundID, campsiteID, date.Format("2006-01-02"))
@@ -393,7 +401,8 @@ func (s *Store) GetAvailabilityChangesForNotifications(ctx context.Context, prov
 	for newlyBookedRows.Next() {
 		var campgroundID, campsiteID string
 		var date time.Time
-		if err := newlyBookedRows.Scan(&campgroundID, &campsiteID, &date); err != nil {
+		err := newlyBookedRows.Scan(&campgroundID, &campsiteID, &date)
+		if err != nil {
 			return nil, nil, nil, err
 		}
 		// Create a placeholder availability entry to represent the booked site
@@ -437,10 +446,11 @@ func (s *Store) InsertNotificationsBatch(ctx context.Context, notifications []No
 	defer stmt.Close()
 
 	for _, n := range notifications {
-		if _, err := stmt.ExecContext(ctx,
+		_, err := stmt.ExecContext(ctx,
 			batchID, n.RequestID, n.UserID, n.Provider, n.CampgroundID,
 			n.CampsiteID, n.Date, n.State, n.SentAt,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
 	}
@@ -533,14 +543,16 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 			hadOpen := (err == nil && strings.EqualFold(last, "available"))
 			if st.Available {
 				if !hadOpen { // open it
-					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "available"); err != nil {
+					_, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "available")
+					if err != nil {
 						return nil, err
 					}
 					newly[userID] = append(newly[userID], AvailabilityItem{CampsiteID: st.CampsiteID, Date: normalizeDay(st.Date)})
 				}
 			} else { // unavailable
 				if hadOpen { // close it
-					if _, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "unavailable"); err != nil {
+					_, err := stInsert.ExecContext(ctx, reqID, userID, provider, campgroundID, st.CampsiteID, normalizeDay(st.Date), "unavailable")
+					if err != nil {
 						return nil, err
 					}
 				}
@@ -548,7 +560,8 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return nil, err
 	}
 	return newly, nil
@@ -570,7 +583,8 @@ func (s *Store) GetCurrentlyAvailableCampsites(ctx context.Context, provider, ca
 	var items []AvailabilityItem
 	for rows.Next() {
 		var item AvailabilityItem
-		if err := rows.Scan(&item.CampsiteID, &item.Date); err != nil {
+		err := rows.Scan(&item.CampsiteID, &item.Date)
+		if err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -751,7 +765,8 @@ func (s *Store) LatestAvailabilityByDate(ctx context.Context, provider, campgrou
 	out := []AvailabilityByDate{}
 	for rows.Next() {
 		var a AvailabilityByDate
-		if err := rows.Scan(&a.Date, &a.Total, &a.Free); err != nil {
+		err := rows.Scan(&a.Date, &a.Total, &a.Free)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -784,7 +799,8 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 		WHERE provider=? AND campground_id=? AND campsite_id=? AND date=?
 	`, provider, campgroundID, campsiteID, date)
 	var available bool
-	switch err := row.Scan(&available); err {
+	err := row.Scan(&available)
+	switch err {
 	case nil:
 		return available, true, nil
 	case sql.ErrNoRows:
@@ -849,7 +865,8 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	var out []Campground
 	for rows.Next() {
 		var c Campground
-		if err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -871,7 +888,8 @@ func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
 	var out []Campground
 	for rows.Next() {
 		var c Campground
-		if err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -886,7 +904,8 @@ func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID st
 		WHERE provider=? AND id=?
 	`, provider, campgroundID)
 	var c Campground
-	if err := row.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon); err != nil {
+	err := row.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return Campground{}, false, nil
 		}
@@ -911,7 +930,8 @@ func (s *Store) GetLastSuccessfulMetadataSync(ctx context.Context, syncType, pro
 		ORDER BY finished_at DESC LIMIT 1
 	`, syncType, provider)
 	var t time.Time
-	switch err := row.Scan(&t); err {
+	err := row.Scan(&t)
+	switch err {
 	case nil:
 		return t, true, nil
 	case sql.ErrNoRows:
@@ -932,7 +952,8 @@ func (s *Store) GetDetailedSummaryStats(ctx context.Context) (DetailedSummarySta
 	`)
 
 	var notifications24h, lookups24h, activeRequests int64
-	if err := row.Scan(&notifications24h, &lookups24h, &activeRequests); err != nil {
+	err := row.Scan(&notifications24h, &lookups24h, &activeRequests)
+	if err != nil {
 		return DetailedSummaryStats{}, err
 	}
 
@@ -963,7 +984,8 @@ func (s *Store) GetUsersWithNotifications(ctx context.Context) ([]string, error)
 	var users []string
 	for rows.Next() {
 		var userID string
-		if err := rows.Scan(&userID); err != nil {
+		err := rows.Scan(&userID)
+		if err != nil {
 			return nil, err
 		}
 		users = append(users, userID)
@@ -987,7 +1009,8 @@ func (s *Store) GetUsersWithActiveRequests(ctx context.Context) ([]string, error
 	var users []string
 	for rows.Next() {
 		var userID string
-		if err := rows.Scan(&userID); err != nil {
+		err := rows.Scan(&userID)
+		if err != nil {
 			return nil, err
 		}
 		users = append(users, userID)
@@ -1012,7 +1035,8 @@ func (s *Store) GetTrackedCampgrounds(ctx context.Context) ([]string, error) {
 	var campgrounds []string
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		err := rows.Scan(&name)
+		if err != nil {
 			return nil, err
 		}
 		campgrounds = append(campgrounds, name)
@@ -1077,7 +1101,8 @@ func (s *Store) GetUserGroups(ctx context.Context, userID string) ([]Group, erro
 			return nil, fmt.Errorf("failed to scan group: %w", err)
 		}
 
-		if err := json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds); err != nil {
+		err = json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds)
+		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal campgrounds for group %d: %w", group.ID, err)
 		}
 
@@ -1104,7 +1129,8 @@ func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Gr
 		return nil, fmt.Errorf("failed to get group: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds); err != nil {
+	err = json.Unmarshal([]byte(campgroundsJSON), &group.Campgrounds)
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal campgrounds for group %d: %w", group.ID, err)
 	}
 

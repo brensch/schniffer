@@ -25,7 +25,8 @@ func (b *Bot) handleRemoveChecksComponent(s *discordgo.Session, i *discordgo.Int
 		respond(s, i, "invalid selection")
 		return
 	}
-	if err := b.store.DeactivateRequest(context.Background(), id, userID); err != nil {
+	err = b.store.DeactivateRequest(context.Background(), id, userID)
+	if err != nil {
 		respond(s, i, "error: "+err.Error())
 		return
 	}

@@ -71,7 +71,8 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 			return nil, fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
 		var parsed recGovResp
-		if err := json.Unmarshal(body, &parsed); err != nil {
+		err = json.Unmarshal(body, &parsed)
+		if err != nil {
 			return nil, fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
 		}
 		for siteID, data := range parsed.Campsites {
@@ -156,12 +157,14 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			}
 			var lat, lon float64
 			if r.Latitude != "" {
-				if v, err := strconv.ParseFloat(r.Latitude, 64); err == nil {
+				v, err := strconv.ParseFloat(r.Latitude, 64)
+				if err == nil {
 					lat = v
 				}
 			}
 			if r.Longitude != "" {
-				if v, err := strconv.ParseFloat(r.Longitude, 64); err == nil {
+				v, err := strconv.ParseFloat(r.Longitude, 64)
+				if err == nil {
 					lon = v
 				}
 			}

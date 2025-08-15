@@ -93,7 +93,8 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 			// Only send notification if there are actual changes
 			if len(reqNewlyAvailable) > 0 || len(reqNewlyBooked) > 0 {
 				// Send notification to user
-				if err := m.sendBatchNotification(ctx, req, reqAvailable, reqNewlyAvailable, reqNewlyBooked); err != nil {
+				err := m.sendBatchNotification(ctx, req, reqAvailable, reqNewlyAvailable, reqNewlyBooked)
+				if err != nil {
 					m.logger.Warn("send batch notification failed",
 						slog.String("userID", req.UserID),
 						slog.Any("err", err))
@@ -117,7 +118,8 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 
 		// Record the notification batch
 		if len(notificationsToRecord) > 0 {
-			if err := m.store.InsertNotificationsBatch(ctx, notificationsToRecord, batchID); err != nil {
+			err := m.store.InsertNotificationsBatch(ctx, notificationsToRecord, batchID)
+			if err != nil {
 				m.logger.Warn("record notification batch failed", slog.Any("err", err))
 			} else {
 				m.logger.Info("recorded notification batch",
@@ -151,7 +153,8 @@ func (m *Manager) sendBatchNotification(ctx context.Context, req db.SchniffReque
 	}
 
 	// Send the notification
-	if err := n.NotifyAvailabilityEmbed(req.UserID, req.Provider, req.CampgroundID, req, availableItems); err != nil {
+	err := n.NotifyAvailabilityEmbed(req.UserID, req.Provider, req.CampgroundID, req, availableItems)
+	if err != nil {
 		return fmt.Errorf("embed notification failed: %w", err)
 	}
 
@@ -199,7 +202,8 @@ func (m *Manager) processStateChangesForNotifications(ctx context.Context, state
 		}
 
 		// Send the enhanced notification
-		if err := m.sendEnhancedNotification(ctx, notif, *userReq); err != nil {
+		err := m.sendEnhancedNotification(ctx, notif, *userReq)
+		if err != nil {
 			m.logger.Warn("send enhanced notification failed",
 				slog.String("userID", notif.UserID),
 				slog.Any("err", err))
@@ -208,7 +212,7 @@ func (m *Manager) processStateChangesForNotifications(ctx context.Context, state
 		// Record notifications in the database
 		now := time.Now()
 		for _, item := range notif.NewlyAvailable {
-			if err := m.store.RecordNotification(ctx, db.Notification{
+			err := m.store.RecordNotification(ctx, db.Notification{
 				RequestID:    notif.RequestID,
 				UserID:       notif.UserID,
 				Provider:     notif.Provider,
@@ -217,13 +221,14 @@ func (m *Manager) processStateChangesForNotifications(ctx context.Context, state
 				Date:         item.Date,
 				State:        "available",
 				SentAt:       now,
-			}); err != nil {
+			})
+			if err != nil {
 				m.logger.Warn("record available notification failed", slog.Any("err", err))
 			}
 		}
 
 		for _, item := range notif.NewlyUnavailable {
-			if err := m.store.RecordNotification(ctx, db.Notification{
+			err := m.store.RecordNotification(ctx, db.Notification{
 				RequestID:    notif.RequestID,
 				UserID:       notif.UserID,
 				Provider:     notif.Provider,
@@ -232,7 +237,8 @@ func (m *Manager) processStateChangesForNotifications(ctx context.Context, state
 				Date:         item.Date,
 				State:        "unavailable",
 				SentAt:       now,
-			}); err != nil {
+			})
+			if err != nil {
 				m.logger.Warn("record unavailable notification failed", slog.Any("err", err))
 			}
 		}
@@ -254,7 +260,8 @@ func (m *Manager) sendEnhancedNotification(ctx context.Context, notif db.Notific
 
 	// Send the embed notification with enhanced data
 	// The notifier interface may need to be extended to handle the newly unavailable items
-	if err := n.NotifyAvailabilityEmbed(notif.UserID, notif.Provider, notif.CampgroundID, req, allItems); err != nil {
+	err := n.NotifyAvailabilityEmbed(notif.UserID, notif.Provider, notif.CampgroundID, req, allItems)
+	if err != nil {
 		return fmt.Errorf("embed notification failed: %w", err)
 	}
 

@@ -141,7 +141,8 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		return nil, fmt.Errorf("reservecalifornia grid status %d; body: %s", resp.StatusCode, clipBody(b))
 	}
 	var parsed gridResponse
-	if err := json.Unmarshal(b, &parsed); err != nil {
+	err = json.Unmarshal(b, &parsed)
+	if err != nil {
 		return nil, fmt.Errorf("grid JSON decode failed: %w; body: %s", err, clipBody(b))
 	}
 	var out []Campsite
@@ -186,7 +187,8 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		Longitude  float64 `json:"Longitude"`
 		PlaceId    int     `json:"PlaceId"`
 	}
-	if err := json.Unmarshal(body, &parks); err != nil {
+	err = json.Unmarshal(body, &parks)
+	if err != nil {
 		return nil, fmt.Errorf("citypark JSON decode failed: %w", err)
 	}
 
@@ -238,7 +240,8 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			continue
 		}
 		var prParsed placeResp
-		if err := json.Unmarshal(b2, &prParsed); err != nil {
+		err = json.Unmarshal(b2, &prParsed)
+		if err != nil {
 			slog.Warn("place JSON decode failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
 			continue
 		}

@@ -203,7 +203,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 
 	// After processing all states, check for notifications
 	if len(requests) > 0 {
-		if err := m.ProcessNotificationsWithBatches(ctx, requests); err != nil {
+		err := m.ProcessNotificationsWithBatches(ctx, requests)
+		if err != nil {
 			m.logger.Warn("process notifications failed", slog.Any("err", err))
 		}
 	}
@@ -302,7 +303,8 @@ func (m *Manager) snapshotDaily(ctx context.Context) {
 				"Active requests: " + itoa(active) + "\n" +
 				"Lookups today: " + itoa(lookups) + "\n" +
 				"Notifications today: " + itoa(notes)
-			if err := n.NotifySummary(ch, msg); err != nil {
+			err := n.NotifySummary(ch, msg)
+			if err != nil {
 				m.logger.Warn("notify summary failed", slog.Any("err", err))
 			}
 		}
@@ -357,7 +359,8 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		if err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon); err != nil {
+		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon)
+		if err != nil {
 			// store failed sync
 			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
 				m.logger.Warn("record sync failed", slog.Any("err", err2))
@@ -366,7 +369,8 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 		}
 		count++
 	}
-	if err := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: count}); err != nil {
+	err = m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: count})
+	if err != nil {
 		m.logger.Warn("record sync failed", slog.Any("err", err))
 	}
 	return count, nil

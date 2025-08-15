@@ -76,14 +76,16 @@ func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionC
 		})
 		// Send in batches of up to 10 embeds per message to fit Discord limits
 		if len(embeds) == 10 {
-			if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6}); err != nil {
+			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6})
+			if err != nil {
 				b.logger.Warn("state followup send failed", "err", err)
 			}
 			embeds = nil
 		}
 	}
 	if len(embeds) > 0 {
-		if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6}); err != nil {
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6})
+		if err != nil {
 			b.logger.Warn("state followup send failed", "err", err)
 		}
 	}
