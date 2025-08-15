@@ -2,15 +2,14 @@
 const urlParams = new URLSearchParams(window.location.search);
 const userToken = urlParams.get('user');
 
-// Initialize the map
-const map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
+// Initialize the map with mobile-friendly continuous zoom
+const map = L.map('map', {
+    zoomSnap: 0,      // Allows fractional zoom levels
+    zoomDelta: 1,     // Faster zoom steps for PC
+    wheelPxPerZoomLevel: 30  // Much faster wheel zoom control for PC
+}).setView([39.8283, -98.5795], 4); // Center of US
 
 // Create different tile layers for park-focused viewing
-const outdoorLayer = L.tileLayer('https://{s}.tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=YOUR_API_KEY', {
-    attribution: '&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    apikey: 'your-thunderforest-api-key'
-});
-
 // Cleaner topographic layer with reduced detail at low zoom levels
 const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
     attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
@@ -62,7 +61,7 @@ function createClusterIcon(count) {
         className: 'custom-div-icon',
         html: `<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'Epilogue', sans-serif;">
                 <div style="font-size: ${fontSize}px;">🐽</div>
-                <div style="font-size: ${numberSize}px; font-weight: 700; color: #000; margin-top: -3px;">${count}</div>
+                <div style="font-size: ${numberSize}px; font-weight: 700; color: #000; margin-top: -3px; font-family: 'Syne', sans-serif; letter-spacing: -0.5px;">${count}</div>
                </div>`,
         iconSize: [size, size + 10],
         iconAnchor: [size/2, (size + 10)/2]
@@ -79,7 +78,7 @@ async function loadViewportData() {
         south: bounds.getSouth(),
         east: bounds.getEast(),
         west: bounds.getWest(),
-        zoom: zoom
+        zoom: Math.round(zoom)  // Round fractional zoom to integer for API
     };
     
     try {
