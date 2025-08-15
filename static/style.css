@@ -28,6 +28,53 @@ body {
     }
 }
 
+/* Neubrutalist popup styles */
+.leaflet-popup-content-wrapper {
+    background-color: #fff !important;
+    border: 4px solid #000 !important;
+    border-radius: 0px !important;
+    box-shadow: 6px 6px 0px #000 !important;
+    padding: 0 !important;
+}
+
+.leaflet-popup-content {
+    margin: 0 !important;
+    padding: 1.5rem !important;
+    font-family: 'Epilogue', sans-serif !important;
+}
+
+.leaflet-popup-tip {
+    background-color: #fff !important;
+    border: 4px solid #000 !important;
+    border-top: none !important;
+    border-right: none !important;
+    box-shadow: -2px 2px 0px #000 !important;
+}
+
+.leaflet-popup-close-button {
+    background-color: #ff4757 !important;
+    color: #000 !important;
+    border: 3px solid #000 !important;
+    border-radius: 0px !important;
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 18px !important;
+    font-weight: 900 !important;
+    font-family: 'Epilogue', sans-serif !important;
+    right: 8px !important;
+    top: 8px !important;
+    text-align: center !important;
+    line-height: 24px !important;
+    box-shadow: 3px 3px 0px #000 !important;
+    transition: all 0.1s ease !important;
+}
+
+.leaflet-popup-close-button:hover {
+    background-color: #ff3742 !important;
+    transform: translate(-2px, -2px) !important;
+    box-shadow: 5px 5px 0px #000 !important;
+}
+
 .custom-popup {
     min-width: 200px;
 }
@@ -44,13 +91,14 @@ body {
 .popup-provider {
     background-color: #3498db;
     color: #000 !important;
-    padding: 0.4rem 0.8rem;
+    padding: 0.6rem 1rem;
     border-radius: 0px;
     font-size: 0.9rem;
     font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
     display: inline-block;
     margin-bottom: 0.5rem;
+    margin-top: 0.8rem;
     text-decoration: none;
     cursor: pointer;
     transition: all 0.1s ease;
@@ -165,6 +213,7 @@ body {
     max-height: 80vh;
     overflow: hidden;
     box-shadow: 10px 10px 0px #000;
+    box-sizing: border-box;
 }
 
 .modal-header {
@@ -200,13 +249,13 @@ body {
 }
 
 .modal-body {
-    padding: 2rem;
+    padding: 0;
     max-height: 50vh;
     overflow-y: auto;
 }
 
 .form-group {
-    margin-bottom: 2rem;
+    margin-bottom: 0;
 }
 
 .form-group label {
@@ -216,12 +265,15 @@ body {
     font-family: 'Epilogue', sans-serif;
     letter-spacing: 0.3px;
     color: #000;
+    padding: 0 1rem;
 }
 
 .form-group input[type="text"] {
     width: 100%;
-    padding: 1.2rem;
-    border: 3px solid #000;
+    padding: 1.2rem 1rem;
+    border: none;
+    border-top: 3px solid #000;
+    border-bottom: 3px solid #000;
     border-radius: 0px;
     font-size: 1rem;
     font-weight: 500;
@@ -229,21 +281,30 @@ body {
     box-sizing: border-box;
     background-color: #fff;
     transition: all 0.1s ease;
+    margin: 0;
 }
 
 .campground-list {
     max-height: 300px;
     overflow-y: auto;
-    border: 3px solid #000;
+    overflow-x: hidden;
+    border: none;
+    border-top: 3px solid #000;
+    border-bottom: 3px solid #000;
     border-radius: 0px;
     background: #fff;
+    margin: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .campground-item {
-    padding: 1.5rem;
+    padding: 1rem;
     border-bottom: 2px solid #000;
     background: #fff;
     transition: all 0.1s ease;
+    overflow: hidden;
+    box-sizing: border-box;
 }
 
 .campground-item:last-child {
@@ -253,33 +314,84 @@ body {
 .campground-item label {
     display: flex;
     align-items: center;
-    cursor: pointer;
+    padding: 0.5rem;
     margin: 0;
-    font-family: 'Epilogue', sans-serif;
-    font-weight: 500;
+    cursor: pointer;
+    border: 3px solid #000;
+    border-radius: 0;
+    background: #fff;
+    font-family: 'Epilogue', Arial, sans-serif;
+    font-size: 14px;
+    transition: all 0.2s ease;
+    gap: 0.5rem;
+    width: 100%;
+    max-width: 300px;
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .campground-item input[type="checkbox"] {
     margin-right: 0.5rem;
+    margin-bottom: 0.5rem;
+    transform: scale(1.2);
+    accent-color: #00ff88;
+    border: 0px;
+    border-radius: 0px;
+    align-self: flex-start;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background-color: #fff;
+    border: 3px solid #000;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.campground-item input[type="checkbox"]:checked {
+    background-color: #00ff88;
+}
+
+.campground-item input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #000;
+    font-weight: 900;
+    font-size: 14px;
 }
 
 .campground-name {
-    flex: 1;
     font-weight: 600;
     color: #000;
+    margin-bottom: 0.5rem;
+    width: 100%;
+    word-wrap: break-word;
+    hyphens: auto;
+    overflow-wrap: break-word;
+    max-width: 100%;
+    white-space: normal;
+    line-height: 1.3;
 }
 
 .campground-provider {
-    font-size: 0.8rem;
+    font-size: 0.7rem;
     color: #000;
     background: #ffff00;
-    padding: 0.6rem 1rem;
+    padding: 0.3rem 0.5rem;
     border-radius: 0px;
     border: 2px solid #000;
-    margin-left: 1rem;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.3px;
+    margin-top: auto;
+    align-self: flex-start;
+    max-width: calc(100% - 2rem);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 
 .modal-footer {
@@ -433,16 +545,16 @@ body {
 /* Remove the old funky styling section and replace with neubrutalism */
 #group-name:focus {
     border-color: #00ff88;
-    box-shadow: 4px 4px 0px #000;
+    border-top: 3px solid #00ff88;
+    border-bottom: 3px solid #00ff88;
+    box-shadow: none;
     outline: none;
     background-color: #ffff00;
 }
 
 /* Funky checkboxes - neubrutalism style */
 .campground-item input[type="checkbox"] {
-    transform: scale(1.5);
-    accent-color: #00ff88;
-    border: 2px solid #000;
+    border-radius: 0px;
 }
 
 .campground-item:hover {

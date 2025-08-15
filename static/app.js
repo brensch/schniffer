@@ -112,10 +112,8 @@ function renderMarkersFromViewport(result) {
                 icon: createClusterIcon(cluster.count) 
             }).bindPopup(`
                 <div class="custom-popup">
-                    <div class="popup-title">🏕️ ${cluster.count} Schniffgrounds</div>
+                    <div class="popup-title">${cluster.count} Schniffgrounds</div>
                     <div style="margin-top: 0.5rem;">
-                        ${cluster.names.slice(0, 3).map(name => `<div style="font-size: 0.9rem; margin: 0.2rem 0;">🎪 ${name}</div>`).join('')}
-                        ${cluster.names.length > 3 ? `<div style="font-size: 0.8rem; color: #666; margin-top: 0.3rem;">✨ ... and ${cluster.count - 3} more magical places</div>` : ''}
                         <div style="font-size: 0.8rem; color: #666; margin-top: 0.5rem;">🔍 Zoom in to see the individual schniffgrounds</div>
                     </div>
                 </div>
@@ -135,7 +133,7 @@ function renderMarkersFromViewport(result) {
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
-                        <div class="popup-title">🏕️ ${campground.name}</div>
+                        <div class="popup-title">${campground.name}</div>
                         ${linkHtml}
                     </div>
                 `)
@@ -252,9 +250,13 @@ function openSaveGroupModal() {
         item.className = 'campground-item';
         item.innerHTML = `
             <label>
-                <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
-                <span class="campground-name">${campground.name}</span>
-                <span class="campground-provider">${campground.provider.replace('_', ' ')}</span>
+                <div style="display: flex; align-items: flex-start; width: 100%; overflow: hidden;">
+                    <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
+                    <div style="flex: 1; min-width: 0; overflow: hidden;">
+                        <div class="campground-name">${campground.name}</div>
+                        <div class="campground-provider">${campground.provider.replace('_', ' ')}</div>
+                    </div>
+                </div>
             </label>
         `;
         campgroundList.appendChild(item);
@@ -275,13 +277,13 @@ function updateSaveModalButton() {
     saveBtn.disabled = !hasName || campgroundCount === 0 || campgroundCount > 10;
     
     if (campgroundCount > 10) {
-        saveBtn.textContent = `🐽 Too many! (${campgroundCount}/10)`;
+        saveBtn.textContent = `🚫 Too many! (${campgroundCount}/10)`;
     } else if (campgroundCount === 0) {
         saveBtn.textContent = '📍 Pick your spots';
     } else if (!hasName) {
-        saveBtn.textContent = '🐽 Name your schniffgroup';
+        saveBtn.textContent = '✍️ Name your schniffgroup';
     } else {
-        saveBtn.textContent = `🐽 Create It (${campgroundCount})`;
+        saveBtn.textContent = `🐽 Create group (${campgroundCount})`;
     }
 }
 
