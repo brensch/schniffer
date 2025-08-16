@@ -216,7 +216,8 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 
 type Notifier interface {
 	// NotifyAvailabilityEmbed sends an embed with availability items; implementations may ignore extra fields.
-	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, req db.SchniffRequest, items []db.AvailabilityItem) error
+	// newlyAvailable are items that just opened; newlyBooked are items that just became unavailable.
+	NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, req db.SchniffRequest, items []db.AvailabilityItem, newlyAvailable []db.AvailabilityItem, newlyBooked []db.AvailabilityItem) error
 	NotifySummary(channelID string, msg string) error
 	// ResolveUsernames converts user IDs to usernames
 	ResolveUsernames(userIDs []string) []string

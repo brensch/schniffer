@@ -52,6 +52,21 @@ CREATE INDEX IF NOT EXISTS idx_lookup_log_provider ON lookup_log(provider, campg
 -- Additional index for recent success lookups
 CREATE INDEX IF NOT EXISTS idx_lookup_log_recent_success ON lookup_log(provider, campground_id, checked_at DESC) WHERE success=1;
 
+-- State changes tracking
+CREATE TABLE IF NOT EXISTS state_changes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider     TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    campsite_id  TEXT NOT NULL,
+    date         DATE NOT NULL,
+    new_available BOOLEAN NOT NULL,
+    changed_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, campground_id, campsite_id, date, changed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_state_changes_lookup ON state_changes(provider, campground_id, date, changed_at);
+CREATE INDEX IF NOT EXISTS idx_state_changes_campsite ON state_changes(provider, campground_id, campsite_id, date, changed_at);
+
 -- Notifications history
 CREATE TABLE IF NOT EXISTS notifications (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,8 +78,10 @@ CREATE TABLE IF NOT EXISTS notifications (
     campsite_id  TEXT NOT NULL,
     date         DATE NOT NULL,
     state        TEXT NOT NULL, -- available|unavailable
+    state_change_id INTEGER,     -- Reference to the state change that triggered this notification
     sent_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (request_id) REFERENCES schniff_requests(id)
+    FOREIGN KEY (request_id) REFERENCES schniff_requests(id),
+    FOREIGN KEY (state_change_id) REFERENCES state_changes(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);

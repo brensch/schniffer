@@ -21,7 +21,7 @@ type CampsiteStats struct {
 }
 
 // NotifyAvailabilityEmbed sends a beautifully formatted embed with campsite fields
-func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, req db.SchniffRequest, items []db.AvailabilityItem) error {
+func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campgroundID string, req db.SchniffRequest, items []db.AvailabilityItem, newlyAvailable []db.AvailabilityItem, newlyBooked []db.AvailabilityItem) error {
 	channel, err := b.s.UserChannelCreate(userID)
 	if err != nil {
 		return err
@@ -44,7 +44,7 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 	}
 
 	// Build the single embed with fields for each campsite
-	embed := b.buildNotificationEmbed(req.Checkin, req.Checkout, userID, campsiteStats, provider, campgroundID)
+	embed := b.buildNotificationEmbed(req.Checkin, req.Checkout, userID, campsiteStats, provider, campgroundID, newlyAvailable, newlyBooked)
 
 	_, err = b.s.ChannelMessageSendEmbed(channel.ID, embed)
 	return err
@@ -81,7 +81,7 @@ func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, check
 }
 
 // buildNotificationEmbed creates a single embed with fields for each campsite
-func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string, campsiteStats []CampsiteStats, provider, campgroundID string) *discordgo.MessageEmbed {
+func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string, campsiteStats []CampsiteStats, provider, campgroundID string, newlyAvailable []db.AvailabilityItem, newlyBooked []db.AvailabilityItem) *discordgo.MessageEmbed {
 	// Format campground name with link
 	campgroundNameWithLink := b.formatCampgroundWithLink(context.Background(), provider, campgroundID, campgroundID)
 
@@ -95,9 +95,22 @@ func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string,
 	if len(campsiteStats) == 1 {
 		description.WriteString("Showing the top 1 campsite by days available.\n")
 		description.WriteString("1 total campsite with availabilities.")
+	} else if len(campsiteStats) == 0 {
+		description.WriteString("No campsites currently available.\n")
 	} else {
 		description.WriteString(fmt.Sprintf("Showing the top %d campsites by days available.\n", len(campsiteStats)))
 		description.WriteString(fmt.Sprintf("%d total campsites with availabilities.", len(campsiteStats)))
+	}
+
+	// If there are state changes, add a short summary line
+	if len(newlyAvailable) > 0 || len(newlyBooked) > 0 {
+		description.WriteString("\nChanges since last notification:\n")
+		if len(newlyAvailable) > 0 {
+			description.WriteString(fmt.Sprintf("%d newly available\n", len(newlyAvailable)))
+		}
+		if len(newlyBooked) > 0 {
+			description.WriteString(fmt.Sprintf("%d newly booked\n", len(newlyBooked)))
+		}
 	}
 
 	embed := &discordgo.MessageEmbed{
@@ -133,7 +146,23 @@ func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string,
 			}
 			dayName := date.Format("Monday")
 			dateStr := date.Format("2006-01-02")
-			fieldValue.WriteString(fmt.Sprintf("%s (%s)\n", dayName, dateStr))
+
+			// Check if this date/campsite has a state change marker
+			marker := ""
+			for _, newAvail := range newlyAvailable {
+				if newAvail.CampsiteID == stats.CampsiteID && newAvail.Date.Format("2006-01-02") == dateStr {
+					marker = " (new)"
+					break
+				}
+			}
+			for _, newBooked := range newlyBooked {
+				if newBooked.CampsiteID == stats.CampsiteID && newBooked.Date.Format("2006-01-02") == dateStr {
+					marker = " (missed it!)"
+					break
+				}
+			}
+
+			fieldValue.WriteString(fmt.Sprintf("%s (%s)%s\n", dayName, dateStr, marker))
 		}
 
 		// Create field name without link (headers can't be clickable)
