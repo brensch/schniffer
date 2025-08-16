@@ -213,11 +213,17 @@ function renderMarkersFromViewport(result) {
             }
             
             const linkHtml = campground.url ? 
-                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
-                    ${providerName} →
-                </a>` : 
-                `<div class="popup-provider ${campground.provider}">
-                    ${providerName}
+                `<div class="popup-provider-line">
+                    <a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
+                        ${providerName} →
+                    </a>
+                    ${priceRatingDisplay}
+                </div>` : 
+                `<div class="popup-provider-line">
+                    <div class="popup-provider ${campground.provider}">
+                        ${providerName}
+                    </div>
+                    ${priceRatingDisplay}
                 </div>`;
             
             const marker = L.marker([campground.lat, campground.lon], { icon })
@@ -226,7 +232,6 @@ function renderMarkersFromViewport(result) {
                         ${imageDisplay}
                         <div class="popup-title">${campground.name}</div>
                         <div class="popup-details">
-                            ${priceRatingDisplay}
                             ${campsiteTypesDisplay}
                             ${amenitiesDisplay}
                         </div>
@@ -395,9 +400,13 @@ function openSaveGroupModal() {
                     <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
                     <div style="flex: 1; min-width: 0; overflow: hidden;">
                         <div class="campground-name">
-                            ${campground.name} ${ratingDisplay} ${priceDisplay}
+                            ${campground.name}
                         </div>
-                        <div class="campground-provider">${campground.provider.replace('_', ' ')}</div>
+                        <div class="campground-provider-line">
+                            <span class="campground-provider">${campground.provider.replace('_', ' ')}</span>
+                            ${ratingDisplay}
+                            ${priceDisplay}
+                        </div>
                         ${amenitiesDisplay}
                     </div>
                 </div>
