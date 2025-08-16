@@ -170,17 +170,15 @@ function renderMarkersFromViewport(result) {
                 ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
                 : '';
             
-            // Format amenities display (show top 4 most relevant)
+            // Format amenities display (show all amenities)
             let amenitiesDisplay = '';
             if (campground.amenities && Object.keys(campground.amenities).length > 0) {
                 const amenityList = Object.keys(campground.amenities)
-                    .slice(0, 4) // Show top 4 amenities
                     .map(name => `• ${name}`)
                     .join('<br>');
                 amenitiesDisplay = `<div class="popup-amenities">
                     <strong>🏕️ Amenities:</strong><br>
                     ${amenityList}
-                    ${Object.keys(campground.amenities).length > 4 ? '<br>• ...and more' : ''}
                 </div>`;
             }
             
@@ -335,13 +333,32 @@ function openSaveGroupModal() {
     currentData.data.forEach(campground => {
         const item = document.createElement('div');
         item.className = 'campground-item';
+        
+        // Format rating display for modal
+        const ratingDisplay = campground.rating > 0 
+            ? `<span class="campground-rating">⭐ ${campground.rating.toFixed(1)}</span>`
+            : '';
+            
+        // Format amenities for modal (show first 3 key amenities)
+        let amenitiesDisplay = '';
+        if (campground.amenities && Object.keys(campground.amenities).length > 0) {
+            const topAmenities = Object.keys(campground.amenities)
+                .filter(name => !name.startsWith('Equipment:') && !name.includes('Description'))
+                .slice(0, 3)
+                .join(', ');
+            if (topAmenities) {
+                amenitiesDisplay = `<div class="campground-amenities">🏕️ ${topAmenities}</div>`;
+            }
+        }
+        
         item.innerHTML = `
             <label>
                 <div style="display: flex; align-items: flex-start; width: 100%; overflow: hidden;">
                     <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
                     <div style="flex: 1; min-width: 0; overflow: hidden;">
-                        <div class="campground-name">${campground.name}</div>
+                        <div class="campground-name">${campground.name} ${ratingDisplay}</div>
                         <div class="campground-provider">${campground.provider.replace('_', ' ')}</div>
+                        ${amenitiesDisplay}
                     </div>
                 </div>
             </label>

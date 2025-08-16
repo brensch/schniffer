@@ -159,20 +159,20 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 
 		var page struct {
 			Results []struct {
-				Name            string   `json:"name"`
-				EntityID        string   `json:"entity_id"`
-				Latitude        string   `json:"latitude"`
-				Longitude       string   `json:"longitude"`
-				ParentID        string   `json:"parent_id"`
-				ParentName      string   `json:"parent_name"`
-				Reservable      bool     `json:"reservable"`
-				AverageRating   float64  `json:"average_rating"`
-				Activities      []struct {
-					ActivityName string `json:"activity_name"`
+				Name          string  `json:"name"`
+				EntityID      string  `json:"entity_id"`
+				Latitude      string  `json:"latitude"`
+				Longitude     string  `json:"longitude"`
+				ParentID      string  `json:"parent_id"`
+				ParentName    string  `json:"parent_name"`
+				Reservable    bool    `json:"reservable"`
+				AverageRating float64 `json:"average_rating"`
+				Activities    []struct {
+					ActivityName        string `json:"activity_name"`
 					ActivityDescription string `json:"activity_description"`
 				} `json:"activities"`
 				CampsiteEquipmentName []string `json:"campsite_equipment_name"`
-				Description     string `json:"description"`
+				Description           string   `json:"description"`
 			} `json:"results"`
 			Size int `json:"size"`
 		}
@@ -270,13 +270,13 @@ func clipBody(b []byte) string {
 // FetchCampsites fetches detailed campsite information for a campground
 func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error) {
 	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=0", campgroundID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create campsites request: %w", err)
 	}
 	httpx.SpoofChromeHeaders(req)
-	
+
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch campsites: %w", err)
@@ -294,11 +294,11 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 
 	var response struct {
 		Campsites []struct {
-			CampsiteID   string  `json:"campsite_id"`
-			Name         string  `json:"name"`
-			Type         string  `json:"type"`
+			CampsiteID    string  `json:"campsite_id"`
+			Name          string  `json:"name"`
+			Type          string  `json:"type"`
 			AverageRating float64 `json:"average_rating"`
-			Attributes   []struct {
+			Attributes    []struct {
 				AttributeCategory string `json:"attribute_category"`
 				AttributeName     string `json:"attribute_name"`
 				AttributeValue    string `json:"attribute_value"`
@@ -321,7 +321,7 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		costPerNight := 0.0
 		// Try to extract a numeric cost from fee template names (they often contain pricing info)
 		// This is a best-effort extraction since the fee structure is complex
-		
+
 		// Build campsite type from permitted equipment
 		var equipmentTypes []string
 		for _, equipment := range site.PermittedEquipment {
@@ -331,7 +331,7 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 				equipmentTypes = append(equipmentTypes, equipment.EquipmentName)
 			}
 		}
-		
+
 		campsiteType := site.Type
 		if len(equipmentTypes) > 0 {
 			campsiteType += " - " + fmt.Sprintf("Supports: %v", equipmentTypes)
@@ -341,16 +341,16 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 			ID:           site.CampsiteID,
 			Type:         campsiteType,
 			CostPerNight: costPerNight,
-			Available:    false, // This will be set by availability queries
+			Available:    false,       // This will be set by availability queries
 			Date:         time.Time{}, // This will be set by availability queries
 		}
-		
+
 		campsites = append(campsites, campsite)
 	}
-	
+
 	slog.Debug("fetched campsites for campground",
 		slog.String("campgroundID", campgroundID),
 		slog.Int("campsite_count", len(campsites)))
-	
+
 	return campsites, nil
 }

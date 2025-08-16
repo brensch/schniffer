@@ -660,14 +660,14 @@ func (m *Manager) GetSummaryData(ctx context.Context) (SummaryData, error) {
 
 // fetchRecreationGovPage fetches a single page of campgrounds from recreation.gov API
 func (m *Manager) fetchRecreationGovPage(ctx context.Context, page int, pageSize int) ([]RecGovSearchResult, bool, error) {
-	url := fmt.Sprintf("https://www.recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d", 
+	url := fmt.Sprintf("https://www.recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d",
 		pageSize, page*pageSize)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	
+
 	// Add Chrome headers to avoid 403 errors
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
@@ -675,17 +675,17 @@ func (m *Manager) fetchRecreationGovPage(ctx context.Context, page int, pageSize
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, false, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		return nil, false, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-	
+
 	// Handle gzip response
 	var reader io.Reader = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
@@ -696,15 +696,15 @@ func (m *Manager) fetchRecreationGovPage(ctx context.Context, page int, pageSize
 		defer gzipReader.Close()
 		reader = gzipReader
 	}
-	
+
 	var searchResp RecGovSearchResponse
 	if err := json.NewDecoder(reader).Decode(&searchResp); err != nil {
 		return nil, false, err
 	}
-	
+
 	hasMore := len(searchResp.Results) == pageSize
 	return searchResp.Results, hasMore, nil
-}// convertRecGovResult converts a recreation.gov search result to CampgroundInfo
+} // convertRecGovResult converts a recreation.gov search result to CampgroundInfo
 func (m *Manager) convertRecGovResult(result RecGovSearchResult) (providers.CampgroundInfo, error) {
 	var lat, lon float64
 	if result.Latitude != "" {

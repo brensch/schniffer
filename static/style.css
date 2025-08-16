@@ -510,6 +510,21 @@ body {
     overflow-wrap: break-word;
 }
 
+.campground-rating {
+    font-size: 0.8rem;
+    color: #ff6b35;
+    font-weight: 600;
+    margin-left: 0.5rem;
+}
+
+.campground-amenities {
+    font-size: 0.65rem;
+    color: #666;
+    margin-top: 0.3rem;
+    line-height: 1.2;
+    font-style: italic;
+}
+
 .modal-footer {
     background-color: #fff;
     padding: 1rem;
