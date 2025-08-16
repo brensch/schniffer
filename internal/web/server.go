@@ -19,14 +19,19 @@ type Server struct {
 }
 
 type CampgroundMapData struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Provider  string            `json:"provider"`
-	Lat       float64           `json:"lat"`
-	Lon       float64           `json:"lon"`
-	URL       string            `json:"url"`
-	Rating    float64           `json:"rating"`
-	Amenities map[string]string `json:"amenities"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Provider     string            `json:"provider"`
+	Lat          float64           `json:"lat"`
+	Lon          float64           `json:"lon"`
+	URL          string            `json:"url"`
+	Rating       float64           `json:"rating"`
+	Amenities    map[string]string `json:"amenities"`
+	CampsiteTypes []string         `json:"campsite_types"`
+	ImageURL     string            `json:"image_url"`
+	PriceMin     float64           `json:"price_min"`
+	PriceMax     float64           `json:"price_max"`
+	PriceUnit    string            `json:"price_unit"`
 }
 
 type ClusterData struct {
@@ -163,7 +168,7 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportRequest) ([]CampgroundMapData, error) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT provider, campground_id, name, latitude, longitude, rating, amenities
+		SELECT provider, campground_id, name, latitude, longitude, rating, amenities, campsite_types, image_url, price_min, price_max, price_unit
 		FROM campgrounds
 		WHERE latitude BETWEEN ? AND ?
 		AND longitude BETWEEN ? AND ?
@@ -178,8 +183,8 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	var result []CampgroundMapData
 	for rows.Next() {
 		var c CampgroundMapData
-		var amenitiesJSON string
-		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON)
+		var amenitiesJSON, campsiteTypesJSON string
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON, &campsiteTypesJSON, &c.ImageURL, &c.PriceMin, &c.PriceMax, &c.PriceUnit)
 		if err != nil {
 			return nil, err
 		}
@@ -188,6 +193,12 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		c.Amenities = make(map[string]string)
 		if amenitiesJSON != "" {
 			json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
+		}
+
+		// Parse campsite types JSON
+		c.CampsiteTypes = []string{}
+		if campsiteTypesJSON != "" {
+			json.Unmarshal([]byte(campsiteTypesJSON), &c.CampsiteTypes)
 		}
 
 		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)

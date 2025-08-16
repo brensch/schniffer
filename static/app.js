@@ -170,15 +170,48 @@ function renderMarkersFromViewport(result) {
                 ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
                 : '';
             
+            // Format price display
+            let priceDisplay = '';
+            if (campground.price_min > 0 || campground.price_max > 0) {
+                const unit = campground.price_unit || 'night';
+                if (campground.price_min === campground.price_max) {
+                    priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}/${unit}</div>`;
+                } else if (campground.price_min > 0 && campground.price_max > 0) {
+                    priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</div>`;
+                } else if (campground.price_max > 0) {
+                    priceDisplay = `<div class="popup-price">💰 Up to $${campground.price_max.toFixed(0)}/${unit}</div>`;
+                } else {
+                    priceDisplay = `<div class="popup-price">💰 From $${campground.price_min.toFixed(0)}/${unit}</div>`;
+                }
+            }
+            
+            // Format campsite types display
+            let campsiteTypesDisplay = '';
+            if (campground.campsite_types && campground.campsite_types.length > 0) {
+                const types = campground.campsite_types.slice(0, 3).join(', ');
+                campsiteTypesDisplay = `<div class="popup-campsite-types">🏕️ ${types}</div>`;
+            }
+            
+            // Format image display
+            let imageDisplay = '';
+            if (campground.image_url) {
+                imageDisplay = `<div class="popup-image">
+                    <img src="${campground.image_url}" alt="${campground.name}" loading="lazy" />
+                </div>`;
+            }
+            
             // Format amenities display (show all amenities)
             let amenitiesDisplay = '';
             if (campground.amenities && Object.keys(campground.amenities).length > 0) {
                 const amenityList = Object.keys(campground.amenities)
+                    .slice(0, 5)  // Limit to first 5 amenities for popup
                     .map(name => `• ${name}`)
                     .join('<br>');
+                const moreCount = Object.keys(campground.amenities).length - 5;
+                const moreText = moreCount > 0 ? `<br>• +${moreCount} more...` : '';
                 amenitiesDisplay = `<div class="popup-amenities">
-                    <strong>🏕️ Amenities:</strong><br>
-                    ${amenityList}
+                    <strong>🏕️ Features:</strong><br>
+                    ${amenityList}${moreText}
                 </div>`;
             }
             
@@ -193,12 +226,15 @@ function renderMarkersFromViewport(result) {
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
+                        ${imageDisplay}
                         <div class="popup-title">${campground.name}</div>
                         <div class="popup-details">
                             <div class="popup-coordinates">
                                 📍 ${latDisplay}, ${lonDisplay}
                             </div>
                             ${ratingDisplay}
+                            ${priceDisplay}
+                            ${campsiteTypesDisplay}
                             ${amenitiesDisplay}
                         </div>
                         ${linkHtml}
@@ -213,7 +249,7 @@ function renderMarkersFromViewport(result) {
                     </div>
                 `, {
                     closeButton: false,
-                    maxWidth: 300,
+                    maxWidth: 350,
                     className: 'narrow-popup',
                     autoPan: false
                 })
@@ -339,6 +375,19 @@ function openSaveGroupModal() {
             ? `<span class="campground-rating">⭐ ${campground.rating.toFixed(1)}</span>`
             : '';
             
+        // Format price display for modal
+        let priceDisplay = '';
+        if (campground.price_min > 0 || campground.price_max > 0) {
+            const unit = campground.price_unit || 'night';
+            if (campground.price_min === campground.price_max) {
+                priceDisplay = `<span class="campground-price">$${campground.price_min.toFixed(0)}/${unit}</span>`;
+            } else if (campground.price_min > 0 && campground.price_max > 0) {
+                priceDisplay = `<span class="campground-price">$${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</span>`;
+            } else if (campground.price_max > 0) {
+                priceDisplay = `<span class="campground-price">Up to $${campground.price_max.toFixed(0)}/${unit}</span>`;
+            }
+        }
+            
         // Format amenities for modal (show first 3 key amenities)
         let amenitiesDisplay = '';
         if (campground.amenities && Object.keys(campground.amenities).length > 0) {
@@ -356,7 +405,9 @@ function openSaveGroupModal() {
                 <div style="display: flex; align-items: flex-start; width: 100%; overflow: hidden;">
                     <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
                     <div style="flex: 1; min-width: 0; overflow: hidden;">
-                        <div class="campground-name">${campground.name} ${ratingDisplay}</div>
+                        <div class="campground-name">
+                            ${campground.name} ${ratingDisplay} ${priceDisplay}
+                        </div>
                         <div class="campground-provider">${campground.provider.replace('_', ' ')}</div>
                         ${amenitiesDisplay}
                     </div>

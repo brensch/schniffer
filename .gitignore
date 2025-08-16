@@ -39,3 +39,4 @@ auto.duckdb
 # .vscode/
 
 *.sqlite
+*.sqlite-journal
