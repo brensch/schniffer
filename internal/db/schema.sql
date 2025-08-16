@@ -29,8 +29,6 @@ CREATE TABLE IF NOT EXISTS campsite_availability (
     date         DATE NOT NULL,
     available    BOOLEAN NOT NULL,
     last_checked DATETIME NOT NULL,
-    campsite_type TEXT DEFAULT '',
-    cost_per_night REAL DEFAULT 0,
     PRIMARY KEY (provider, campground_id, campsite_id, date)
 );
 
@@ -86,6 +84,7 @@ CREATE TABLE IF NOT EXISTS campsite_metadata (
     cost_per_night REAL DEFAULT 0,
     rating       REAL DEFAULT 0,
     last_updated DATETIME NOT NULL,
+    image_url    TEXT DEFAULT '',
     PRIMARY KEY (provider, campground_id, campsite_id)
 );
 

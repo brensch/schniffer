@@ -122,6 +122,7 @@ func handleSyncCommand(ctx context.Context) {
 
 	switch syncType {
 	case "campgrounds":
+		// First sync campgrounds
 		count, err := mgr.SyncCampgrounds(ctx, provider)
 		if err != nil {
 			slog.Error("campground sync failed", slog.String("provider", provider), slog.Any("err", err))

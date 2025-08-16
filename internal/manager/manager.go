@@ -224,8 +224,6 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 					Date:         s.Date,
 					Available:    s.Available,
 					LastChecked:  now,
-					Type:         s.Type,
-					CostPerNight: s.CostPerNight,
 				})
 			}
 
@@ -487,7 +485,7 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 
 		// Store each campsite metadata
 		for _, campsiteInfo := range campsiteInfos {
-			err := m.store.UpsertCampsiteMetadata(ctx, providerName, campground.ID, campsiteInfo.ID, campsiteInfo.Name, campsiteInfo.Type, campsiteInfo.CostPerNight, campsiteInfo.Rating, campsiteInfo.Equipment)
+			err := m.store.UpsertCampsiteMetadata(ctx, providerName, campground.ID, campsiteInfo.ID, campsiteInfo.Name, campsiteInfo.Type, campsiteInfo.CostPerNight, campsiteInfo.Rating, campsiteInfo.Equipment, campsiteInfo.PreviewImageURL)
 			if err != nil {
 				m.logger.Warn("failed to store campsite metadata",
 					slog.String("provider", providerName),
@@ -610,12 +608,21 @@ func (m *Manager) syncCampgroundsStreaming(ctx context.Context, prov providers.P
 // RunCampgroundSync runs periodic campground syncs in the background.
 func (m *Manager) RunCampgroundSync(ctx context.Context, provider string, interval time.Duration) {
 	doSync := func() {
+		// First sync campgrounds
 		n, err := m.SyncCampgrounds(ctx, provider)
 		if err != nil {
 			m.logger.Error("campground sync failed", slog.String("provider", provider), slog.Any("err", err))
 			return
 		}
 		m.logger.Info("campground sync completed", slog.String("provider", provider), slog.Int("count", n))
+
+		// Then sync campsites
+		campsiteCount, err := m.SyncCampsites(ctx, provider)
+		if err != nil {
+			m.logger.Error("campsite sync failed", slog.String("provider", provider), slog.Any("err", err))
+			return
+		}
+		m.logger.Info("campsite sync completed", slog.String("provider", provider), slog.Int("count", campsiteCount))
 	}
 	doSync()
 	if interval <= 0 {

@@ -375,6 +375,8 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 				EquipmentName string `json:"equipment_name"`
 				MaxLength     int    `json:"max_length"`
 			} `json:"permitted_equipment"`
+			PreviewImageURL string `json:"preview_image_url"`
+			Reservable      bool   `json:"reservable"`
 		} `json:"campsites"`
 	}
 
@@ -384,6 +386,9 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 
 	var campsiteInfos []CampsiteInfo
 	for _, site := range response.Campsites {
+		if !site.Reservable {
+			continue
+		}
 		// Extract unique equipment types
 		equipmentTypes := make(map[string]bool)
 		for _, eq := range site.PermittedEquipment {
@@ -396,12 +401,13 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 		}
 
 		campsiteInfo := CampsiteInfo{
-			ID:           site.CampsiteID,
-			Name:         site.Name,
-			Type:         site.Type,
-			CostPerNight: 0.0, // We don't have cost info in this endpoint
-			Rating:       site.AverageRating,
-			Equipment:    equipment,
+			ID:              site.CampsiteID,
+			Name:            site.Name,
+			Type:            site.Type,
+			CostPerNight:    0.0, // We don't have cost info in this endpoint
+			Rating:          site.AverageRating,
+			Equipment:       equipment,
+			PreviewImageURL: site.PreviewImageURL,
 		}
 		campsiteInfos = append(campsiteInfos, campsiteInfo)
 	}

@@ -14,12 +14,13 @@ type Campsite struct {
 }
 
 type CampsiteInfo struct {
-	ID           string
-	Name         string
-	Type         string   // Base campsite type (e.g., "STANDARD NONELECTRIC")
-	CostPerNight float64  // Cost per night in USD, 0 if unknown
-	Rating       float64  // Campsite rating (0-5), 0 if unknown
-	Equipment    []string // Equipment types supported at this campsite
+	ID              string
+	Name            string
+	Type            string   // Base campsite type (e.g., "STANDARD NONELECTRIC")
+	CostPerNight    float64  // Cost per night in USD, 0 if unknown
+	Rating          float64  // Campsite rating (0-5), 0 if unknown
+	Equipment       []string // Equipment types supported at this campsite
+	PreviewImageURL string   // Preview image URL
 }
 
 type CampsiteMetadataProvider interface {

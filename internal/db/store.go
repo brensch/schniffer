@@ -81,8 +81,6 @@ type CampsiteAvailability struct {
 	Date         time.Time
 	Available    bool
 	LastChecked  time.Time
-	Type         string
-	CostPerNight float64
 }
 
 type LookupLog struct {
@@ -285,8 +283,8 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 
 	// Prepare statements
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked, campsite_type, cost_per_night)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -323,7 +321,7 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 
 	for _, st := range states {
 		// Update availability
-		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked, st.Type, st.CostPerNight)
+		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked)
 		if err != nil {
 			return err
 		}
@@ -814,7 +812,7 @@ func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string,
 	return err
 }
 
-func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64, equipment []string) error {
+func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64, equipment []string, imageURL string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -823,9 +821,9 @@ func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campground
 
 	// Upsert campsite metadata
 	_, err = tx.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, time.Now())
+		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated, image_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, time.Now(), imageURL)
 	if err != nil {
 		return err
 	}
@@ -851,11 +849,6 @@ func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campground
 	}
 
 	return tx.Commit()
-}
-
-// Legacy method - can be removed after migration
-func (s *Store) UpsertCampsite(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64) error {
-	return s.UpsertCampsiteMetadata(ctx, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, nil)
 }
 
 // GetCampsiteEquipmentTypes returns all unique equipment types available at a campground
@@ -913,7 +906,7 @@ type Campground struct {
 	Lat         float64
 	Lon         float64
 	Rating      float64
-	Amenities   map[string]string
+	Amenities   []string
 	LastUpdated time.Time
 }
 
@@ -1252,6 +1245,7 @@ func (s *Store) GetCampgroundsByProvider(ctx context.Context, provider string) (
 		if amenitiesJSON != "" {
 			err = json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
 			if err != nil {
+				fmt.Println(amenitiesJSON)
 				return nil, fmt.Errorf("failed to unmarshal amenities for campground %s: %w", c.ID, err)
 			}
 		}
