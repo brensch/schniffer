@@ -181,13 +181,10 @@ function renderMarkersFromViewport(result) {
                 }
             }
             
-            // Combine price and rating in a flex container
+            // Display price and rating on separate lines
             let priceRatingDisplay = '';
             if (ratingDisplay || priceDisplay) {
-                priceRatingDisplay = `<div class="popup-price-rating">
-                    ${ratingDisplay}
-                    ${priceDisplay}
-                </div>`;
+                priceRatingDisplay = `${ratingDisplay}${priceDisplay}`;
             }
             
             // Format campsite types display

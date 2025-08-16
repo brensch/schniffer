@@ -110,8 +110,6 @@ body {
     background-color: #fff4e6;
     border: 2px solid #e67e00;
     border-radius: 0;
-    flex: 1;
-    margin-right: 0.25rem;
 }
 
 .popup-price {
@@ -121,25 +119,11 @@ body {
     margin-bottom: 0.5rem;
     text-align: center;
     padding: 0.3rem 0.4rem;
-    background-color: #e8f5e8;
+    background-color: #f0f8ff;
     border: 2px solid #2d5a3d;
     border-radius: 0;
-    flex: 1;
-    margin-left: 0.25rem;
 }
 
-.popup-price-rating {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-}
-
-.popup-price-rating .popup-rating,
-.popup-price-rating .popup-price {
-    margin-bottom: 0;
-    margin-left: 0;
-    margin-right: 0;
-}
 
 .popup-campsite-types {
     font-size: 0.8rem;
