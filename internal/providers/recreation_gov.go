@@ -136,7 +136,7 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 
 	for {
 		totalPages++
-		endpoint := fmt.Sprintf("https://recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d", size, start)
+		endpoint := fmt.Sprintf("https://www.recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d", size, start)
 		slog.Debug("fetching recreation.gov campgrounds page", slog.Int("page", totalPages), slog.Int("start", start))
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -156,15 +156,23 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("recreation.gov search status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
+
 		var page struct {
 			Results []struct {
-				Name       string `json:"name"`
-				EntityID   string `json:"entity_id"`
-				Latitude   string `json:"latitude"`
-				Longitude  string `json:"longitude"`
-				ParentID   string `json:"parent_id"`
-				ParentName string `json:"parent_name"`
-				Reservable bool   `json:"reservable"`
+				Name            string   `json:"name"`
+				EntityID        string   `json:"entity_id"`
+				Latitude        string   `json:"latitude"`
+				Longitude       string   `json:"longitude"`
+				ParentID        string   `json:"parent_id"`
+				ParentName      string   `json:"parent_name"`
+				Reservable      bool     `json:"reservable"`
+				AverageRating   float64  `json:"average_rating"`
+				Activities      []struct {
+					ActivityName string `json:"activity_name"`
+					ActivityDescription string `json:"activity_description"`
+				} `json:"activities"`
+				CampsiteEquipmentName []string `json:"campsite_equipment_name"`
+				Description     string `json:"description"`
 			} `json:"results"`
 			Size int `json:"size"`
 		}
@@ -178,7 +186,6 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			slog.Int("size", page.Size))
 
 		// Process this page's campgrounds
-		var pageCampgrounds []CampgroundInfo
 		processedOnPage := 0
 		for _, result := range page.Results {
 			if !result.Reservable {
@@ -204,19 +211,27 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				name = result.ParentName + ": " + result.Name
 			}
 
-			// Fetch detailed campground info including amenities and rating
-			details := r.fetchCampgroundDetails(ctx, result.EntityID)
+			// Build amenities map from activities and equipment
+			amenities := make(map[string]string)
+			for _, activity := range result.Activities {
+				amenities[activity.ActivityName] = activity.ActivityDescription
+			}
+			for _, equipment := range result.CampsiteEquipmentName {
+				amenities["Equipment: "+equipment] = ""
+			}
+			if result.Description != "" {
+				amenities["Description"] = result.Description
+			}
 
 			campground := CampgroundInfo{
 				ID:        result.EntityID,
 				Name:      name,
 				Lat:       lat,
 				Lon:       lon,
-				Rating:    details.Rating,
-				Amenities: details.Amenities,
+				Rating:    result.AverageRating,
+				Amenities: amenities,
 			}
 
-			pageCampgrounds = append(pageCampgrounds, campground)
 			all = append(all, campground)
 			processedOnPage++
 		}
@@ -239,85 +254,6 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 	return all, nil
 }
 
-// fetchCampgroundDetails fetches detailed campground information including amenities and rating
-func (r *RecreationGov) fetchCampgroundDetails(ctx context.Context, entityID string) struct {
-	Rating    float64
-	Amenities map[string]string
-} {
-	endpoint := fmt.Sprintf("https://recreation.gov/api/camps/campgrounds/%s", entityID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		slog.Debug("failed to create campground details request", slog.String("entityID", entityID), slog.Any("err", err))
-		return struct {
-			Rating    float64
-			Amenities map[string]string
-		}{}
-	}
-	httpx.SpoofChromeHeaders(req)
-	resp, err := r.client.Do(req)
-	if err != nil {
-		slog.Debug("failed to fetch campground details", slog.String("entityID", entityID), slog.Any("err", err))
-		return struct {
-			Rating    float64
-			Amenities map[string]string
-		}{}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		slog.Debug("campground details request failed", slog.String("entityID", entityID), slog.Int("status", resp.StatusCode))
-		return struct {
-			Rating    float64
-			Amenities map[string]string
-		}{}
-	}
-
-	var details struct {
-		Campground struct {
-			Rating    float64 `json:"rating"`
-			Amenities []struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			} `json:"amenities"`
-		} `json:"campground"`
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		slog.Debug("failed to read campground details response", slog.String("entityID", entityID), slog.Any("err", err))
-		return struct {
-			Rating    float64
-			Amenities map[string]string
-		}{}
-	}
-
-	if err := json.Unmarshal(body, &details); err != nil {
-		slog.Debug("failed to parse campground details", slog.String("entityID", entityID), slog.Any("err", err))
-		return struct {
-			Rating    float64
-			Amenities map[string]string
-		}{}
-	}
-
-	amenityMap := make(map[string]string)
-	for _, amenity := range details.Campground.Amenities {
-		amenityMap[amenity.Name] = amenity.Description
-	}
-
-	slog.Debug("fetched campground details",
-		slog.String("entityID", entityID),
-		slog.Float64("rating", details.Campground.Rating),
-		slog.Int("amenities_count", len(amenityMap)))
-
-	return struct {
-		Rating    float64
-		Amenities map[string]string
-	}{
-		Rating:    details.Campground.Rating,
-		Amenities: amenityMap,
-	}
-}
-
 // clipBody returns a short string version of a response body for error messages.
 // It limits to a reasonable size to avoid logging huge payloads.
 func clipBody(b []byte) string {
@@ -329,4 +265,92 @@ func clipBody(b []byte) string {
 		return string(b[:max]) + "..."
 	}
 	return string(b)
+}
+
+// FetchCampsites fetches detailed campsite information for a campground
+func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error) {
+	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=0", campgroundID)
+	
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create campsites request: %w", err)
+	}
+	httpx.SpoofChromeHeaders(req)
+	
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch campsites: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("campsites request failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read campsites response: %w", err)
+	}
+
+	var response struct {
+		Campsites []struct {
+			CampsiteID   string  `json:"campsite_id"`
+			Name         string  `json:"name"`
+			Type         string  `json:"type"`
+			AverageRating float64 `json:"average_rating"`
+			Attributes   []struct {
+				AttributeCategory string `json:"attribute_category"`
+				AttributeName     string `json:"attribute_name"`
+				AttributeValue    string `json:"attribute_value"`
+			} `json:"attributes"`
+			PermittedEquipment []struct {
+				EquipmentName string `json:"equipment_name"`
+				MaxLength     int    `json:"max_length"`
+			} `json:"permitted_equipment"`
+			FeeTemplates map[string]string `json:"fee_templates"`
+		} `json:"campsites"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse campsites response: %w", err)
+	}
+
+	var campsites []Campsite
+	for _, site := range response.Campsites {
+		// Extract cost information from fee templates
+		costPerNight := 0.0
+		// Try to extract a numeric cost from fee template names (they often contain pricing info)
+		// This is a best-effort extraction since the fee structure is complex
+		
+		// Build campsite type from permitted equipment
+		var equipmentTypes []string
+		for _, equipment := range site.PermittedEquipment {
+			if equipment.MaxLength > 0 {
+				equipmentTypes = append(equipmentTypes, fmt.Sprintf("%s (max %dft)", equipment.EquipmentName, equipment.MaxLength))
+			} else {
+				equipmentTypes = append(equipmentTypes, equipment.EquipmentName)
+			}
+		}
+		
+		campsiteType := site.Type
+		if len(equipmentTypes) > 0 {
+			campsiteType += " - " + fmt.Sprintf("Supports: %v", equipmentTypes)
+		}
+
+		campsite := Campsite{
+			ID:           site.CampsiteID,
+			Type:         campsiteType,
+			CostPerNight: costPerNight,
+			Available:    false, // This will be set by availability queries
+			Date:         time.Time{}, // This will be set by availability queries
+		}
+		
+		campsites = append(campsites, campsite)
+	}
+	
+	slog.Debug("fetched campsites for campground",
+		slog.String("campgroundID", campgroundID),
+		slog.Int("campsite_count", len(campsites)))
+	
+	return campsites, nil
 }

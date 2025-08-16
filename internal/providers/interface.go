@@ -19,6 +19,8 @@ type Provider interface {
 	FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]Campsite, error)
 	// FetchAllCampgrounds returns the full list of campgrounds and names from the provider.
 	FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error)
+	// FetchCampsites returns detailed campsite information for a campground (optional method)
+	FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error)
 	// CampsiteURL returns a link to the campsite details page for this provider.
 	// campgroundID may be ignored by providers that only key by campsiteID.
 	CampsiteURL(campgroundID, campsiteID string) string

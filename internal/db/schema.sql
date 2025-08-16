@@ -130,21 +130,6 @@ CREATE INDEX IF NOT EXISTS idx_notifications_provider_lookup ON notifications(pr
 CREATE INDEX IF NOT EXISTS idx_notifications_batch_latest ON notifications(provider, campground_id, sent_at DESC, batch_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_composite ON notifications(provider, campground_id, date, sent_at DESC);
 
--- Campground metadata
-CREATE TABLE IF NOT EXISTS campgrounds (
-    provider     TEXT NOT NULL,
-    id           TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    lat          REAL,
-    lon          REAL,
-    rating       REAL DEFAULT 0,
-    amenities    TEXT DEFAULT '{}', -- JSON object of amenities
-    PRIMARY KEY (provider, id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_campgrounds_name ON campgrounds(name);
-CREATE INDEX IF NOT EXISTS idx_campgrounds_location ON campgrounds(lat, lon);
-
 -- Metadata sync log (for campground syncing)
 CREATE TABLE IF NOT EXISTS metadata_sync_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

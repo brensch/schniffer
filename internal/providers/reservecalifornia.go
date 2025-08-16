@@ -325,3 +325,10 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	}
 	return out, nil
 }
+
+// FetchCampsites returns detailed campsite information for a campground
+// Currently not implemented for ReserveCalifornia
+func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error) {
+	// TODO: Implement campsites fetching for ReserveCalifornia if needed
+	return nil, fmt.Errorf("FetchCampsites not implemented for ReserveCalifornia")
+}
