@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
@@ -36,142 +35,102 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 		return nil // No new state changes to notify about
 	}
 
-	// Group state changes by provider/campground for batched notifications
-	changesByPC := make(map[string][]db.StateChange)
+	// Group state changes by request for processing
+	changesByRequest := make(map[int64][]db.StateChangeForRequest)
 	for _, change := range stateChanges {
-		key := fmt.Sprintf("%s|%s", change.Provider, change.CampgroundID)
-		changesByPC[key] = append(changesByPC[key], change)
+		changesByRequest[change.RequestID] = append(changesByRequest[change.RequestID], change)
 	}
 
-	m.logger.Info("grouped state changes", slog.Int("groups", len(changesByPC)))
+	m.logger.Info("grouped state changes by request", slog.Int("requests", len(changesByRequest)))
 
 	// Generate a batch ID for this notification round
 	batchID := uuid.New().String()
+	var notificationsToRecord []db.Notification
+	now := time.Now()
 
-	// Process each provider/campground group
-	for key, changes := range changesByPC {
-		m.logger.Info("processing group", slog.String("key", key), slog.Int("changes", len(changes)))
-
-		parts := strings.Split(key, "|")
-		m.logger.Info("split parts", slog.Any("parts", parts), slog.Int("count", len(parts)))
-		if len(parts) != 2 {
-			m.logger.Warn("invalid group key", slog.String("key", key), slog.Any("parts", parts))
-			continue
-		}
-		provider, campgroundID := parts[0], parts[1]
-		m.logger.Info("parsed group", slog.String("provider", provider), slog.String("campgroundID", campgroundID))
-
-		// Find relevant requests for this provider/campground
-		var relevantRequests []db.SchniffRequest
-		for _, req := range requests {
-			if req.Provider == provider && req.CampgroundID == campgroundID && req.Active {
-				relevantRequests = append(relevantRequests, req)
+	// Process each request separately
+	for requestID, changes := range changesByRequest {
+		// Find the request details
+		var req db.SchniffRequest
+		found := false
+		for _, r := range requests {
+			if r.ID == requestID {
+				req = r
+				found = true
+				break
 			}
 		}
-
-		if len(relevantRequests) == 0 {
+		if !found {
+			m.logger.Warn("request not found for state changes", slog.Int64("requestID", requestID))
 			continue
 		}
 
-		// Get date range from all relevant requests
-		var minDate, maxDate time.Time
-		for i, req := range relevantRequests {
-			if i == 0 {
-				minDate, maxDate = req.Checkin, req.Checkout
-			} else {
-				if req.Checkin.Before(minDate) {
-					minDate = req.Checkin
-				}
-				if req.Checkout.After(maxDate) {
-					maxDate = req.Checkout
-				}
-			}
-		}
+		m.logger.Info("processing request",
+			slog.Int64("requestID", requestID),
+			slog.String("provider", req.Provider),
+			slog.String("campgroundID", req.CampgroundID),
+			slog.Int("changes", len(changes)))
 
 		// Get currently available campsites for context
-		allAvailable, err := m.store.GetCurrentlyAvailableCampsites(ctx, provider, campgroundID, minDate, maxDate)
+		allAvailable, err := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
 		if err != nil {
 			m.logger.Warn("get currently available campsites failed", slog.Any("err", err))
 			continue
 		}
 
-		// Process notifications for each user request
-		var notificationsToRecord []db.Notification
-		now := time.Now()
-
-		for _, req := range relevantRequests {
-			// Filter changes that are relevant to this request's date range
-			var relevantChanges []db.StateChange
-			var newlyAvailable, newlyBooked []db.AvailabilityItem
-
-			for _, change := range changes {
-				if !change.Date.Before(req.Checkin) && change.Date.Before(req.Checkout) {
-					relevantChanges = append(relevantChanges, change)
-
-					item := db.AvailabilityItem{
-						CampsiteID: change.CampsiteID,
-						Date:       change.Date,
-					}
-
-					if change.NewAvailable {
-						newlyAvailable = append(newlyAvailable, item)
-					} else {
-						newlyBooked = append(newlyBooked, item)
-					}
-				}
+		// Separate newly available vs newly booked from the state changes
+		var newlyAvailable, newlyBooked []db.AvailabilityItem
+		for _, change := range changes {
+			item := db.AvailabilityItem{
+				CampsiteID: change.CampsiteID,
+				Date:       change.Date,
 			}
 
-			if len(relevantChanges) == 0 {
-				continue // No relevant changes for this request
-			}
-
-			// Filter currently available sites to this request's date range
-			var reqAvailable []db.AvailabilityItem
-			for _, item := range allAvailable {
-				if !item.Date.Before(req.Checkin) && item.Date.Before(req.Checkout) {
-					reqAvailable = append(reqAvailable, item)
-				}
-			}
-
-			// Send notification to user
-			err := m.sendStateChangeNotification(ctx, req, reqAvailable, newlyAvailable, newlyBooked)
-			if err != nil {
-				m.logger.Warn("send state change notification failed",
-					slog.String("userID", req.UserID),
-					slog.Any("err", err))
-			}
-
-			// Record notifications for each relevant state change
-			for _, change := range relevantChanges {
-				state := "available"
-				if !change.NewAvailable {
-					state = "unavailable"
-				}
-
-				notificationsToRecord = append(notificationsToRecord, db.Notification{
-					RequestID:     req.ID,
-					UserID:        req.UserID,
-					Provider:      change.Provider,
-					CampgroundID:  change.CampgroundID,
-					CampsiteID:    change.CampsiteID,
-					Date:          change.Date,
-					State:         state,
-					StateChangeID: &change.ID,
-					SentAt:        now,
-				})
+			if change.NewAvailable {
+				newlyAvailable = append(newlyAvailable, item)
+			} else {
+				newlyBooked = append(newlyBooked, item)
 			}
 		}
 
-		// Record the notification batch
-		if len(notificationsToRecord) > 0 {
-			err := m.store.InsertNotificationsBatch(ctx, notificationsToRecord, batchID)
-			if err != nil {
-				m.logger.Warn("record notification batch failed", slog.Any("err", err))
-			} else {
-				m.logger.Info("recorded state change notification batch",
-					slog.String("batchID", batchID),
-					slog.Int("count", len(notificationsToRecord)))
+		// Send notification to user
+		err = m.sendStateChangeNotification(ctx, req, allAvailable, newlyAvailable, newlyBooked)
+		if err != nil {
+			m.logger.Warn("send state change notification failed",
+				slog.String("userID", req.UserID),
+				slog.Any("err", err))
+		}
+
+		// Record notifications for each relevant state change
+		for _, change := range changes {
+			state := "available"
+			if !change.NewAvailable {
+				state = "unavailable"
 			}
+
+			notificationsToRecord = append(notificationsToRecord, db.Notification{
+				RequestID:     req.ID,
+				UserID:        req.UserID,
+				Provider:      change.Provider,
+				CampgroundID:  change.CampgroundID,
+				CampsiteID:    change.CampsiteID,
+				Date:          change.Date,
+				State:         state,
+				StateChangeID: &change.ID,
+				SentAt:        now,
+			})
+		}
+	}
+
+	// Record all notifications in batch
+	if len(notificationsToRecord) > 0 {
+		err := m.store.InsertNotificationsBatch(ctx, notificationsToRecord, batchID)
+		if err != nil {
+			m.logger.Warn("record notification batch failed", slog.Any("err", err))
+		} else {
+			m.logger.Info("recorded state change notification batch",
+				slog.String("batchID", batchID),
+				slog.Int("count", len(notificationsToRecord)))
 		}
 	}
 

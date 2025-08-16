@@ -105,6 +105,17 @@ type StateChange struct {
 	ChangedAt    time.Time
 }
 
+type StateChangeForRequest struct {
+	ID           int64
+	Provider     string
+	CampgroundID string
+	CampsiteID   string
+	Date         time.Time
+	NewAvailable bool
+	ChangedAt    time.Time
+	RequestID    int64
+}
+
 type Notification struct {
 	ID            int64     `db:"id"`
 	BatchID       string    `db:"batch_id"`
@@ -619,67 +630,54 @@ func (s *Store) ReconcileNotifications(ctx context.Context, provider, campground
 }
 
 // GetUnnotifiedStateChanges gets state changes that haven't been notified for specific requests
-func (s *Store) GetUnnotifiedStateChanges(ctx context.Context, requests []SchniffRequest) ([]StateChange, error) {
+func (s *Store) GetUnnotifiedStateChanges(ctx context.Context, requests []SchniffRequest) ([]StateChangeForRequest, error) {
 	if len(requests) == 0 {
 		return nil, nil
 	}
 
-	// Build query to get state changes for all relevant provider/campground/date ranges
-	// that haven't been notified to the specific requests yet
-	var query strings.Builder
-	var args []interface{}
+	// Build query to get state changes for each request that haven't been notified to that specific request
+	var allResults []StateChangeForRequest
 
-	query.WriteString(`
-		SELECT DISTINCT sc.id, sc.provider, sc.campground_id, sc.campsite_id, 
-		       sc.date, sc.new_available, sc.changed_at
-		FROM state_changes sc
-		WHERE (`)
+	for _, req := range requests {
+		query := `
+			SELECT sc.id, sc.provider, sc.campground_id, sc.campsite_id, 
+			       sc.date, sc.new_available, sc.changed_at, ? as request_id
+			FROM state_changes sc
+			WHERE sc.provider = ? 
+			  AND sc.campground_id = ? 
+			  AND sc.date >= ? 
+			  AND sc.date < ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM notifications n 
+				WHERE n.state_change_id = sc.id 
+				  AND n.request_id = ?
+			  )
+			ORDER BY sc.changed_at ASC`
 
-	for i, req := range requests {
-		if i > 0 {
-			query.WriteString(" OR ")
+		args := []interface{}{
+			req.ID, req.Provider, req.CampgroundID, req.Checkin, req.Checkout, req.ID,
 		}
-		query.WriteString("(sc.provider=? AND sc.campground_id=? AND sc.date >= ? AND sc.date < ?)")
-		args = append(args, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
-	}
 
-	query.WriteString(`) AND NOT EXISTS (
-		SELECT 1 FROM notifications n 
-		WHERE n.state_change_id = sc.id 
-		AND n.request_id IN (`)
-
-	for i, req := range requests {
-		if i > 0 {
-			query.WriteString(", ")
-		}
-		query.WriteString("?")
-		args = append(args, req.ID)
-	}
-
-	query.WriteString(`))
-		ORDER BY sc.changed_at ASC`)
-
-	rows, err := s.DB.QueryContext(ctx, query.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var stateChanges []StateChange
-	for rows.Next() {
-		var sc StateChange
-		err := rows.Scan(&sc.ID, &sc.Provider, &sc.CampgroundID, &sc.CampsiteID,
-			&sc.Date, &sc.NewAvailable, &sc.ChangedAt)
+		rows, err := s.DB.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}
-		stateChanges = append(stateChanges, sc)
+
+		for rows.Next() {
+			var sc StateChangeForRequest
+			err := rows.Scan(&sc.ID, &sc.Provider, &sc.CampgroundID, &sc.CampsiteID,
+				&sc.Date, &sc.NewAvailable, &sc.ChangedAt, &sc.RequestID)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			allResults = append(allResults, sc)
+		}
+		rows.Close()
 	}
 
-	return stateChanges, rows.Err()
-}
-
-// GetCurrentlyAvailableCampsites gets all currently available campsites in a date range
+	return allResults, nil
+} // GetCurrentlyAvailableCampsites gets all currently available campsites in a date range
 func (s *Store) GetCurrentlyAvailableCampsites(ctx context.Context, provider, campgroundID string, startDate, endDate time.Time) ([]AvailabilityItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT campsite_id, date
