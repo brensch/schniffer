@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS campgrounds (
 CREATE INDEX IF NOT EXISTS idx_campgrounds_location ON campgrounds(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_campgrounds_rating ON campgrounds(rating);
 
+-- Campsites metadata table for filtering and detailed information
+CREATE TABLE IF NOT EXISTS campsites (
+    provider     TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    campsite_id  TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    campsite_type TEXT DEFAULT '',
+    cost_per_night REAL DEFAULT 0,
+    last_updated DATETIME NOT NULL,
+    PRIMARY KEY (provider, campground_id, campsite_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_campsites_campground ON campsites(provider, campground_id);
+CREATE INDEX IF NOT EXISTS idx_campsites_type ON campsites(campsite_type);
+
 -- Lookup log for API calls (for summaries)
 CREATE TABLE IF NOT EXISTS lookup_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,

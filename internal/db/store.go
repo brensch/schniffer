@@ -813,6 +813,14 @@ func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string,
 	return err
 }
 
+func (s *Store) UpsertCampsite(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight float64) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT OR REPLACE INTO campsites(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, time.Now())
+	return err
+}
+
 type Campground struct {
 	Provider    string
 	ID          string
@@ -1131,4 +1139,40 @@ func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Gr
 	}
 
 	return &group, nil
+}
+
+// GetCampgroundsByProvider retrieves all campgrounds for a specific provider
+func (s *Store) GetCampgroundsByProvider(ctx context.Context, provider string) ([]Campground, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT provider, campground_id, name, latitude, longitude, rating, amenities, last_updated
+		FROM campgrounds 
+		WHERE provider = ?
+		ORDER BY name
+	`, provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query campgrounds by provider: %w", err)
+	}
+	defer rows.Close()
+
+	var campgrounds []Campground
+	for rows.Next() {
+		var c Campground
+		var amenitiesJSON string
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON, &c.LastUpdated)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan campground: %w", err)
+		}
+
+		// Parse amenities JSON
+		if amenitiesJSON != "" {
+			err = json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal amenities for campground %s: %w", c.ID, err)
+			}
+		}
+
+		campgrounds = append(campgrounds, c)
+	}
+
+	return campgrounds, rows.Err()
 }

@@ -13,6 +13,13 @@ type Campsite struct {
 	CostPerNight float64 // Cost per night in USD, 0 if unknown
 }
 
+type CampsiteInfo struct {
+	ID           string
+	Name         string
+	Type         string  // Base campsite type (e.g., "STANDARD NONELECTRIC")
+	CostPerNight float64 // Cost per night in USD, 0 if unknown
+}
+
 type Provider interface {
 	Name() string
 	// FetchAvailability returns campsite availability for the given campground and date range.

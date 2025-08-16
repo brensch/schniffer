@@ -18,6 +18,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Simple CLI handling for sync commands
+	if len(os.Args) >= 2 && os.Args[1] == "sync" {
+		handleSyncCommand(ctx)
+		return
+	}
+
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./schniffer.sqlite"
@@ -69,6 +75,70 @@ func main() {
 	err = b.Run(ctx)
 	if err != nil {
 		slog.Error("bot run failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
+
+func handleSyncCommand(ctx context.Context) {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "./schniffer.sqlite"
+	}
+
+	store, err := db.Open(dbPath)
+	if err != nil {
+		slog.Error("open db failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	provRegistry := providers.NewRegistry()
+	provRegistry.Register("recreation_gov", providers.NewRecreationGov())
+	provRegistry.Register("reservecalifornia", providers.NewReserveCalifornia())
+
+	mgr := manager.NewManager(store, provRegistry)
+
+	// Parse simple command line args
+	provider := ""
+	syncType := ""
+	for i, arg := range os.Args {
+		if arg == "--provider" && i+1 < len(os.Args) {
+			provider = os.Args[i+1]
+		}
+		if arg == "--type" && i+1 < len(os.Args) {
+			syncType = os.Args[i+1]
+		}
+	}
+
+	if provider == "" {
+		slog.Error("--provider required")
+		os.Exit(1)
+	}
+
+	if syncType == "" {
+		slog.Error("--type required (campgrounds or campsites)")
+		os.Exit(1)
+	}
+
+	switch syncType {
+	case "campgrounds":
+		count, err := mgr.SyncCampgrounds(ctx, provider)
+		if err != nil {
+			slog.Error("campground sync failed", slog.String("provider", provider), slog.Any("err", err))
+			os.Exit(1)
+		}
+		slog.Info("campground sync completed", slog.String("provider", provider), slog.Int("count", count))
+
+	case "campsites":
+		count, err := mgr.SyncCampsites(ctx, provider)
+		if err != nil {
+			slog.Error("campsite sync failed", slog.String("provider", provider), slog.Any("err", err))
+			os.Exit(1)
+		}
+		slog.Info("campsite sync completed", slog.String("provider", provider), slog.Int("count", count))
+
+	default:
+		slog.Error("invalid sync type", slog.String("type", syncType))
 		os.Exit(1)
 	}
 }

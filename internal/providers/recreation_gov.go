@@ -241,10 +241,11 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			slog.Int("processed_campgrounds", processedOnPage),
 			slog.Int("total_campgrounds", len(all)))
 
-		if page.Size < size {
+		// Break if we got fewer results than requested, or no results at all
+		if len(page.Results) < size || len(page.Results) == 0 {
 			break
 		}
-		start += page.Size
+		start += len(page.Results)
 	}
 
 	slog.Info("recreation.gov campground sync completed",
@@ -298,16 +299,6 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 			Name          string  `json:"name"`
 			Type          string  `json:"type"`
 			AverageRating float64 `json:"average_rating"`
-			Attributes    []struct {
-				AttributeCategory string `json:"attribute_category"`
-				AttributeName     string `json:"attribute_name"`
-				AttributeValue    string `json:"attribute_value"`
-			} `json:"attributes"`
-			PermittedEquipment []struct {
-				EquipmentName string `json:"equipment_name"`
-				MaxLength     int    `json:"max_length"`
-			} `json:"permitted_equipment"`
-			FeeTemplates map[string]string `json:"fee_templates"`
 		} `json:"campsites"`
 	}
 
@@ -317,29 +308,13 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 
 	var campsites []Campsite
 	for _, site := range response.Campsites {
-		// Extract cost information from fee templates
+		// For basic availability checking, we don't need detailed cost info
+		// Cost information would be fetched separately if needed
 		costPerNight := 0.0
-		// Try to extract a numeric cost from fee template names (they often contain pricing info)
-		// This is a best-effort extraction since the fee structure is complex
-
-		// Build campsite type from permitted equipment
-		var equipmentTypes []string
-		for _, equipment := range site.PermittedEquipment {
-			if equipment.MaxLength > 0 {
-				equipmentTypes = append(equipmentTypes, fmt.Sprintf("%s (max %dft)", equipment.EquipmentName, equipment.MaxLength))
-			} else {
-				equipmentTypes = append(equipmentTypes, equipment.EquipmentName)
-			}
-		}
-
-		campsiteType := site.Type
-		if len(equipmentTypes) > 0 {
-			campsiteType += " - " + fmt.Sprintf("Supports: %v", equipmentTypes)
-		}
 
 		campsite := Campsite{
 			ID:           site.CampsiteID,
-			Type:         campsiteType,
+			Type:         site.Type,
 			CostPerNight: costPerNight,
 			Available:    false,       // This will be set by availability queries
 			Date:         time.Time{}, // This will be set by availability queries
@@ -353,4 +328,60 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		slog.Int("campsite_count", len(campsites)))
 
 	return campsites, nil
+}
+
+// FetchCampsiteMetadata fetches campsite metadata for storage in the database
+func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
+	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=1000", campgroundID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create campsite metadata request: %w", err)
+	}
+	httpx.SpoofChromeHeaders(req)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch campsite metadata: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("campsite metadata request failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read campsite metadata response: %w", err)
+	}
+
+	var response struct {
+		Campsites []struct {
+			CampsiteID    string  `json:"campsite_id"`
+			Name          string  `json:"name"`
+			Type          string  `json:"type"`
+			AverageRating float64 `json:"average_rating"`
+		} `json:"campsites"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse campsite metadata response: %w", err)
+	}
+
+	var campsiteInfos []CampsiteInfo
+	for _, site := range response.Campsites {
+		campsiteInfo := CampsiteInfo{
+			ID:           site.CampsiteID,
+			Name:         site.Name,
+			Type:         site.Type,
+			CostPerNight: 0.0, // We don't have cost info in this endpoint
+		}
+		campsiteInfos = append(campsiteInfos, campsiteInfo)
+	}
+
+	slog.Debug("fetched campsite metadata for campground",
+		slog.String("campgroundID", campgroundID),
+		slog.Int("campsite_count", len(campsiteInfos)))
+
+	return campsiteInfos, nil
 }
