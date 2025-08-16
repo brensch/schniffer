@@ -804,21 +804,106 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities map[string]string) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, campsiteTypes []string, imageURL string, priceMin, priceMax float64, priceUnit string) error {
 	amenitiesJSON, _ := json.Marshal(amenities)
+	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), time.Now())
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, campsite_types, image_url, price_min, price_max, price_unit, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), string(campsiteTypesJSON), imageURL, priceMin, priceMax, priceUnit, time.Now())
 	return err
 }
 
-func (s *Store) UpsertCampsite(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight float64) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campsites(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, time.Now())
-	return err
+func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64, equipment []string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Upsert campsite metadata
+	_, err = tx.ExecContext(ctx, `
+		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, time.Now())
+	if err != nil {
+		return err
+	}
+
+	// Delete existing equipment entries for this campsite
+	_, err = tx.ExecContext(ctx, `
+		DELETE FROM campsite_equipment 
+		WHERE provider = ? AND campground_id = ? AND campsite_id = ?
+	`, provider, campgroundID, campsiteID)
+	if err != nil {
+		return err
+	}
+
+	// Insert new equipment entries
+	for _, equipmentType := range equipment {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, last_updated)
+			VALUES (?, ?, ?, ?, ?)
+		`, provider, campgroundID, campsiteID, equipmentType, time.Now())
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// Legacy method - can be removed after migration
+func (s *Store) UpsertCampsite(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64) error {
+	return s.UpsertCampsiteMetadata(ctx, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, nil)
+}
+
+// GetCampsiteEquipmentTypes returns all unique equipment types available at a campground
+func (s *Store) GetCampsiteEquipmentTypes(ctx context.Context, provider, campgroundID string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT equipment_type 
+		FROM campsite_equipment 
+		WHERE provider = ? AND campground_id = ?
+		ORDER BY equipment_type
+	`, provider, campgroundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var equipmentTypes []string
+	for rows.Next() {
+		var equipmentType string
+		if err := rows.Scan(&equipmentType); err != nil {
+			return nil, err
+		}
+		equipmentTypes = append(equipmentTypes, equipmentType)
+	}
+	return equipmentTypes, rows.Err()
+}
+
+// GetCampsiteTypes returns all unique campsite types available at a campground
+func (s *Store) GetCampsiteTypes(ctx context.Context, provider, campgroundID string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT campsite_type 
+		FROM campsite_metadata 
+		WHERE provider = ? AND campground_id = ? AND campsite_type != ''
+		ORDER BY campsite_type
+	`, provider, campgroundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var campsiteTypes []string
+	for rows.Next() {
+		var campsiteType string
+		if err := rows.Scan(&campsiteType); err != nil {
+			return nil, err
+		}
+		campsiteTypes = append(campsiteTypes, campsiteType)
+	}
+	return campsiteTypes, rows.Err()
 }
 
 type Campground struct {

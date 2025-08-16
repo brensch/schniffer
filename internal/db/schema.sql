@@ -63,27 +63,62 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     longitude    REAL DEFAULT 0,
     rating       REAL DEFAULT 0,
     amenities    TEXT DEFAULT '{}',
+    campsite_types TEXT DEFAULT '{}',
+    image_url    TEXT DEFAULT '',
+    price_min    REAL DEFAULT 0,
+    price_max    REAL DEFAULT 0,
+    price_unit   TEXT DEFAULT 'night',
     last_updated DATETIME NOT NULL,
     PRIMARY KEY (provider, campground_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_campgrounds_location ON campgrounds(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_campgrounds_rating ON campgrounds(rating);
+CREATE INDEX IF NOT EXISTS idx_campgrounds_price ON campgrounds(price_min, price_max);
 
--- Campsites metadata table for filtering and detailed information
-CREATE TABLE IF NOT EXISTS campsites (
+-- Campsites metadata table (separate from availability) for filtering and detailed information
+CREATE TABLE IF NOT EXISTS campsite_metadata (
     provider     TEXT NOT NULL,
     campground_id TEXT NOT NULL,
     campsite_id  TEXT NOT NULL,
     name         TEXT NOT NULL,
     campsite_type TEXT DEFAULT '',
     cost_per_night REAL DEFAULT 0,
+    rating       REAL DEFAULT 0,
     last_updated DATETIME NOT NULL,
     PRIMARY KEY (provider, campground_id, campsite_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_campsites_campground ON campsites(provider, campground_id);
-CREATE INDEX IF NOT EXISTS idx_campsites_type ON campsites(campsite_type);
+CREATE INDEX IF NOT EXISTS idx_campsite_metadata_campground ON campsite_metadata(provider, campground_id);
+CREATE INDEX IF NOT EXISTS idx_campsite_metadata_type ON campsite_metadata(campsite_type);
+CREATE INDEX IF NOT EXISTS idx_campsite_metadata_rating ON campsite_metadata(rating);
+
+-- Equipment types available at each campsite (normalized many-to-many)
+CREATE TABLE IF NOT EXISTS campsite_equipment (
+    provider     TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    campsite_id  TEXT NOT NULL,
+    equipment_type TEXT NOT NULL,
+    last_updated DATETIME NOT NULL,
+    PRIMARY KEY (provider, campground_id, campsite_id, equipment_type),
+    FOREIGN KEY (provider, campground_id, campsite_id) REFERENCES campsite_metadata(provider, campground_id, campsite_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_campsite_equipment_campground ON campsite_equipment(provider, campground_id);
+CREATE INDEX IF NOT EXISTS idx_campsite_equipment_type ON campsite_equipment(equipment_type);
+
+-- Legacy campsites table (can be removed after migration)
+-- CREATE TABLE IF NOT EXISTS campsites (
+--     provider     TEXT NOT NULL,
+--     campground_id TEXT NOT NULL,
+--     campsite_id  TEXT NOT NULL,
+--     name         TEXT NOT NULL,
+--     campsite_type TEXT DEFAULT '',
+--     cost_per_night REAL DEFAULT 0,
+--     rating       REAL DEFAULT 0,
+--     last_updated DATETIME NOT NULL,
+--     PRIMARY KEY (provider, campground_id, campsite_id)
+-- );
 
 -- Lookup log for API calls (for summaries)
 CREATE TABLE IF NOT EXISTS lookup_log (

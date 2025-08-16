@@ -168,11 +168,16 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				Reservable    bool    `json:"reservable"`
 				AverageRating float64 `json:"average_rating"`
 				Activities    []struct {
-					ActivityName        string `json:"activity_name"`
-					ActivityDescription string `json:"activity_description"`
+					ActivityName string `json:"activity_name"`
 				} `json:"activities"`
 				CampsiteEquipmentName []string `json:"campsite_equipment_name"`
 				Description           string   `json:"description"`
+				PreviewImageURL       string   `json:"preview_image_url"`
+				PriceRange            struct {
+					AmountMax float64 `json:"amount_max"`
+					AmountMin float64 `json:"amount_min"`
+					PerUnit   string  `json:"per_unit"`
+				} `json:"price_range"`
 			} `json:"results"`
 			Size int `json:"size"`
 		}
@@ -211,25 +216,30 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				name = result.ParentName + ": " + result.Name
 			}
 
-			// Build amenities map from activities and equipment
-			amenities := make(map[string]string)
+			// Build amenities list from activities only
+			var amenities []string
 			for _, activity := range result.Activities {
-				amenities[activity.ActivityName] = activity.ActivityDescription
+				amenities = append(amenities, activity.ActivityName)
 			}
+
+			// Build campsite types list from equipment
+			var campsiteTypes []string
 			for _, equipment := range result.CampsiteEquipmentName {
-				amenities["Equipment: "+equipment] = ""
-			}
-			if result.Description != "" {
-				amenities["Description"] = result.Description
+				campsiteTypes = append(campsiteTypes, equipment)
 			}
 
 			campground := CampgroundInfo{
-				ID:        result.EntityID,
-				Name:      name,
-				Lat:       lat,
-				Lon:       lon,
-				Rating:    result.AverageRating,
-				Amenities: amenities,
+				ID:            result.EntityID,
+				Name:          name,
+				Lat:           lat,
+				Lon:           lon,
+				Rating:        result.AverageRating,
+				Amenities:     amenities,
+				CampsiteTypes: campsiteTypes,
+				ImageURL:      result.PreviewImageURL,
+				PriceMin:      result.PriceRange.AmountMin,
+				PriceMax:      result.PriceRange.AmountMax,
+				PriceUnit:     result.PriceRange.PerUnit,
 			}
 
 			all = append(all, campground)
@@ -357,10 +367,14 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 
 	var response struct {
 		Campsites []struct {
-			CampsiteID    string  `json:"campsite_id"`
-			Name          string  `json:"name"`
-			Type          string  `json:"type"`
-			AverageRating float64 `json:"average_rating"`
+			CampsiteID         string  `json:"campsite_id"`
+			Name               string  `json:"name"`
+			Type               string  `json:"type"`
+			AverageRating      float64 `json:"average_rating"`
+			PermittedEquipment []struct {
+				EquipmentName string `json:"equipment_name"`
+				MaxLength     int    `json:"max_length"`
+			} `json:"permitted_equipment"`
 		} `json:"campsites"`
 	}
 
@@ -370,11 +384,24 @@ func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID 
 
 	var campsiteInfos []CampsiteInfo
 	for _, site := range response.Campsites {
+		// Extract unique equipment types
+		equipmentTypes := make(map[string]bool)
+		for _, eq := range site.PermittedEquipment {
+			equipmentTypes[eq.EquipmentName] = true
+		}
+
+		var equipment []string
+		for equipType := range equipmentTypes {
+			equipment = append(equipment, equipType)
+		}
+
 		campsiteInfo := CampsiteInfo{
 			ID:           site.CampsiteID,
 			Name:         site.Name,
 			Type:         site.Type,
 			CostPerNight: 0.0, // We don't have cost info in this endpoint
+			Rating:       site.AverageRating,
+			Equipment:    equipment,
 		}
 		campsiteInfos = append(campsiteInfos, campsiteInfo)
 	}

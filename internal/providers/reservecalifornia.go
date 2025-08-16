@@ -296,25 +296,30 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			compositeName := parentName + ": " + f.Name
 
 			// Extract amenities from highlights if available
-			amenities := make(map[string]string)
+			var amenities []string
 			if f.Allhighlights != "" {
 				// Parse highlights like "Birdwatching<br>Boating<br>Boat launch<br>..."
 				highlightParts := strings.Split(f.Allhighlights, "<br>")
 				for _, highlight := range highlightParts {
 					highlight = strings.TrimSpace(highlight)
 					if highlight != "" {
-						amenities[highlight] = ""
+						amenities = append(amenities, highlight)
 					}
 				}
 			}
 
 			out = append(out, CampgroundInfo{
-				ID:        compositeID,
-				Name:      compositeName,
-				Lat:       f.Latitude,
-				Lon:       f.Longitude,
-				Rating:    0.0, // ReserveCalifornia doesn't provide ratings in their API
-				Amenities: amenities,
+				ID:            compositeID,
+				Name:          compositeName,
+				Lat:           f.Latitude,
+				Lon:           f.Longitude,
+				Rating:        0.0, // ReserveCalifornia doesn't provide ratings in their API
+				Amenities:     amenities,
+				CampsiteTypes: []string{}, // ReserveCalifornia doesn't provide campsite types in this API
+				ImageURL:      "",         // ReserveCalifornia doesn't provide image URLs in this API
+				PriceMin:      0.0,        // Would need separate API call to get pricing
+				PriceMax:      0.0,
+				PriceUnit:     "night",
 			})
 		}
 		checked++

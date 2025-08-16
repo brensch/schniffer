@@ -47,6 +47,12 @@ type RecGovSearchResult struct {
 	} `json:"activities"`
 	CampsiteEquipmentName []string `json:"campsite_equipment_name"`
 	Description           string   `json:"description"`
+	PreviewImageURL       string   `json:"preview_image_url"`
+	PriceRange            struct {
+		AmountMax float64 `json:"amount_max"`
+		AmountMin float64 `json:"amount_min"`
+		PerUnit   string  `json:"per_unit"`
+	} `json:"price_range"`
 }
 
 type RecGovSearchResponse struct {
@@ -409,7 +415,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities)
+		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.CampsiteTypes, cg.ImageURL, cg.PriceMin, cg.PriceMax, cg.PriceUnit)
 		if err != nil {
 			// store failed sync
 			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
@@ -434,11 +440,7 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 	}
 
 	// Check if provider supports FetchCampsiteMetadata
-	type CampsiteMetadataProvider interface {
-		FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]providers.CampsiteInfo, error)
-	}
-	
-	cmProv, hasCampsiteMetadata := prov.(CampsiteMetadataProvider)
+	cmProv, hasCampsiteMetadata := prov.(providers.CampsiteMetadataProvider)
 	if !hasCampsiteMetadata {
 		m.logger.Info("provider does not support campsite metadata sync", slog.String("provider", providerName))
 		return 0, nil
@@ -472,12 +474,12 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 	processed := 0
 	for _, campground := range campgrounds {
 		processed++
-		
+
 		// Fetch campsite metadata for this campground
 		campsiteInfos, err := cmProv.FetchCampsiteMetadata(ctx, campground.ID)
 		if err != nil {
-			m.logger.Warn("failed to fetch campsite metadata", 
-				slog.String("provider", providerName), 
+			m.logger.Warn("failed to fetch campsite metadata",
+				slog.String("provider", providerName),
 				slog.String("campground", campground.ID),
 				slog.Any("err", err))
 			continue
@@ -485,9 +487,9 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 
 		// Store each campsite metadata
 		for _, campsiteInfo := range campsiteInfos {
-			err := m.store.UpsertCampsite(ctx, providerName, campground.ID, campsiteInfo.ID, campsiteInfo.Name, campsiteInfo.Type, campsiteInfo.CostPerNight)
+			err := m.store.UpsertCampsiteMetadata(ctx, providerName, campground.ID, campsiteInfo.ID, campsiteInfo.Name, campsiteInfo.Type, campsiteInfo.CostPerNight, campsiteInfo.Rating, campsiteInfo.Equipment)
 			if err != nil {
-				m.logger.Warn("failed to store campsite metadata", 
+				m.logger.Warn("failed to store campsite metadata",
 					slog.String("provider", providerName),
 					slog.String("campground", campground.ID),
 					slog.String("campsite", campsiteInfo.ID),
@@ -499,7 +501,7 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 
 		// Log progress every 50 campgrounds
 		if processed%50 == 0 {
-			m.logger.Info("campsite sync progress", 
+			m.logger.Info("campsite sync progress",
 				slog.String("provider", providerName),
 				slog.Int("processed_campgrounds", processed),
 				slog.Int("total_campgrounds", len(campgrounds)),
@@ -509,18 +511,18 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 
 	// Record sync completion
 	err = m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
-		SyncType: "campsites", 
-		Provider: providerName, 
-		StartedAt: started, 
-		FinishedAt: time.Now(), 
-		Success: true, 
-		Count: count,
+		SyncType:   "campsites",
+		Provider:   providerName,
+		StartedAt:  started,
+		FinishedAt: time.Now(),
+		Success:    true,
+		Count:      count,
 	})
 	if err != nil {
 		m.logger.Warn("record campsite sync failed", slog.Any("err", err))
 	}
 
-	m.logger.Info("campsite sync completed", 
+	m.logger.Info("campsite sync completed",
 		slog.String("provider", providerName),
 		slog.Int("campgrounds_processed", processed),
 		slog.Int("campsites_synced", count))
@@ -576,7 +578,7 @@ func (m *Manager) syncCampgroundsStreaming(ctx context.Context, prov providers.P
 			}
 
 			// Save to database
-			if err := m.store.UpsertCampground(ctx, providerName, campground.ID, campground.Name, campground.Lat, campground.Lon, campground.Rating, campground.Amenities); err != nil {
+			if err := m.store.UpsertCampground(ctx, providerName, campground.ID, campground.Name, campground.Lat, campground.Lon, campground.Rating, campground.Amenities, campground.CampsiteTypes, campground.ImageURL, campground.PriceMin, campground.PriceMax, campground.PriceUnit); err != nil {
 				m.logger.Warn("failed to save campground", slog.String("id", campground.ID), slog.Any("err", err))
 				continue
 			}
@@ -826,16 +828,13 @@ func (m *Manager) convertRecGovResult(result RecGovSearchResult) (providers.Camp
 		name = result.ParentName + ": " + result.Name
 	}
 
-	// Build amenities map from activities and equipment
-	amenities := make(map[string]string)
+	// Build amenities list from activities and equipment
+	var amenities []string
 	for _, activity := range result.Activities {
-		amenities[activity.ActivityName] = activity.ActivityDescription
+		amenities = append(amenities, activity.ActivityName)
 	}
 	for _, equipment := range result.CampsiteEquipmentName {
-		amenities["Equipment: "+equipment] = ""
-	}
-	if result.Description != "" {
-		amenities["Description"] = result.Description
+		amenities = append(amenities, "Equipment: "+equipment)
 	}
 
 	return providers.CampgroundInfo{
@@ -845,6 +844,10 @@ func (m *Manager) convertRecGovResult(result RecGovSearchResult) (providers.Camp
 		Lon:       lon,
 		Rating:    result.AverageRating,
 		Amenities: amenities,
+		ImageURL:  result.PreviewImageURL,
+		PriceMin:  result.PriceRange.AmountMin,
+		PriceMax:  result.PriceRange.AmountMax,
+		PriceUnit: result.PriceRange.PerUnit,
 	}, nil
 }
 
@@ -855,6 +858,6 @@ func (m *Manager) fetchRecGovCampgroundDetails(ctx context.Context, facilityID s
 	// But we keep it for backward compatibility in case it's called
 	return providers.CampgroundInfo{
 		Rating:    0.0,
-		Amenities: make(map[string]string),
+		Amenities: []string{},
 	}, nil
 }
