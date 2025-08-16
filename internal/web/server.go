@@ -19,19 +19,19 @@ type Server struct {
 }
 
 type CampgroundMapData struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Provider     string            `json:"provider"`
-	Lat          float64           `json:"lat"`
-	Lon          float64           `json:"lon"`
-	URL          string            `json:"url"`
-	Rating       float64           `json:"rating"`
-	Amenities    map[string]string `json:"amenities"`
-	CampsiteTypes []string         `json:"campsite_types"`
-	ImageURL     string            `json:"image_url"`
-	PriceMin     float64           `json:"price_min"`
-	PriceMax     float64           `json:"price_max"`
-	PriceUnit    string            `json:"price_unit"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Provider      string   `json:"provider"`
+	Lat           float64  `json:"lat"`
+	Lon           float64  `json:"lon"`
+	URL           string   `json:"url"`
+	Rating        float64  `json:"rating"`
+	Amenities     []string `json:"amenities"`
+	CampsiteTypes []string `json:"campsite_types"`
+	ImageURL      string   `json:"image_url"`
+	PriceMin      float64  `json:"price_min"`
+	PriceMax      float64  `json:"price_max"`
+	PriceUnit     string   `json:"price_unit"`
 }
 
 type ClusterData struct {
@@ -190,7 +190,6 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		}
 
 		// Parse amenities JSON
-		c.Amenities = make(map[string]string)
 		if amenitiesJSON != "" {
 			json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
 		}

@@ -161,11 +161,7 @@ function renderMarkersFromViewport(result) {
             const providerName = campground.provider === 'recreation_gov' ? 'Recreation.gov' : 'Reserve California';
             const providerEmoji = campground.provider === 'recreation_gov' ? '🏞️' : '🌲';
             
-            // Parse coordinates for display
-            const latDisplay = campground.lat.toFixed(4);
-            const lonDisplay = campground.lon.toFixed(4);
-            
-            // Format rating display
+            // Format rating display with outlined stars and bordered style
             const ratingDisplay = campground.rating > 0 
                 ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
                 : '';
@@ -185,11 +181,20 @@ function renderMarkersFromViewport(result) {
                 }
             }
             
+            // Combine price and rating in a flex container
+            let priceRatingDisplay = '';
+            if (ratingDisplay || priceDisplay) {
+                priceRatingDisplay = `<div class="popup-price-rating">
+                    ${ratingDisplay}
+                    ${priceDisplay}
+                </div>`;
+            }
+            
             // Format campsite types display
             let campsiteTypesDisplay = '';
             if (campground.campsite_types && campground.campsite_types.length > 0) {
                 const types = campground.campsite_types.slice(0, 3).join(', ');
-                campsiteTypesDisplay = `<div class="popup-campsite-types">🏕️ ${types}</div>`;
+                campsiteTypesDisplay = `<div class="popup-campsite-types">🛖 ${types}</div>`;
             }
             
             // Format image display
@@ -202,16 +207,11 @@ function renderMarkersFromViewport(result) {
             
             // Format amenities display (show all amenities)
             let amenitiesDisplay = '';
-            if (campground.amenities && Object.keys(campground.amenities).length > 0) {
-                const amenityList = Object.keys(campground.amenities)
-                    .slice(0, 5)  // Limit to first 5 amenities for popup
-                    .map(name => `• ${name}`)
-                    .join('<br>');
-                const moreCount = Object.keys(campground.amenities).length - 5;
-                const moreText = moreCount > 0 ? `<br>• +${moreCount} more...` : '';
+            if (campground.amenities && campground.amenities.length > 0) {
+                const amenityList = campground.amenities.map(name => `• ${name}`).join('<br>');
                 amenitiesDisplay = `<div class="popup-amenities">
-                    <strong>🏕️ Features:</strong><br>
-                    ${amenityList}${moreText}
+                    <strong>🛝 Features</strong><br>
+                    ${amenityList}
                 </div>`;
             }
             
@@ -229,19 +229,12 @@ function renderMarkersFromViewport(result) {
                         ${imageDisplay}
                         <div class="popup-title">${campground.name}</div>
                         <div class="popup-details">
-                            <div class="popup-coordinates">
-                                📍 ${latDisplay}, ${lonDisplay}
-                            </div>
-                            ${ratingDisplay}
-                            ${priceDisplay}
+                            ${priceRatingDisplay}
                             ${campsiteTypesDisplay}
                             ${amenitiesDisplay}
                         </div>
                         ${linkHtml}
                         <div class="popup-actions">
-                            <button onclick="showOnMap(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
-                                🗺️ Center
-                            </button>
                             <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
                                 🧭 Directions
                             </button>
@@ -372,7 +365,7 @@ function openSaveGroupModal() {
         
         // Format rating display for modal
         const ratingDisplay = campground.rating > 0 
-            ? `<span class="campground-rating">⭐ ${campground.rating.toFixed(1)}</span>`
+            ? `<span class="campground-rating">☆ ${campground.rating.toFixed(1)}</span>`
             : '';
             
         // Format price display for modal
@@ -390,10 +383,9 @@ function openSaveGroupModal() {
             
         // Format amenities for modal (show first 3 key amenities)
         let amenitiesDisplay = '';
-        if (campground.amenities && Object.keys(campground.amenities).length > 0) {
-            const topAmenities = Object.keys(campground.amenities)
+        if (campground.amenities && campground.amenities.length > 0) {
+            const topAmenities = campground.amenities
                 .filter(name => !name.startsWith('Equipment:') && !name.includes('Description'))
-                .slice(0, 3)
                 .join(', ');
             if (topAmenities) {
                 amenitiesDisplay = `<div class="campground-amenities">🏕️ ${topAmenities}</div>`;
