@@ -17,7 +17,11 @@ CREATE INDEX IF NOT EXISTS idx_schniff_requests_user ON schniff_requests(user_id
 CREATE INDEX IF NOT EXISTS idx_schniff_requests_active_provider ON schniff_requests(active, provider, campground_id) WHERE active=1;
 CREATE INDEX IF NOT EXISTS idx_schniff_requests_dates ON schniff_requests(provider, campground_id, checkin, checkout) WHERE active=1;
 
--- Latest availability only (no timeseries history)
+-- Enhanced schniffer database schema
+-- Version 2: Added campsite type, cost, campground ratings and amenities
+
+PRAGMA user_version = 2;
+
 CREATE TABLE IF NOT EXISTS campsite_availability (
     provider     TEXT NOT NULL,
     campground_id TEXT NOT NULL,
@@ -25,14 +29,46 @@ CREATE TABLE IF NOT EXISTS campsite_availability (
     date         DATE NOT NULL,
     available    BOOLEAN NOT NULL,
     last_checked DATETIME NOT NULL,
+    campsite_type TEXT DEFAULT '',
+    cost_per_night REAL DEFAULT 0,
     PRIMARY KEY (provider, campground_id, campsite_id, date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_availability_lookup ON campsite_availability(provider, campground_id, date);
 CREATE INDEX IF NOT EXISTS idx_availability_stale ON campsite_availability(last_checked);
--- Additional indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_availability_available_filtered ON campsite_availability(provider, campground_id, available, date) WHERE available=1;
 CREATE INDEX IF NOT EXISTS idx_availability_date_range ON campsite_availability(provider, campground_id, date, available);
+
+CREATE TABLE IF NOT EXISTS requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    provider     TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    start_date   DATE NOT NULL,
+    end_date     DATE NOT NULL,
+    status       TEXT NOT NULL,
+    created_at   DATETIME NOT NULL,
+    last_checked DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_requests_stale ON requests(last_checked);
+
+CREATE TABLE IF NOT EXISTS campgrounds (
+    provider     TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    latitude     REAL DEFAULT 0,
+    longitude    REAL DEFAULT 0,
+    rating       REAL DEFAULT 0,
+    amenities    TEXT DEFAULT '{}',
+    last_updated DATETIME NOT NULL,
+    PRIMARY KEY (provider, campground_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_campgrounds_location ON campgrounds(latitude, longitude);
+CREATE INDEX IF NOT EXISTS idx_campgrounds_rating ON campgrounds(rating);
 
 -- Lookup log for API calls (for summaries)
 CREATE TABLE IF NOT EXISTS lookup_log (
@@ -101,6 +137,8 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     name         TEXT NOT NULL,
     lat          REAL,
     lon          REAL,
+    rating       REAL DEFAULT 0,
+    amenities    TEXT DEFAULT '{}', -- JSON object of amenities
     PRIMARY KEY (provider, id)
 );
 

@@ -6,9 +6,11 @@ import (
 )
 
 type Campsite struct {
-	ID        string
-	Date      time.Time
-	Available bool
+	ID           string
+	Date         time.Time
+	Available    bool
+	Type         string  // e.g., "TENT ONLY NONELECTRIC", "RV NONELECTRIC", "STANDARD NONELECTRIC"
+	CostPerNight float64 // Cost per night in USD, 0 if unknown
 }
 
 type Provider interface {
@@ -47,8 +49,10 @@ func (r *Registry) Register(name string, p Provider) { r.providers[name] = p }
 func (r *Registry) Get(name string) (Provider, bool) { p, ok := r.providers[name]; return p, ok }
 
 type CampgroundInfo struct {
-	ID   string
-	Name string
-	Lat  float64
-	Lon  float64
+	ID        string
+	Name      string
+	Lat       float64
+	Lon       float64
+	Rating    float64           // Campground rating (0-5), 0 if unknown
+	Amenities map[string]string // Campground amenities
 }

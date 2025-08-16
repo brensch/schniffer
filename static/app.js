@@ -165,6 +165,25 @@ function renderMarkersFromViewport(result) {
             const latDisplay = campground.lat.toFixed(4);
             const lonDisplay = campground.lon.toFixed(4);
             
+            // Format rating display
+            const ratingDisplay = campground.rating > 0 
+                ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
+                : '';
+            
+            // Format amenities display (show top 4 most relevant)
+            let amenitiesDisplay = '';
+            if (campground.amenities && Object.keys(campground.amenities).length > 0) {
+                const amenityList = Object.keys(campground.amenities)
+                    .slice(0, 4) // Show top 4 amenities
+                    .map(name => `• ${name}`)
+                    .join('<br>');
+                amenitiesDisplay = `<div class="popup-amenities">
+                    <strong>🏕️ Amenities:</strong><br>
+                    ${amenityList}
+                    ${Object.keys(campground.amenities).length > 4 ? '<br>• ...and more' : ''}
+                </div>`;
+            }
+            
             const linkHtml = campground.url ? 
                 `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
                     ${providerName} →
@@ -181,6 +200,8 @@ function renderMarkersFromViewport(result) {
                             <div class="popup-coordinates">
                                 📍 ${latDisplay}, ${lonDisplay}
                             </div>
+                            ${ratingDisplay}
+                            ${amenitiesDisplay}
                         </div>
                         ${linkHtml}
                         <div class="popup-actions">

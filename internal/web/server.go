@@ -19,12 +19,14 @@ type Server struct {
 }
 
 type CampgroundMapData struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Provider string  `json:"provider"`
-	Lat      float64 `json:"lat"`
-	Lon      float64 `json:"lon"`
-	URL      string  `json:"url"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Provider  string            `json:"provider"`
+	Lat       float64           `json:"lat"`
+	Lon       float64           `json:"lon"`
+	URL       string            `json:"url"`
+	Rating    float64           `json:"rating"`
+	Amenities map[string]string `json:"amenities"`
 }
 
 type ClusterData struct {
@@ -161,11 +163,11 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportRequest) ([]CampgroundMapData, error) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT provider, id, name, lat, lon
+		SELECT provider, campground_id, name, latitude, longitude, rating, amenities
 		FROM campgrounds
-		WHERE lat BETWEEN ? AND ?
-		AND lon BETWEEN ? AND ?
-		AND lat != 0 AND lon != 0
+		WHERE latitude BETWEEN ? AND ?
+		AND longitude BETWEEN ? AND ?
+		AND latitude != 0 AND longitude != 0
 	`, req.South, req.North, req.West, req.East)
 
 	if err != nil {
@@ -176,10 +178,18 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	var result []CampgroundMapData
 	for rows.Next() {
 		var c CampgroundMapData
-		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+		var amenitiesJSON string
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON)
 		if err != nil {
 			return nil, err
 		}
+
+		// Parse amenities JSON
+		c.Amenities = make(map[string]string)
+		if amenitiesJSON != "" {
+			json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
+		}
+
 		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)
 		result = append(result, c)
 	}

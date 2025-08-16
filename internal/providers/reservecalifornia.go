@@ -93,7 +93,8 @@ type gridRequest struct {
 type gridResponse struct {
 	Facility struct {
 		Units map[string]struct {
-			UnitId int `json:"UnitId"`
+			UnitId int    `json:"UnitId"`
+			Name   string `json:"Name"` // e.g., "Tent Campsite #C36"
 			Slices map[string]struct {
 				Date      string `json:"Date"` // YYYY-MM-DD
 				IsFree    bool   `json:"IsFree"`
@@ -161,16 +162,44 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 	var out []Campsite
 	for _, u := range parsed.Facility.Units {
 		siteID := strconv.Itoa(u.UnitId)
+		// Extract campsite type from unit name (e.g., "Tent Campsite #C36" -> "Tent")
+		campsiteType := extractCampsiteType(u.Name)
+
 		for _, s := range u.Slices {
 			// s.Date is YYYY-MM-DD; interpret as UTC midnight
 			d, err := time.Parse("2006-01-02", s.Date)
 			if err != nil {
 				continue
 			}
-			out = append(out, Campsite{ID: siteID, Date: d.UTC(), Available: s.IsFree && !s.IsBlocked})
+			out = append(out, Campsite{
+				ID:           siteID,
+				Date:         d.UTC(),
+				Available:    s.IsFree && !s.IsBlocked,
+				Type:         campsiteType,
+				CostPerNight: 0, // ReserveCalifornia doesn't provide pricing in grid API
+			})
 		}
 	}
 	return out, nil
+}
+
+// extractCampsiteType extracts the campsite type from ReserveCalifornia unit names
+// e.g., "Tent Campsite #C36" -> "Tent", "RV Campsite #A12" -> "RV"
+func extractCampsiteType(unitName string) string {
+	if strings.Contains(strings.ToLower(unitName), "tent") {
+		return "Tent"
+	}
+	if strings.Contains(strings.ToLower(unitName), "rv") {
+		return "RV"
+	}
+	if strings.Contains(strings.ToLower(unitName), "cabin") {
+		return "Cabin"
+	}
+	if strings.Contains(strings.ToLower(unitName), "group") {
+		return "Group"
+	}
+	// Default to "Standard" if no specific type is detected
+	return "Standard"
 }
 
 // FetchAllCampgrounds enumerates city parks, then places and facilities to build a list of campgrounds keyed by FacilityId.
@@ -213,10 +242,11 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			Latitude   float64 `json:"Latitude"`
 			Longitude  float64 `json:"Longitude"`
 			Facilities map[string]struct {
-				FacilityId int     `json:"FacilityId"`
-				Name       string  `json:"Name"`
-				Latitude   float64 `json:"Latitude"`
-				Longitude  float64 `json:"Longitude"`
+				FacilityId    int     `json:"FacilityId"`
+				Name          string  `json:"Name"`
+				Latitude      float64 `json:"Latitude"`
+				Longitude     float64 `json:"Longitude"`
+				Allhighlights string  `json:"Allhighlights"`
 			} `json:"Facilities"`
 		} `json:"SelectedPlace"`
 	}
@@ -265,11 +295,26 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			compositeID := parentID + "/" + strconv.Itoa(f.FacilityId)
 			compositeName := parentName + ": " + f.Name
 
+			// Extract amenities from highlights if available
+			amenities := make(map[string]string)
+			if f.Allhighlights != "" {
+				// Parse highlights like "Birdwatching<br>Boating<br>Boat launch<br>..."
+				highlightParts := strings.Split(f.Allhighlights, "<br>")
+				for _, highlight := range highlightParts {
+					highlight = strings.TrimSpace(highlight)
+					if highlight != "" {
+						amenities[highlight] = ""
+					}
+				}
+			}
+
 			out = append(out, CampgroundInfo{
-				ID:   compositeID,
-				Name: compositeName,
-				Lat:  f.Latitude,
-				Lon:  f.Longitude,
+				ID:        compositeID,
+				Name:      compositeName,
+				Lat:       f.Latitude,
+				Lon:       f.Longitude,
+				Rating:    0.0, // ReserveCalifornia doesn't provide ratings in their API
+				Amenities: amenities,
 			})
 		}
 		checked++

@@ -81,6 +81,8 @@ type CampsiteAvailability struct {
 	Date         time.Time
 	Available    bool
 	LastChecked  time.Time
+	Type         string
+	CostPerNight float64
 }
 
 type LookupLog struct {
@@ -144,9 +146,11 @@ type NotificationResult struct {
 
 // IncomingCampsiteState represents the latest observed state for a campsite on a date.
 type IncomingCampsiteState struct {
-	CampsiteID string
-	Date       time.Time
-	Available  bool
+	CampsiteID   string
+	Date         time.Time
+	Available    bool
+	Type         string
+	CostPerNight float64
 }
 
 // AvailabilityItem describes a newly opened availability to notify a user about.
@@ -281,8 +285,8 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 
 	// Prepare statements
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked, campsite_type, cost_per_night)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -319,7 +323,7 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 
 	for _, st := range states {
 		// Update availability
-		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked)
+		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked, st.Type, st.CostPerNight)
 		if err != nil {
 			return err
 		}
@@ -800,20 +804,24 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon float64) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities map[string]string) error {
+	amenitiesJSON, _ := json.Marshal(amenities)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, id, name, lat, lon)
-		VALUES (?, ?, ?, ?, ?)
-	`, provider, id, name, lat, lon)
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), time.Now())
 	return err
 }
 
 type Campground struct {
-	Provider string
-	ID       string
-	Name     string
-	Lat      float64
-	Lon      float64
+	Provider    string
+	ID          string
+	Name        string
+	Lat         float64
+	Lon         float64
+	Rating      float64
+	Amenities   map[string]string
+	LastUpdated time.Time
 }
 
 type CampgroundRef struct {

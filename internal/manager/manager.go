@@ -2,8 +2,11 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -182,7 +185,16 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 			batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
 			now := time.Now()
 			for _, s := range collectedStates {
-				batch = append(batch, db.CampsiteAvailability{Provider: k.prov, CampgroundID: k.cg, CampsiteID: s.ID, Date: s.Date, Available: s.Available, LastChecked: now})
+				batch = append(batch, db.CampsiteAvailability{
+					Provider:     k.prov,
+					CampgroundID: k.cg,
+					CampsiteID:   s.ID,
+					Date:         s.Date,
+					Available:    s.Available,
+					LastChecked:  now,
+					Type:         s.Type,
+					CostPerNight: s.CostPerNight,
+				})
 			}
 
 			// Upsert states
@@ -359,6 +371,13 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 		m.logger.Warn("get last sync failed", slog.Any("err", err))
 	}
 	started := time.Now()
+
+	// For recreation.gov, we want to use a streaming approach to write campgrounds as we get them
+	if providerName == "recreation_gov" {
+		return m.syncCampgroundsStreaming(ctx, prov, providerName, started)
+	}
+
+	// For other providers, use the original batch approach
 	all, err := prov.FetchAllCampgrounds(ctx)
 	if err != nil {
 		// store failed sync
@@ -369,7 +388,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon)
+		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities)
 		if err != nil {
 			// store failed sync
 			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
@@ -384,6 +403,83 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 		m.logger.Warn("record sync failed", slog.Any("err", err))
 	}
 	return count, nil
+}
+
+// syncCampgroundsStreaming implements streaming sync for recreation.gov provider
+func (m *Manager) syncCampgroundsStreaming(ctx context.Context, prov providers.Provider, providerName string, started time.Time) (int, error) {
+	m.logger.Info("starting streaming sync for recreation.gov")
+
+	totalCount := 0
+	page := 0
+	const pageSize = 50
+
+	for {
+		// Fetch page
+		results, hasMore, err := m.fetchRecreationGovPage(ctx, page, pageSize)
+		if err != nil {
+			m.logger.Error("failed to fetch page", slog.Int("page", page), slog.Any("err", err))
+			// Record failed sync
+			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
+				SyncType: "campgrounds", Provider: providerName, StartedAt: started,
+				FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: totalCount,
+			}); err2 != nil {
+				m.logger.Warn("record sync failed", slog.Any("err", err2))
+			}
+			return totalCount, err
+		}
+
+		// Convert to campground info
+		campgrounds := make([]providers.CampgroundInfo, 0, len(results))
+		for _, result := range results {
+			campground, err := m.convertRecGovResult(result)
+			if err != nil {
+				m.logger.Warn("failed to convert result", slog.Any("err", err), slog.String("id", result.EntityID))
+				continue
+			}
+			campgrounds = append(campgrounds, campground)
+		}
+
+		// Fetch detailed info and save to database
+		for _, campground := range campgrounds {
+			// Get detailed info
+			detailed, err := m.fetchRecGovCampgroundDetails(ctx, campground.ID)
+			if err != nil {
+				m.logger.Warn("failed to fetch details", slog.String("id", campground.ID), slog.Any("err", err))
+				// Save basic info without details
+			} else {
+				// Merge detailed info
+				campground.Rating = detailed.Rating
+				campground.Amenities = detailed.Amenities
+			}
+
+			// Save to database
+			if err := m.store.UpsertCampground(ctx, providerName, campground.ID, campground.Name, campground.Lat, campground.Lon, campground.Rating, campground.Amenities); err != nil {
+				m.logger.Warn("failed to save campground", slog.String("id", campground.ID), slog.Any("err", err))
+				continue
+			}
+			totalCount++
+
+			if totalCount%10 == 0 {
+				m.logger.Info("synced campgrounds", slog.Int("count", totalCount))
+			}
+		}
+
+		page++
+		if !hasMore {
+			break
+		}
+	}
+
+	// Record successful sync
+	if err := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
+		SyncType: "campgrounds", Provider: providerName, StartedAt: started,
+		FinishedAt: time.Now(), Success: true, ErrorMsg: "", Count: totalCount,
+	}); err != nil {
+		m.logger.Warn("record sync failed", slog.Any("err", err))
+	}
+
+	m.logger.Info("completed streaming sync", slog.Int("total", totalCount))
+	return totalCount, nil
 }
 
 // RunCampgroundSync runs periodic campground syncs in the background.
@@ -536,5 +632,112 @@ func (m *Manager) GetSummaryData(ctx context.Context) (SummaryData, error) {
 		NotificationUsernames: notificationUsernames,
 		ActiveUsernames:       activeUsernames,
 		TrackedCampgrounds:    trackedCampgrounds,
+	}, nil
+}
+
+// Helper methods for streaming sync
+
+type RecGovSearchResult struct {
+	EntityID          string  `json:"EntityID"`
+	EntityType        string  `json:"EntityType"`
+	FacilityName      string  `json:"FacilityName"`
+	FacilityLatitude  float64 `json:"FacilityLatitude"`
+	FacilityLongitude float64 `json:"FacilityLongitude"`
+}
+
+type RecGovSearchResponse struct {
+	Results []RecGovSearchResult `json:"RECDATA"`
+	HasMore bool                 `json:"has_more"`
+}
+
+// fetchRecreationGovPage fetches a single page of campgrounds from recreation.gov API
+func (m *Manager) fetchRecreationGovPage(ctx context.Context, page int, pageSize int) ([]RecGovSearchResult, bool, error) {
+	url := fmt.Sprintf("https://ridb.recreation.gov/api/v1/facilities?activity=CAMPING&limit=%d&offset=%d&apikey=%s",
+		pageSize, page*pageSize, os.Getenv("RECREATION_GOV_API_KEY"))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, false, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, false, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var searchResp RecGovSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return nil, false, err
+	}
+
+	hasMore := len(searchResp.Results) == pageSize
+	return searchResp.Results, hasMore, nil
+}
+
+// convertRecGovResult converts a recreation.gov search result to CampgroundInfo
+func (m *Manager) convertRecGovResult(result RecGovSearchResult) (providers.CampgroundInfo, error) {
+	return providers.CampgroundInfo{
+		ID:   result.EntityID,
+		Name: result.FacilityName,
+		Lat:  result.FacilityLatitude,
+		Lon:  result.FacilityLongitude,
+		// Rating and Amenities will be filled in by detailed fetch
+	}, nil
+}
+
+// fetchRecGovCampgroundDetails fetches detailed information for a campground
+func (m *Manager) fetchRecGovCampgroundDetails(ctx context.Context, facilityID string) (providers.CampgroundInfo, error) {
+	url := fmt.Sprintf("https://ridb.recreation.gov/api/v1/facilities/%s?apikey=%s",
+		facilityID, os.Getenv("RECREATION_GOV_API_KEY"))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return providers.CampgroundInfo{}, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return providers.CampgroundInfo{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return providers.CampgroundInfo{}, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var facility map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&facility); err != nil {
+		return providers.CampgroundInfo{}, err
+	}
+
+	// Extract rating and amenities from the detailed response
+	rating := 0.0
+	if r, ok := facility["rating"].(float64); ok {
+		rating = r
+	}
+
+	amenities := make(map[string]string)
+	if facilities, ok := facility["FACILITYFEATURE"].([]interface{}); ok {
+		for _, f := range facilities {
+			if feature, ok := f.(map[string]interface{}); ok {
+				if name, ok := feature["FeatureName"].(string); ok {
+					if desc, ok := feature["FeatureDescription"].(string); ok {
+						amenities[name] = desc
+					} else {
+						amenities[name] = ""
+					}
+				}
+			}
+		}
+	}
+
+	return providers.CampgroundInfo{
+		Rating:    rating,
+		Amenities: amenities,
 	}, nil
 }
