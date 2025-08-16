@@ -367,7 +367,7 @@ function openSaveGroupModal() {
         
         // Format rating display for modal
         const ratingDisplay = campground.rating > 0 
-            ? `<span class="campground-rating">☆ ${campground.rating.toFixed(1)}</span>`
+            ? `<span class="campground-rating">⭐ ${campground.rating.toFixed(2)}</span>`
             : '';
             
         // Format price display for modal
@@ -390,7 +390,7 @@ function openSaveGroupModal() {
                 .filter(name => !name.startsWith('Equipment:') && !name.includes('Description'))
                 .join(', ');
             if (topAmenities) {
-                amenitiesDisplay = `<div class="campground-amenities">🏕️ ${topAmenities}</div>`;
+                amenitiesDisplay = `<div class="campground-amenities">🛝${topAmenities}</div>`;
             }
         }
         
