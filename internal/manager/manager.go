@@ -464,6 +464,10 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 	count := 0
 	processed := 0
 	for _, campground := range campgrounds {
+		if ctx.Err() != nil {
+			m.logger.Warn("context canceled", slog.String("provider", providerName), slog.String("campground", campground.ID))
+			return processed, ctx.Err()
+		}
 		processed++
 
 		// Fetch campsite metadata for this campground

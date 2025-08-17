@@ -26,7 +26,7 @@ func main() {
 
 	// set log level to debug
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level: slog.LevelInfo,
 	})))
 
 	dbPath := os.Getenv("DB_PATH")

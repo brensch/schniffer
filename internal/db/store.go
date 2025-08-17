@@ -14,7 +14,7 @@ import (
 
 	"github.com/brensch/schniffer/internal/providers"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/stephennancekivell/querypulse/qslog"
+	"github.com/stephennancekivell/querypulse"
 )
 
 //go:embed schema.sql
@@ -24,26 +24,17 @@ type Store struct {
 	DB *sql.DB
 }
 
-// getQueryLogger creates a logger for database queries.
-// This can be customized to filter queries, adjust log levels, etc.
-func getQueryLogger() *slog.Logger {
-	// Use the default logger for now, but this can be customized
-	// For example, to only log slow queries:
-	// slowQueryThreshold := 100 * time.Millisecond
-	// return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-	// 	Level: slog.LevelInfo,
-	// }))
-
-	return slog.Default()
-}
-
 func Open(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
-	logger := getQueryLogger()
-	driverName, err := qslog.Register("sqlite3", logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to register query logging driver: %w", err)
-	}
+	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
+		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
+			if duration > 1*time.Millisecond {
+				slog.Info("slow query succeeded", slog.Any("args", args), slog.String("query", query), slog.Duration("took", duration))
+			} else {
+				slog.Debug("query succeeded", slog.Any("args", args), slog.Duration("took", duration))
+			}
+		},
+	})
 
 	db, err := sql.Open(driverName, path+"?_foreign_keys=on")
 	if err != nil {
@@ -63,8 +54,13 @@ func Open(path string) (*Store, error) {
 // OpenReadOnly opens the database in READ_ONLY mode
 func OpenReadOnly(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
-	logger := getQueryLogger()
-	driverName, err := qslog.Register("sqlite3", logger)
+	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
+		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
+			if duration > 1*time.Millisecond {
+				slog.Debug("query succeeded", slog.String("query", query), slog.Duration("took", duration))
+			}
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to register query logging driver: %w", err)
 	}

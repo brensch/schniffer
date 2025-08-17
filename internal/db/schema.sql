@@ -120,19 +120,6 @@ CREATE INDEX IF NOT EXISTS idx_campground_types_composite ON campground_types(pr
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_campground ON campsite_equipment(provider, campground_id);
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_type ON campsite_equipment(equipment_type);
 
--- Legacy campsites table (can be removed after migration)
--- CREATE TABLE IF NOT EXISTS campsites (
---     provider     TEXT NOT NULL,
---     campground_id TEXT NOT NULL,
---     campsite_id  TEXT NOT NULL,
---     name         TEXT NOT NULL,
---     campsite_type TEXT DEFAULT '',
---     cost_per_night REAL DEFAULT 0,
---     rating       REAL DEFAULT 0,
---     last_updated DATETIME NOT NULL,
---     PRIMARY KEY (provider, campground_id, campsite_id)
--- );
-
 -- Lookup log for API calls (for summaries)
 CREATE TABLE IF NOT EXISTS lookup_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
