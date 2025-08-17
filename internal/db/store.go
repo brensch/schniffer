@@ -852,7 +852,7 @@ func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campground
 	// Insert new equipment entries
 	for _, equipmentType := range equipment {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, last_updated)
+			INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
 			VALUES (?, ?, ?, ?, ?)
 		`, provider, campgroundID, campsiteID, equipmentType, time.Now())
 		if err != nil {

@@ -113,6 +113,10 @@ CREATE TABLE IF NOT EXISTS campground_types (
     UNIQUE(provider, campground_id, campsite_type)
 );
 
+-- Indexes for campground_types table
+CREATE INDEX IF NOT EXISTS idx_campground_types_lookup ON campground_types(provider, campground_id);
+CREATE INDEX IF NOT EXISTS idx_campground_types_composite ON campground_types(provider, campground_id, campsite_type);
+
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_campground ON campsite_equipment(provider, campground_id);
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_type ON campsite_equipment(equipment_type);
 
