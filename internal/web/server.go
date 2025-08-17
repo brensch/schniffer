@@ -47,6 +47,12 @@ type ViewportRequest struct {
 	East  float64 `json:"east"`
 	West  float64 `json:"west"`
 	Zoom  int     `json:"zoom"`
+	// Filter parameters
+	Amenities     []string `json:"amenities,omitempty"`
+	CampsiteTypes []string `json:"campsite_types,omitempty"`
+	MinRating     float64  `json:"min_rating,omitempty"`
+	MinPrice      float64  `json:"min_price,omitempty"`
+	MaxPrice      float64  `json:"max_price,omitempty"`
 }
 
 func NewServer(store *db.Store, mgr *manager.Manager, addr string) *Server {
@@ -69,6 +75,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// API endpoint to get campgrounds in viewport with clustering
 	mux.HandleFunc("/api/viewport", s.handleViewportAPI)
+
+	// API endpoint to get filter options
+	mux.HandleFunc("/api/filter-options", s.handleFilterOptionsAPI)
 
 	// API endpoint to get campground details
 	mux.HandleFunc("/api/campground/", s.handleCampgroundDetail)
@@ -180,7 +189,7 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	}
 	defer rows.Close()
 
-	var result []CampgroundMapData
+	var allCampgrounds []CampgroundMapData
 	for rows.Next() {
 		var c CampgroundMapData
 		var amenitiesJSON, campsiteTypesJSON string
@@ -201,9 +210,75 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		}
 
 		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)
-		result = append(result, c)
+		allCampgrounds = append(allCampgrounds, c)
 	}
-	return result, rows.Err()
+
+	// Apply filters
+	filteredCampgrounds := s.applyFilters(allCampgrounds, req)
+
+	return filteredCampgrounds, rows.Err()
+}
+
+func (s *Server) applyFilters(campgrounds []CampgroundMapData, req ViewportRequest) []CampgroundMapData {
+	var filtered []CampgroundMapData
+
+	for _, campground := range campgrounds {
+		// Check rating filter
+		if req.MinRating > 0 && campground.Rating < req.MinRating {
+			continue
+		}
+
+		// Check price filter
+		if req.MinPrice > 0 && campground.PriceMin > 0 && campground.PriceMin < req.MinPrice {
+			continue
+		}
+		if req.MaxPrice > 0 && campground.PriceMax > 0 && campground.PriceMax > req.MaxPrice {
+			continue
+		}
+
+		// Check amenities filter
+		if len(req.Amenities) > 0 {
+			hasRequiredAmenity := false
+			for _, reqAmenity := range req.Amenities {
+				for _, campAmenity := range campground.Amenities {
+					if reqAmenity == campAmenity {
+						hasRequiredAmenity = true
+						break
+					}
+				}
+				if hasRequiredAmenity {
+					break
+				}
+			}
+			if !hasRequiredAmenity {
+				continue
+			}
+		}
+
+		// Check campsite types filter
+		if len(req.CampsiteTypes) > 0 {
+			hasRequiredType := false
+			for _, reqType := range req.CampsiteTypes {
+				for _, campType := range campground.CampsiteTypes {
+					if reqType == campType {
+						hasRequiredType = true
+						break
+					}
+				}
+				if hasRequiredType {
+					break
+				}
+			}
+			if !hasRequiredType {
+				continue
+			}
+		}
+
+		// If we get here, the campground passed all filters
+		filtered = append(filtered, campground)
+	}
+
+	return filtered
 }
 
 func (s *Server) clusterCampgrounds(campgrounds []CampgroundMapData, zoom int) []ClusterData {
@@ -353,4 +428,122 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(group)
+}
+
+type FilterOptions struct {
+	Amenities     []string `json:"amenities"`
+	CampsiteTypes []string `json:"campsite_types"`
+	PriceRange    struct {
+		Min float64 `json:"min"`
+		Max float64 `json:"max"`
+	} `json:"price_range"`
+	RatingRange struct {
+		Min float64 `json:"min"`
+		Max float64 `json:"max"`
+	} `json:"rating_range"`
+}
+
+func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get all unique amenities
+	amenitiesRows, err := s.store.DB.QueryContext(ctx, `
+		SELECT DISTINCT amenities 
+		FROM campgrounds 
+		WHERE amenities IS NOT NULL AND amenities != '' AND amenities != '{}'
+	`)
+	if err != nil {
+		http.Error(w, "Failed to fetch amenities", http.StatusInternalServerError)
+		return
+	}
+	defer amenitiesRows.Close()
+
+	amenitiesSet := make(map[string]bool)
+	for amenitiesRows.Next() {
+		var amenitiesJSON string
+		if err := amenitiesRows.Scan(&amenitiesJSON); err != nil {
+			continue
+		}
+		var amenities []string
+		if err := json.Unmarshal([]byte(amenitiesJSON), &amenities); err != nil {
+			continue
+		}
+		for _, amenity := range amenities {
+			if amenity != "" {
+				amenitiesSet[amenity] = true
+			}
+		}
+	}
+
+	// Get all unique campsite types
+	campsiteTypesRows, err := s.store.DB.QueryContext(ctx, `
+		SELECT DISTINCT campsite_types 
+		FROM campgrounds 
+		WHERE campsite_types IS NOT NULL AND campsite_types != '' AND campsite_types != '{}'
+	`)
+	if err != nil {
+		http.Error(w, "Failed to fetch campsite types", http.StatusInternalServerError)
+		return
+	}
+	defer campsiteTypesRows.Close()
+
+	campsiteTypesSet := make(map[string]bool)
+	for campsiteTypesRows.Next() {
+		var campsiteTypesJSON string
+		if err := campsiteTypesRows.Scan(&campsiteTypesJSON); err != nil {
+			continue
+		}
+		var campsiteTypes []string
+		if err := json.Unmarshal([]byte(campsiteTypesJSON), &campsiteTypes); err != nil {
+			continue
+		}
+		for _, campsiteType := range campsiteTypes {
+			if campsiteType != "" {
+				campsiteTypesSet[campsiteType] = true
+			}
+		}
+	}
+
+	// Get price and rating ranges
+	var priceMin, priceMax, ratingMin, ratingMax float64
+	err = s.store.DB.QueryRowContext(ctx, `
+		SELECT 
+			COALESCE(MIN(CASE WHEN price_min > 0 THEN price_min END), 0),
+			COALESCE(MAX(price_max), 0),
+			COALESCE(MIN(rating), 0),
+			COALESCE(MAX(rating), 5)
+		FROM campgrounds
+	`).Scan(&priceMin, &priceMax, &ratingMin, &ratingMax)
+	if err != nil {
+		http.Error(w, "Failed to fetch price/rating ranges", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert sets to sorted slices
+	var amenitiesList []string
+	for amenity := range amenitiesSet {
+		amenitiesList = append(amenitiesList, amenity)
+	}
+
+	var campsiteTypesList []string
+	for campsiteType := range campsiteTypesSet {
+		campsiteTypesList = append(campsiteTypesList, campsiteType)
+	}
+
+	options := FilterOptions{
+		Amenities:     amenitiesList,
+		CampsiteTypes: campsiteTypesList,
+	}
+	options.PriceRange.Min = priceMin
+	options.PriceRange.Max = priceMax
+	options.RatingRange.Min = ratingMin
+	options.RatingRange.Max = ratingMax
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(options)
 }

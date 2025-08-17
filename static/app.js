@@ -2,6 +2,16 @@
 const urlParams = new URLSearchParams(window.location.search);
 const userToken = urlParams.get('user');
 
+// Filter functionality variables
+let filterOptions = null;
+let currentFilters = {
+    amenities: [],
+    campsiteTypes: [],
+    minRating: 0,
+    minPrice: 0,
+    maxPrice: 500
+};
+
 // Initialize the map with mobile-friendly continuous zoom
 const map = L.map('map', {
     zoomSnap: 0,      // Allows fractional zoom levels
@@ -78,7 +88,13 @@ async function loadViewportData() {
         south: bounds.getSouth(),
         east: bounds.getEast(),
         west: bounds.getWest(),
-        zoom: Math.round(zoom)  // Round fractional zoom to integer for API
+        zoom: Math.round(zoom),  // Round fractional zoom to integer for API
+        // Include filter parameters
+        amenities: currentFilters.amenities,
+        campsite_types: currentFilters.campsiteTypes,
+        min_rating: currentFilters.minRating,
+        min_price: currentFilters.minPrice,
+        max_price: currentFilters.maxPrice
     };
     
     try {
@@ -105,12 +121,14 @@ async function loadViewportData() {
         }
         
         renderMarkersFromViewport(currentData);
+        updateStatsFromViewport(currentData);
         updateSaveGroupButton();
     } catch (error) {
         console.error('Failed to load viewport data:', error);
         // Set empty data state on error
         currentData = { type: 'campgrounds', data: [] };
         renderMarkersFromViewport(currentData);
+        updateStatsFromViewport(currentData);
         updateSaveGroupButton();
     }
 }
@@ -153,7 +171,7 @@ function renderMarkersFromViewport(result) {
             markers.push(marker);
         });
     } else {
-        // Show all campgrounds without filtering
+        // Show all campgrounds (filtering now done on server)
         result.data.forEach(campground => {
             const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
             
@@ -264,8 +282,21 @@ function updateStatsFromViewport(result) {
         document.getElementById('stats').textContent = 
             `${totalCount} campgrounds`;
     } else {
-        document.getElementById('stats').textContent = 
-            `${result.data.length} campgrounds in viewport`;
+        const count = result.data.length;
+        // Check if any filters are active
+        const hasActiveFilters = currentFilters.amenities.length > 0 || 
+                                currentFilters.campsiteTypes.length > 0 || 
+                                currentFilters.minRating > 0 || 
+                                currentFilters.minPrice > 0 || 
+                                currentFilters.maxPrice < 4500;
+        
+        if (hasActiveFilters) {
+            document.getElementById('stats').textContent = 
+                `${count} campgrounds (filtered)`;
+        } else {
+            document.getElementById('stats').textContent = 
+                `${count} campgrounds in viewport`;
+        }
     }
     
     // Update the save group button
@@ -584,3 +615,212 @@ function getDirections(event, lat, lon) {
     const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
     window.open(url, '_blank');
 }
+
+// Filter functionality
+async function loadFilterOptions() {
+    try {
+        const response = await fetch('/api/filter-options');
+        if (!response.ok) {
+            throw new Error('Failed to fetch filter options');
+        }
+        filterOptions = await response.json();
+        
+        // Update slider ranges based on actual data
+        if (filterOptions.price_range) {
+            const priceMinSlider = document.getElementById('price-min-slider');
+            const priceMaxSlider = document.getElementById('price-max-slider');
+            priceMinSlider.min = Math.floor(filterOptions.price_range.min);
+            priceMinSlider.max = Math.ceil(filterOptions.price_range.max);
+            priceMinSlider.value = Math.floor(filterOptions.price_range.min);
+            priceMaxSlider.min = Math.floor(filterOptions.price_range.min);
+            priceMaxSlider.max = Math.ceil(filterOptions.price_range.max);
+            priceMaxSlider.value = Math.ceil(filterOptions.price_range.max);
+            
+            currentFilters.minPrice = Math.floor(filterOptions.price_range.min);
+            currentFilters.maxPrice = Math.ceil(filterOptions.price_range.max);
+            
+            updatePriceMinValue(currentFilters.minPrice);
+            updatePriceMaxValue(currentFilters.maxPrice);
+        }
+        
+        if (filterOptions.rating_range) {
+            const ratingSlider = document.getElementById('rating-slider');
+            ratingSlider.min = filterOptions.rating_range.min;
+            ratingSlider.max = filterOptions.rating_range.max;
+            ratingSlider.value = filterOptions.rating_range.min;
+            currentFilters.minRating = filterOptions.rating_range.min;
+            updateRatingValue(currentFilters.minRating);
+        }
+        
+        populateFilterOptions();
+    } catch (error) {
+        console.error('Failed to load filter options:', error);
+    }
+}
+
+function populateFilterOptions() {
+    if (!filterOptions) return;
+    
+    // Populate amenities
+    const amenitiesContainer = document.getElementById('amenities-container');
+    amenitiesContainer.innerHTML = '';
+    if (filterOptions.amenities) {
+        filterOptions.amenities.sort().forEach(amenity => {
+            const item = createFilterCheckbox('amenity', amenity, amenity);
+            amenitiesContainer.appendChild(item);
+        });
+    }
+    
+    // Populate campsite types
+    const campsiteTypesContainer = document.getElementById('campsite-types-container');
+    campsiteTypesContainer.innerHTML = '';
+    if (filterOptions.campsite_types) {
+        filterOptions.campsite_types.sort().forEach(type => {
+            const item = createFilterCheckbox('campsite-type', type, type);
+            campsiteTypesContainer.appendChild(item);
+        });
+    }
+}
+
+function createFilterCheckbox(type, value, label) {
+    const item = document.createElement('div');
+    item.className = 'filter-checkbox-item';
+    
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `${type}-${value.replace(/\s+/g, '-').toLowerCase()}`;
+    checkbox.value = value;
+    checkbox.addEventListener('change', updateFiltersFromCheckboxes);
+    
+    const labelEl = document.createElement('label');
+    labelEl.htmlFor = checkbox.id;
+    labelEl.textContent = label;
+    
+    item.appendChild(checkbox);
+    item.appendChild(labelEl);
+    
+    return item;
+}
+
+function updateFiltersFromCheckboxes() {
+    // Update amenities
+    const amenityCheckboxes = document.querySelectorAll('#amenities-container input[type="checkbox"]:checked');
+    currentFilters.amenities = Array.from(amenityCheckboxes).map(cb => cb.value);
+    
+    // Update campsite types
+    const campsiteTypeCheckboxes = document.querySelectorAll('#campsite-types-container input[type="checkbox"]:checked');
+    currentFilters.campsiteTypes = Array.from(campsiteTypeCheckboxes).map(cb => cb.value);
+}
+
+function updateRatingValue(value) {
+    currentFilters.minRating = parseFloat(value);
+    document.getElementById('rating-value').textContent = parseFloat(value).toFixed(1);
+}
+
+function updatePriceMinValue(value) {
+    currentFilters.minPrice = parseInt(value);
+    document.getElementById('price-min-value').textContent = value;
+    
+    // Ensure min doesn't exceed max
+    const maxSlider = document.getElementById('price-max-slider');
+    if (parseInt(value) > currentFilters.maxPrice) {
+        maxSlider.value = value;
+        updatePriceMaxValue(value);
+    }
+}
+
+function updatePriceMaxValue(value) {
+    currentFilters.maxPrice = parseInt(value);
+    document.getElementById('price-max-value').textContent = value;
+    
+    // Ensure max doesn't go below min
+    const minSlider = document.getElementById('price-min-slider');
+    if (parseInt(value) < currentFilters.minPrice) {
+        minSlider.value = value;
+        updatePriceMinValue(value);
+    }
+}
+
+function openFilterModal() {
+    if (!filterOptions) {
+        loadFilterOptions();
+    }
+    document.getElementById('filter-modal').style.display = 'block';
+}
+
+function closeFilterModal() {
+    document.getElementById('filter-modal').style.display = 'none';
+}
+
+function clearAllFilters() {
+    // Reset checkboxes
+    document.querySelectorAll('#amenities-container input[type="checkbox"]').forEach(cb => cb.checked = false);
+    document.querySelectorAll('#campsite-types-container input[type="checkbox"]').forEach(cb => cb.checked = false);
+    
+    // Reset sliders
+    const ratingSlider = document.getElementById('rating-slider');
+    ratingSlider.value = filterOptions?.rating_range?.min || 0;
+    updateRatingValue(ratingSlider.value);
+    
+    const priceMinSlider = document.getElementById('price-min-slider');
+    const priceMaxSlider = document.getElementById('price-max-slider');
+    priceMinSlider.value = filterOptions?.price_range?.min || 0;
+    priceMaxSlider.value = filterOptions?.price_range?.max || 500;
+    updatePriceMinValue(priceMinSlider.value);
+    updatePriceMaxValue(priceMaxSlider.value);
+    
+    // Reset current filters
+    currentFilters = {
+        amenities: [],
+        campsiteTypes: [],
+        minRating: filterOptions?.rating_range?.min || 0,
+        minPrice: filterOptions?.price_range?.min || 0,
+        maxPrice: filterOptions?.price_range?.max || 500
+    };
+}
+
+function applyFilters() {
+    updateFiltersFromCheckboxes();
+    closeFilterModal();
+    loadViewportData(); // Reload data with filters
+}
+
+function matchesFilters(campground) {
+    // Check rating filter
+    if (campground.rating < currentFilters.minRating) {
+        return false;
+    }
+    
+    // Check price filter
+    if (campground.price_min > 0 && campground.price_min < currentFilters.minPrice) {
+        return false;
+    }
+    if (campground.price_max > 0 && campground.price_max > currentFilters.maxPrice) {
+        return false;
+    }
+    
+    // Check amenities filter
+    if (currentFilters.amenities.length > 0) {
+        const hasRequiredAmenity = currentFilters.amenities.some(amenity => 
+            campground.amenities && campground.amenities.includes(amenity)
+        );
+        if (!hasRequiredAmenity) {
+            return false;
+        }
+    }
+    
+    // Check campsite types filter
+    if (currentFilters.campsiteTypes.length > 0) {
+        const hasRequiredType = currentFilters.campsiteTypes.some(type => 
+            campground.campsite_types && campground.campsite_types.includes(type)
+        );
+        if (!hasRequiredType) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Load filter options on page load
+document.addEventListener('DOMContentLoaded', loadFilterOptions);
