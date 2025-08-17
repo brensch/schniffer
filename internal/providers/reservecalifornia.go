@@ -105,7 +105,7 @@ type gridResponse struct {
 }
 
 // FetchAvailability calls the search/grid endpoint for the given FacilityId (campgroundID) and range.
-func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]Campsite, error) {
+func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error) {
 	if campgroundID == "" {
 		return nil, fmt.Errorf("facility/campground id required")
 	}
@@ -159,24 +159,19 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 	if err != nil {
 		return nil, fmt.Errorf("grid JSON decode failed: %w; body: %s", err, clipBody(b))
 	}
-	var out []Campsite
+	var out []CampsiteAvailability
 	for _, u := range parsed.Facility.Units {
 		siteID := strconv.Itoa(u.UnitId)
-		// Extract campsite type from unit name (e.g., "Tent Campsite #C36" -> "Tent")
-		campsiteType := extractCampsiteType(u.Name)
-
 		for _, s := range u.Slices {
 			// s.Date is YYYY-MM-DD; interpret as UTC midnight
 			d, err := time.Parse("2006-01-02", s.Date)
 			if err != nil {
 				continue
 			}
-			out = append(out, Campsite{
-				ID:           siteID,
-				Date:         d.UTC(),
-				Available:    s.IsFree && !s.IsBlocked,
-				Type:         campsiteType,
-				CostPerNight: 0, // ReserveCalifornia doesn't provide pricing in grid API
+			out = append(out, CampsiteAvailability{
+				ID:        siteID,
+				Date:      d.UTC(),
+				Available: s.IsFree && !s.IsBlocked,
 			})
 		}
 	}
@@ -377,8 +372,8 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	return out, nil
 }
 
-// FetchCampsiteMetadata returns detailed campsite metadata for storage in the database
-func (r *ReserveCalifornia) FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
+// FetchCampsites returns detailed campsite metadata for storage in the database
+func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
 	// Extract facility ID from composite ID format "parentID/facilityID"
 	facilityID := campgroundID
 	if parts := strings.Split(campgroundID, "/"); len(parts) == 2 {
@@ -628,11 +623,4 @@ func (r *ReserveCalifornia) FetchCampsiteMetadata(ctx context.Context, campgroun
 		slog.Int("successfulDetails", len(campsiteInfos)))
 
 	return campsiteInfos, nil
-}
-
-// FetchCampsites returns detailed campsite information for a campground
-// Currently not implemented for ReserveCalifornia
-func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error) {
-	// TODO: Implement campsites fetching for ReserveCalifornia if needed
-	return nil, fmt.Errorf("FetchCampsites not implemented for ReserveCalifornia")
 }

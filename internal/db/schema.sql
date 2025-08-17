@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     latitude     REAL DEFAULT 0,
     longitude    REAL DEFAULT 0,
     rating       REAL DEFAULT 0,
-    amenities    TEXT DEFAULT '{}',
+    amenities    TEXT DEFAULT '[]',
     image_url    TEXT DEFAULT '',
     price_min    REAL DEFAULT 0,
     price_max    REAL DEFAULT 0,

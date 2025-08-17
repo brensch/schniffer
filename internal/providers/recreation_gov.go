@@ -49,8 +49,8 @@ type recGovResp struct {
 }
 
 // FetchAvailability fetches monthly availability pages between start and end (inclusive by month).
-func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]Campsite, error) {
-	var out []Campsite
+func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error) {
+	var out []CampsiteAvailability
 	cur := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
 	endMonth := time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for !cur.After(endMonth) {
@@ -90,12 +90,10 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 					slog.Error("bad date from rec.gov", slog.String("date", dateStr))
 					continue
 				}
-				out = append(out, Campsite{
-					ID:           siteID,
-					Date:         d,
-					Available:    status == "Available",
-					Type:         data.CampsiteType,
-					CostPerNight: 0, // TODO: implement pricing lookup
+				out = append(out, CampsiteAvailability{
+					ID:        siteID,
+					Date:      d,
+					Available: status == "Available",
 				})
 			}
 		}
@@ -271,70 +269,64 @@ func clipBody(b []byte) string {
 	return string(b)
 }
 
-// FetchCampsites fetches detailed campsite information for a campground
-func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error) {
-	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=0", campgroundID)
+// // FetchCampsites fetches detailed campsite information for a campground
+// func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteAvailability, error) {
+// 	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=0", campgroundID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create campsites request: %w", err)
-	}
-	httpx.SpoofChromeHeaders(req)
+// 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to create campsites request: %w", err)
+// 	}
+// 	httpx.SpoofChromeHeaders(req)
 
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch campsites: %w", err)
-	}
-	defer resp.Body.Close()
+// 	resp, err := r.client.Do(req)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to fetch campsites: %w", err)
+// 	}
+// 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("campsites request failed with status %d", resp.StatusCode)
-	}
+// 	if resp.StatusCode != http.StatusOK {
+// 		return nil, fmt.Errorf("campsites request failed with status %d", resp.StatusCode)
+// 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read campsites response: %w", err)
-	}
+// 	body, err := io.ReadAll(resp.Body)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to read campsites response: %w", err)
+// 	}
 
-	var response struct {
-		Campsites []struct {
-			CampsiteID    string  `json:"campsite_id"`
-			Name          string  `json:"name"`
-			Type          string  `json:"type"`
-			AverageRating float64 `json:"average_rating"`
-		} `json:"campsites"`
-	}
+// 	var response struct {
+// 		Campsites []struct {
+// 			CampsiteID    string  `json:"campsite_id"`
+// 			Name          string  `json:"name"`
+// 			Type          string  `json:"type"`
+// 			AverageRating float64 `json:"average_rating"`
+// 		} `json:"campsites"`
+// 	}
 
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse campsites response: %w", err)
-	}
+// 	if err := json.Unmarshal(body, &response); err != nil {
+// 		return nil, fmt.Errorf("failed to parse campsites response: %w", err)
+// 	}
 
-	var campsites []Campsite
-	for _, site := range response.Campsites {
-		// For basic availability checking, we don't need detailed cost info
-		// Cost information would be fetched separately if needed
-		costPerNight := 0.0
+// 	var campsites []CampsiteAvailability
+// 	for _, site := range response.Campsites {
+// 		campsite := CampsiteAvailability{
+// 			ID:        site.CampsiteID,
+// 			Available: false,       // This will be set by availability queries
+// 			Date:      time.Time{}, // This will be set by availability queries
+// 		}
 
-		campsite := Campsite{
-			ID:           site.CampsiteID,
-			Type:         site.Type,
-			CostPerNight: costPerNight,
-			Available:    false,       // This will be set by availability queries
-			Date:         time.Time{}, // This will be set by availability queries
-		}
+// 		campsites = append(campsites, campsite)
+// 	}
 
-		campsites = append(campsites, campsite)
-	}
+// 	slog.Debug("fetched campsites for campground",
+// 		slog.String("campgroundID", campgroundID),
+// 		slog.Int("campsite_count", len(campsites)))
 
-	slog.Debug("fetched campsites for campground",
-		slog.String("campgroundID", campgroundID),
-		slog.Int("campsite_count", len(campsites)))
-
-	return campsites, nil
-}
+// 	return campsites, nil
+// }
 
 // FetchCampsiteMetadata fetches campsite metadata for storage in the database
-func (r *RecreationGov) FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
+func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
 	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=1000", campgroundID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

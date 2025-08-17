@@ -5,12 +5,10 @@ import (
 	"time"
 )
 
-type Campsite struct {
-	ID           string
-	Date         time.Time
-	Available    bool
-	Type         string  // e.g., "TENT ONLY NONELECTRIC", "RV NONELECTRIC", "STANDARD NONELECTRIC"
-	CostPerNight float64 // Cost per night in USD, 0 if unknown
+type CampsiteAvailability struct {
+	ID        string
+	Date      time.Time
+	Available bool
 }
 
 type CampsiteInfo struct {
@@ -23,19 +21,19 @@ type CampsiteInfo struct {
 	PreviewImageURL string   // Preview image URL
 }
 
-type CampsiteMetadataProvider interface {
-	// FetchCampsiteMetadata returns detailed metadata for all campsites in a campground
-	FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error)
-}
+// type CampsiteMetadataProvider interface {
+// 	// FetchCampsiteMetadata returns detailed metadata for all campsites in a campground
+// 	FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error)
+// }
 
 type Provider interface {
 	Name() string
 	// FetchAvailability returns campsite availability for the given campground and date range.
-	FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]Campsite, error)
+	FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error)
 	// FetchAllCampgrounds returns the full list of campgrounds and names from the provider.
 	FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error)
 	// FetchCampsites returns detailed campsite information for a campground (optional method)
-	FetchCampsites(ctx context.Context, campgroundID string) ([]Campsite, error)
+	FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error)
 	// CampsiteURL returns a link to the campsite details page for this provider.
 	// campgroundID may be ignored by providers that only key by campsiteID.
 	CampsiteURL(campgroundID, campsiteID string) string

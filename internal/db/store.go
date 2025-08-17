@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"strings"
 
+	"github.com/brensch/schniffer/internal/providers"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stephennancekivell/querypulse/qslog"
 )
 
 //go:embed schema.sql
@@ -21,8 +24,28 @@ type Store struct {
 	DB *sql.DB
 }
 
+// getQueryLogger creates a logger for database queries.
+// This can be customized to filter queries, adjust log levels, etc.
+func getQueryLogger() *slog.Logger {
+	// Use the default logger for now, but this can be customized
+	// For example, to only log slow queries:
+	// slowQueryThreshold := 100 * time.Millisecond
+	// return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	// 	Level: slog.LevelInfo,
+	// }))
+
+	return slog.Default()
+}
+
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
+	// Register the wrapped SQLite driver with query logging
+	logger := getQueryLogger()
+	driverName, err := qslog.Register("sqlite3", logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register query logging driver: %w", err)
+	}
+
+	db, err := sql.Open(driverName, path+"?_foreign_keys=on")
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +62,14 @@ func Open(path string) (*Store, error) {
 
 // OpenReadOnly opens the database in READ_ONLY mode
 func OpenReadOnly(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path+"?mode=ro")
+	// Register the wrapped SQLite driver with query logging
+	logger := getQueryLogger()
+	driverName, err := qslog.Register("sqlite3", logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register query logging driver: %w", err)
+	}
+
+	db, err := sql.Open(driverName, path+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -811,52 +841,61 @@ func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string,
 	return err
 }
 
-func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campgroundID, campsiteID, name, campsiteType string, costPerNight, rating float64, equipment []string, imageURL string) error {
+// UpsertCampsiteMetadataBatch inserts all campsite metadata in a batch
+func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string, campgroundID string, metadata []providers.CampsiteInfo) error {
+	if len(metadata) == 0 {
+		return nil
+	}
+
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Upsert campsite metadata
+	now := time.Now()
+
+	// Clear existing equipment entries for this campground to avoid duplicates
 	_, err = tx.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated, image_url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, time.Now(), imageURL)
+		DELETE FROM campsite_equipment
+		WHERE provider = ? AND campground_id = ?
+	`, provider, campgroundID)
 	if err != nil {
 		return err
 	}
 
-	// Update campground_types table if campsite_type is provided
-	if campsiteType != "" {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO campground_types (provider, campground_id, campsite_type)
-			VALUES (?, ?, ?)
-			ON CONFLICT(provider, campground_id, campsite_type) DO UPDATE SET
-				updated_at = CURRENT_TIMESTAMP
-		`, provider, campgroundID, campsiteType)
+	// Prepare statements for efficiency
+	metadataStmt, err := tx.PrepareContext(ctx, `
+		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated, image_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer metadataStmt.Close()
+
+	equipmentStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer equipmentStmt.Close()
+
+	// Process all metadata in batch
+	for _, m := range metadata {
+		_, err := metadataStmt.ExecContext(ctx, provider, campgroundID, m.ID, m.Name, m.Type, m.CostPerNight, m.Rating, now, m.PreviewImageURL)
 		if err != nil {
 			return err
 		}
-	}
 
-	// Delete existing equipment entries for this campsite
-	_, err = tx.ExecContext(ctx, `
-		DELETE FROM campsite_equipment 
-		WHERE provider = ? AND campground_id = ? AND campsite_id = ?
-	`, provider, campgroundID, campsiteID)
-	if err != nil {
-		return err
-	}
-
-	// Insert new equipment entries
-	for _, equipmentType := range equipment {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
-			VALUES (?, ?, ?, ?, ?)
-		`, provider, campgroundID, campsiteID, equipmentType, time.Now())
-		if err != nil {
-			return err
+		// Insert equipment types for this campsite
+		for _, equipmentType := range m.Equipment {
+			_, err = equipmentStmt.ExecContext(ctx, provider, campgroundID, m.ID, equipmentType, now)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1320,26 +1359,65 @@ func (s *Store) RefreshCampgroundTypes(ctx context.Context) error {
 	return nil
 }
 
-// GetCampgroundTypesMap returns a map of campground keys to their campsite types
-func (s *Store) GetCampgroundTypesMap(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
+// // GetCampgroundTypesMap returns a map of campground keys to their campsite types
+// func (s *Store) GetCampgroundTypesMap(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
+// 	if len(campgroundKeys) == 0 {
+// 		return make(map[string][]string), nil
+// 	}
+
+// 	result := make(map[string][]string)
+
+// 	// Process in batches to avoid "Expression tree too large" error
+// 	batchSize := 100 // Safe batch size to avoid SQLite expression limits
+// 	for i := 0; i < len(campgroundKeys); i += batchSize {
+// 		end := i + batchSize
+// 		if end > len(campgroundKeys) {
+// 			end = len(campgroundKeys)
+// 		}
+
+// 		batch := campgroundKeys[i:end]
+// 		batchResult, err := s.getCampgroundTypesBatch(ctx, batch)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+
+// 		// Merge batch results
+// 		for key, types := range batchResult {
+// 			result[key] = types
+// 		}
+// 	}
+
+// 	return result, nil
+// }
+
+// getCampgroundTypesBatch processes a small batch of campground keys
+func (s *Store) getCampgroundTypesBatch(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
 	if len(campgroundKeys) == 0 {
 		return make(map[string][]string), nil
 	}
 
-	// Build query with placeholders
-	placeholders := make([]string, len(campgroundKeys))
-	args := make([]interface{}, len(campgroundKeys))
-	for i, key := range campgroundKeys {
-		placeholders[i] = "?"
-		args[i] = key
+	// Parse keys into provider/campground_id pairs for index-friendly query
+	var conditions []string
+	var args []interface{}
+
+	for _, key := range campgroundKeys {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 {
+			conditions = append(conditions, "(provider = ? AND campground_id = ?)")
+			args = append(args, parts[0], parts[1])
+		}
+	}
+
+	if len(conditions) == 0 {
+		return make(map[string][]string), nil
 	}
 
 	query := fmt.Sprintf(`
-		SELECT provider || ':' || campground_id as key, campsite_type
+		SELECT provider, campground_id, campsite_type
 		FROM campground_types 
-		WHERE provider || ':' || campground_id IN (%s)
+		WHERE %s
 		ORDER BY provider, campground_id, campsite_type
-	`, strings.Join(placeholders, ","))
+	`, strings.Join(conditions, " OR "))
 
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1349,11 +1427,12 @@ func (s *Store) GetCampgroundTypesMap(ctx context.Context, campgroundKeys []stri
 
 	result := make(map[string][]string)
 	for rows.Next() {
-		var key, campsiteType string
-		err := rows.Scan(&key, &campsiteType)
+		var provider, campgroundID, campsiteType string
+		err := rows.Scan(&provider, &campgroundID, &campsiteType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan campground type: %w", err)
 		}
+		key := provider + ":" + campgroundID
 		result[key] = append(result[key], campsiteType)
 	}
 

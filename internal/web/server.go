@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
@@ -176,6 +177,7 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportRequest) ([]CampgroundMapData, error) {
+	start := time.Now()
 	rows, err := s.store.DB.QueryContext(ctx, `
 		SELECT provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit
 		FROM campgrounds
@@ -183,11 +185,12 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		AND longitude BETWEEN ? AND ?
 		AND latitude != 0 AND longitude != 0
 	`, req.South, req.North, req.West, req.East)
-
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
+	slog.Debug("fetched campgrounds in viewport", "duration", time.Since(start))
 
 	var allCampgrounds []CampgroundMapData
 	var campgroundKeys []string
@@ -216,21 +219,21 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		allCampgrounds = append(allCampgrounds, c)
 	}
 
-	// Batch query for campsite types to avoid database locking
-	if len(campgroundKeys) > 0 {
-		err = s.populateCampsiteTypes(ctx, campgroundMap)
-		if err != nil {
-			// Log warning but continue - campsite types are optional
-			slog.Warn("failed to populate campsite types", slog.Any("err", err))
-		}
+	// // Batch query for campsite types to avoid database locking
+	// if len(campgroundKeys) > 0 {
+	// 	err = s.populateCampsiteTypes(ctx, campgroundMap)
+	// 	if err != nil {
+	// 		// Log warning but continue - campsite types are optional
+	// 		slog.Warn("failed to populate campsite types", slog.Any("err", err))
+	// 	}
 
-		// Update the campgrounds slice with populated data
-		for i, key := range campgroundKeys {
-			if updated, exists := campgroundMap[key]; exists {
-				allCampgrounds[i].CampsiteTypes = updated.CampsiteTypes
-			}
-		}
-	}
+	// 	// Update the campgrounds slice with populated data
+	// 	for i, key := range campgroundKeys {
+	// 		if updated, exists := campgroundMap[key]; exists {
+	// 			allCampgrounds[i].CampsiteTypes = updated.CampsiteTypes
+	// 		}
+	// 	}
+	// }
 
 	// Apply filters
 	filteredCampgrounds := s.applyFilters(allCampgrounds, req)
@@ -238,34 +241,36 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	return filteredCampgrounds, rows.Err()
 }
 
-// populateCampsiteTypes efficiently populates campsite types for multiple campgrounds using the campground_types table
-func (s *Server) populateCampsiteTypes(ctx context.Context, campgroundMap map[string]*CampgroundMapData) error {
-	if len(campgroundMap) == 0 {
-		return nil
-	}
+// // populateCampsiteTypes efficiently populates campsite types for multiple campgrounds using the campground_types table
+// func (s *Server) populateCampsiteTypes(ctx context.Context, campgroundMap map[string]*CampgroundMapData) error {
+// 	if len(campgroundMap) == 0 {
+// 		return nil
+// 	}
 
-	// Get all campground keys
-	var keys []string
-	for key := range campgroundMap {
-		keys = append(keys, key)
-	}
+// 	// Get all campground keys
+// 	var keys []string
+// 	for key := range campgroundMap {
+// 		keys = append(keys, key)
+// 	}
 
-	// Use the new GetCampgroundTypesMap function
-	typesMap, err := s.store.GetCampgroundTypesMap(ctx, keys)
-	if err != nil {
-		slog.Debug("failed to get campground types", "error", err)
-		return nil // Don't fail the whole request if we can't get types
-	}
+// 	// Use the new GetCampgroundTypesMap function
+// 	start := time.Now()
+// 	typesMap, err := s.store.GetCampgroundTypesMap(ctx, keys)
+// 	if err != nil {
+// 		slog.Debug("failed to get campground types", "error", err)
+// 		return nil // Don't fail the whole request if we can't get types
+// 	}
+// 	slog.Debug("fetched campground types", "duration", time.Since(start))
 
-	// Update campground data
-	for key, campground := range campgroundMap {
-		if types, exists := typesMap[key]; exists {
-			campground.CampsiteTypes = types
-		}
-	}
+// 	// Update campground data
+// 	for key, campground := range campgroundMap {
+// 		if types, exists := typesMap[key]; exists {
+// 			campground.CampsiteTypes = types
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func (s *Server) applyFilters(campgrounds []CampgroundMapData, req ViewportRequest) []CampgroundMapData {
 	var filtered []CampgroundMapData

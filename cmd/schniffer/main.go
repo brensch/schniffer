@@ -24,6 +24,11 @@ func main() {
 		return
 	}
 
+	// set log level to debug
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./schniffer.sqlite"

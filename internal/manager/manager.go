@@ -179,7 +179,7 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 		// provider decides minimal set of requests
 		buckets := prov.PlanBuckets(dates)
 		// collect all states for this provider+campground across buckets to enable bundled notifications
-		collectedStates := make([]providers.Campsite, 0, 128)
+		collectedStates := make([]providers.CampsiteAvailability, 0, 128)
 		for _, b := range buckets {
 			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
 			call := struct {
@@ -437,13 +437,6 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		return 0, fmt.Errorf("unknown provider: %s", providerName)
 	}
 
-	// Check if provider supports FetchCampsiteMetadata
-	cmProv, hasCampsiteMetadata := prov.(providers.CampsiteMetadataProvider)
-	if !hasCampsiteMetadata {
-		m.logger.Info("provider does not support campsite metadata sync", slog.String("provider", providerName))
-		return 0, nil
-	}
-
 	// Check last successful sync within 24h
 	if last, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, "campsites", providerName); err == nil && ok {
 		if time.Since(last) < 24*time.Hour {
@@ -474,7 +467,7 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		processed++
 
 		// Fetch campsite metadata for this campground
-		campsiteInfos, err := cmProv.FetchCampsiteMetadata(ctx, campground.ID)
+		campsiteInfos, err := prov.FetchCampsites(ctx, campground.ID)
 		if err != nil {
 			m.logger.Warn("failed to fetch campsite metadata",
 				slog.String("provider", providerName),
@@ -484,27 +477,15 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		}
 
 		// Store each campsite metadata
-		for _, campsiteInfo := range campsiteInfos {
-			err := m.store.UpsertCampsiteMetadata(ctx, providerName, campground.ID, campsiteInfo.ID, campsiteInfo.Name, campsiteInfo.Type, campsiteInfo.CostPerNight, campsiteInfo.Rating, campsiteInfo.Equipment, campsiteInfo.PreviewImageURL)
-			if err != nil {
-				m.logger.Warn("failed to store campsite metadata",
-					slog.String("provider", providerName),
-					slog.String("campground", campground.ID),
-					slog.String("campsite", campsiteInfo.ID),
-					slog.Any("err", err))
-				continue
-			}
-			count++
-		}
-
-		// Log progress every 50 campgrounds
-		if processed%50 == 0 {
-			m.logger.Info("campsite sync progress",
+		err = m.store.UpsertCampsiteMetadataBatch(ctx, providerName, campground.ID, campsiteInfos)
+		if err != nil {
+			m.logger.Warn("failed to store campsite metadata",
 				slog.String("provider", providerName),
-				slog.Int("processed_campgrounds", processed),
-				slog.Int("total_campgrounds", len(campgrounds)),
-				slog.Int("total_campsites", count))
+				slog.String("campground", campground.ID),
+				slog.Any("err", err))
+			continue
 		}
+		count++
 	}
 
 	// Record sync completion
