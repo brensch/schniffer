@@ -413,7 +413,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.CampsiteTypes, cg.ImageURL, cg.PriceMin, cg.PriceMax, cg.PriceUnit)
+		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.ImageURL, cg.PriceMin, cg.PriceMax, cg.PriceUnit)
 		if err != nil {
 			// store failed sync
 			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
@@ -576,7 +576,7 @@ func (m *Manager) syncCampgroundsStreaming(ctx context.Context, prov providers.P
 			}
 
 			// Save to database
-			if err := m.store.UpsertCampground(ctx, providerName, campground.ID, campground.Name, campground.Lat, campground.Lon, campground.Rating, campground.Amenities, campground.CampsiteTypes, campground.ImageURL, campground.PriceMin, campground.PriceMax, campground.PriceUnit); err != nil {
+			if err := m.store.UpsertCampground(ctx, providerName, campground.ID, campground.Name, campground.Lat, campground.Lon, campground.Rating, campground.Amenities, campground.ImageURL, campground.PriceMin, campground.PriceMax, campground.PriceUnit); err != nil {
 				m.logger.Warn("failed to save campground", slog.String("id", campground.ID), slog.Any("err", err))
 				continue
 			}

@@ -802,13 +802,12 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, campsiteTypes []string, imageURL string, priceMin, priceMax float64, priceUnit string) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, imageURL string, priceMin, priceMax float64, priceUnit string) error {
 	amenitiesJSON, _ := json.Marshal(amenities)
-	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, campsite_types, image_url, price_min, price_max, price_unit, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), string(campsiteTypesJSON), imageURL, priceMin, priceMax, priceUnit, time.Now())
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), imageURL, priceMin, priceMax, priceUnit, time.Now())
 	return err
 }
 
@@ -826,6 +825,19 @@ func (s *Store) UpsertCampsiteMetadata(ctx context.Context, provider, campground
 	`, provider, campgroundID, campsiteID, name, campsiteType, costPerNight, rating, time.Now(), imageURL)
 	if err != nil {
 		return err
+	}
+
+	// Update campground_types table if campsite_type is provided
+	if campsiteType != "" {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO campground_types (provider, campground_id, campsite_type)
+			VALUES (?, ?, ?)
+			ON CONFLICT(provider, campground_id, campsite_type) DO UPDATE SET
+				updated_at = CURRENT_TIMESTAMP
+		`, provider, campgroundID, campsiteType)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Delete existing equipment entries for this campsite
@@ -1254,4 +1266,96 @@ func (s *Store) GetCampgroundsByProvider(ctx context.Context, provider string) (
 	}
 
 	return campgrounds, rows.Err()
+}
+
+// GetCampsiteTypesForCampground retrieves distinct campsite types for a specific campground
+func (s *Store) GetCampsiteTypesForCampground(ctx context.Context, provider, campgroundID string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT campsite_type
+		FROM campsite_metadata 
+		WHERE provider = ? AND campground_id = ? AND campsite_type != ''
+		ORDER BY campsite_type
+	`, provider, campgroundID)
+	if err != nil {
+		// Handle database locked errors gracefully
+		if strings.Contains(err.Error(), "database is locked") {
+			return []string{}, nil // Return empty slice instead of error
+		}
+		return nil, fmt.Errorf("failed to query campsite types: %w", err)
+	}
+	defer rows.Close()
+
+	var types []string
+	for rows.Next() {
+		var campsiteType string
+		err := rows.Scan(&campsiteType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan campsite type: %w", err)
+		}
+		types = append(types, campsiteType)
+	}
+
+	return types, rows.Err()
+}
+
+// RefreshCampgroundTypes rebuilds the campground_types table from campsite_metadata
+func (s *Store) RefreshCampgroundTypes(ctx context.Context) error {
+	// Clear existing data
+	_, err := s.DB.ExecContext(ctx, "DELETE FROM campground_types")
+	if err != nil {
+		return fmt.Errorf("failed to clear campground_types: %w", err)
+	}
+
+	// Populate with current campsite type data
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO campground_types (provider, campground_id, campsite_type)
+		SELECT DISTINCT provider, campground_id, campsite_type
+		FROM campsite_metadata 
+		WHERE campsite_type != '' AND campsite_type IS NOT NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to populate campground_types: %w", err)
+	}
+
+	return nil
+}
+
+// GetCampgroundTypesMap returns a map of campground keys to their campsite types
+func (s *Store) GetCampgroundTypesMap(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
+	if len(campgroundKeys) == 0 {
+		return make(map[string][]string), nil
+	}
+
+	// Build query with placeholders
+	placeholders := make([]string, len(campgroundKeys))
+	args := make([]interface{}, len(campgroundKeys))
+	for i, key := range campgroundKeys {
+		placeholders[i] = "?"
+		args[i] = key
+	}
+
+	query := fmt.Sprintf(`
+		SELECT provider || ':' || campground_id as key, campsite_type
+		FROM campground_types 
+		WHERE provider || ':' || campground_id IN (%s)
+		ORDER BY provider, campground_id, campsite_type
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query campground types: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var key, campsiteType string
+		err := rows.Scan(&key, &campsiteType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan campground type: %w", err)
+		}
+		result[key] = append(result[key], campsiteType)
+	}
+
+	return result, rows.Err()
 }

@@ -222,24 +222,17 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				amenities = append(amenities, activity.ActivityName)
 			}
 
-			// Build campsite types list from equipment
-			var campsiteTypes []string
-			for _, equipment := range result.CampsiteEquipmentName {
-				campsiteTypes = append(campsiteTypes, equipment)
-			}
-
 			campground := CampgroundInfo{
-				ID:            result.EntityID,
-				Name:          name,
-				Lat:           lat,
-				Lon:           lon,
-				Rating:        result.AverageRating,
-				Amenities:     amenities,
-				CampsiteTypes: campsiteTypes,
-				ImageURL:      result.PreviewImageURL,
-				PriceMin:      result.PriceRange.AmountMin,
-				PriceMax:      result.PriceRange.AmountMax,
-				PriceUnit:     result.PriceRange.PerUnit,
+				ID:        result.EntityID,
+				Name:      name,
+				Lat:       lat,
+				Lon:       lon,
+				Rating:    result.AverageRating,
+				Amenities: amenities,
+				ImageURL:  result.PreviewImageURL,
+				PriceMin:  result.PriceRange.AmountMin,
+				PriceMax:  result.PriceRange.AmountMax,
+				PriceUnit: result.PriceRange.PerUnit,
 			}
 
 			all = append(all, campground)

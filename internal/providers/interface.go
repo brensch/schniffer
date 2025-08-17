@@ -66,15 +66,14 @@ func (r *Registry) Register(name string, p Provider) { r.providers[name] = p }
 func (r *Registry) Get(name string) (Provider, bool) { p, ok := r.providers[name]; return p, ok }
 
 type CampgroundInfo struct {
-	ID            string
-	Name          string
-	Lat           float64
-	Lon           float64
-	Rating        float64  // Campground rating (0-5), 0 if unknown
-	Amenities     []string // Campground amenities (activity names)
-	CampsiteTypes []string // Available campsite types (equipment names)
-	ImageURL      string   // Preview image URL
-	PriceMin      float64  // Minimum price per unit
-	PriceMax      float64  // Maximum price per unit
-	PriceUnit     string   // Price unit (e.g., "night")
+	ID        string
+	Name      string
+	Lat       float64
+	Lon       float64
+	Rating    float64  // Campground rating (0-5), 0 if unknown
+	Amenities []string // Campground amenities (activity names)
+	ImageURL  string   // Preview image URL
+	PriceMin  float64  // Minimum price per unit
+	PriceMax  float64  // Maximum price per unit
+	PriceUnit string   // Price unit (e.g., "night")
 }

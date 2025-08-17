@@ -186,18 +186,30 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 // extractCampsiteType extracts the campsite type from ReserveCalifornia unit names
 // e.g., "Tent Campsite #C36" -> "Tent", "RV Campsite #A12" -> "RV"
 func extractCampsiteType(unitName string) string {
-	if strings.Contains(strings.ToLower(unitName), "tent") {
+	unitLower := strings.ToLower(unitName)
+
+	if strings.Contains(unitLower, "tent") {
 		return "Tent"
 	}
-	if strings.Contains(strings.ToLower(unitName), "rv") {
+	if strings.Contains(unitLower, "rv") {
 		return "RV"
 	}
-	if strings.Contains(strings.ToLower(unitName), "cabin") {
+	if strings.Contains(unitLower, "cabin") {
 		return "Cabin"
 	}
-	if strings.Contains(strings.ToLower(unitName), "group") {
+	if strings.Contains(unitLower, "group") {
 		return "Group"
 	}
+	if strings.Contains(unitLower, "primitive") {
+		return "Primitive"
+	}
+	if strings.Contains(unitLower, "yurt") {
+		return "Yurt"
+	}
+	if strings.Contains(unitLower, "camp") {
+		return "Campsite"
+	}
+
 	// Default to "Standard" if no specific type is detected
 	return "Standard"
 }
@@ -228,6 +240,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		Latitude   float64 `json:"Latitude"`
 		Longitude  float64 `json:"Longitude"`
 		PlaceId    int     `json:"PlaceId"`
+		IsActive   bool    `json:"IsActive"`
 	}
 	err = json.Unmarshal(body, &parks)
 	if err != nil {
@@ -237,15 +250,19 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	// 2) For each park/place, fetch facilities via search/place
 	type placeResp struct {
 		SelectedPlace struct {
-			PlaceId    int     `json:"PlaceId"`
-			Name       string  `json:"Name"`
-			Latitude   float64 `json:"Latitude"`
-			Longitude  float64 `json:"Longitude"`
-			Facilities map[string]struct {
+			PlaceId     int     `json:"PlaceId"`
+			Name        string  `json:"Name"`
+			Description string  `json:"Description"`
+			Latitude    float64 `json:"Latitude"`
+			Longitude   float64 `json:"Longitude"`
+			ImageUrl    string  `json:"ImageUrl"`
+			Facilities  map[string]struct {
 				FacilityId    int     `json:"FacilityId"`
 				Name          string  `json:"Name"`
+				Description   string  `json:"Description"`
 				Latitude      float64 `json:"Latitude"`
 				Longitude     float64 `json:"Longitude"`
+				Category      string  `json:"Category"`
 				Allhighlights string  `json:"Allhighlights"`
 			} `json:"Facilities"`
 		} `json:"SelectedPlace"`
@@ -255,10 +272,11 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	// modest cap to avoid hammering if something goes wrong
 	checked := 0
 	for _, p := range parks {
-		// Skip parks without a PlaceId
-		if p.PlaceId == 0 {
+		// Skip inactive parks or parks without a PlaceId
+		if !p.IsActive || p.PlaceId == 0 {
 			continue
 		}
+
 		pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
 		pb, _ := json.Marshal(pr)
 		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/place", bytes.NewReader(pb))
@@ -288,9 +306,17 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			slog.Warn("place JSON decode failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
 			continue
 		}
+
 		parentName := prParsed.SelectedPlace.Name
 		parentID := strconv.Itoa(prParsed.SelectedPlace.PlaceId)
+		parentImageURL := prParsed.SelectedPlace.ImageUrl
+
 		for _, f := range prParsed.SelectedPlace.Facilities {
+			// Only include campground facilities
+			if !strings.Contains(strings.ToLower(f.Category), "campground") {
+				continue
+			}
+
 			// Create composite ID and name for ReserveCalifornia
 			compositeID := parentID + "/" + strconv.Itoa(f.FacilityId)
 			compositeName := parentName + ": " + f.Name
@@ -308,27 +334,300 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 				}
 			}
 
-			out = append(out, CampgroundInfo{
-				ID:            compositeID,
-				Name:          compositeName,
-				Lat:           f.Latitude,
-				Lon:           f.Longitude,
-				Rating:        0.0, // ReserveCalifornia doesn't provide ratings in their API
-				Amenities:     amenities,
-				CampsiteTypes: []string{}, // ReserveCalifornia doesn't provide campsite types in this API
-				ImageURL:      "",         // ReserveCalifornia doesn't provide image URLs in this API
-				PriceMin:      0.0,        // Would need separate API call to get pricing
-				PriceMax:      0.0,
-				PriceUnit:     "night",
-			})
+			// Use facility image if available, otherwise use parent image
+			imageURL := parentImageURL
+			if f.Latitude != 0 && f.Longitude != 0 {
+				// Use facility coordinates if available, otherwise use parent coordinates
+				out = append(out, CampgroundInfo{
+					ID:        compositeID,
+					Name:      compositeName,
+					Lat:       f.Latitude,
+					Lon:       f.Longitude,
+					Rating:    0.0, // ReserveCalifornia doesn't provide ratings in their API
+					Amenities: amenities,
+					ImageURL:  imageURL,
+					PriceMin:  0.0, // Would need separate API call to get pricing
+					PriceMax:  0.0,
+					PriceUnit: "night",
+				})
+			} else {
+				out = append(out, CampgroundInfo{
+					ID:        compositeID,
+					Name:      compositeName,
+					Lat:       prParsed.SelectedPlace.Latitude,
+					Lon:       prParsed.SelectedPlace.Longitude,
+					Rating:    0.0,
+					Amenities: amenities,
+					ImageURL:  imageURL,
+					PriceMin:  0.0,
+					PriceMax:  0.0,
+					PriceUnit: "night",
+				})
+			}
 		}
 		checked++
 		// Soft limit to keep the sync bounded if citypark is huge; remove or raise later
 		if checked >= 2000 {
 			break
 		}
+
+		// Add small delay to be respectful to the API
+		time.Sleep(50 * time.Millisecond)
 	}
 	return out, nil
+}
+
+// FetchCampsiteMetadata returns detailed campsite metadata for storage in the database
+func (r *ReserveCalifornia) FetchCampsiteMetadata(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
+	// Extract facility ID from composite ID format "parentID/facilityID"
+	facilityID := campgroundID
+	if parts := strings.Split(campgroundID, "/"); len(parts) == 2 {
+		facilityID = parts[1]
+	}
+
+	// Use current date as start date to get campsite structure
+	start := time.Now()
+	end := start.AddDate(0, 0, 7) // One week window to get campsite structure
+
+	// Build grid request to get campsite information
+	payload := gridRequest{
+		IsADA:             false,
+		MinVehicleLength:  0,
+		UnitCategoryId:    0,
+		StartDate:         start.Format("2006-01-02"),
+		WebOnly:           true,
+		UnitTypesGroupIds: []int{},
+		SleepingUnitId:    0,
+		EndDate:           end.Format("2006-01-02"),
+		UnitSort:          "orderby",
+		InSeasonOnly:      true,
+		FacilityId:        facilityID,
+		RestrictADA:       false,
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpx.SpoofChromeHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://reservecalifornia.com")
+	req.Header.Set("Referer", "https://reservecalifornia.com/")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("campsite metadata grid request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read campsite metadata response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("campsite metadata request failed with status %d: %s", resp.StatusCode, clipBody(respBody))
+	}
+
+	// Parse using expanded structure to get unit details
+	var gridResp struct {
+		Facility struct {
+			Units map[string]struct {
+				UnitId          int    `json:"UnitId"`
+				Name            string `json:"Name"`
+				ShortName       string `json:"ShortName"`
+				IsAda           bool   `json:"IsAda"`
+				UnitTypeId      int    `json:"UnitTypeId"`
+				UnitTypeGroupId int    `json:"UnitTypeGroupId"`
+				VehicleLength   int    `json:"VehicleLength"`
+			} `json:"Units"`
+		} `json:"Facility"`
+	}
+
+	if err := json.Unmarshal(respBody, &gridResp); err != nil {
+		return nil, fmt.Errorf("failed to parse campsite metadata response: %w", err)
+	}
+
+	slog.Info("Retrieved campsite grid data",
+		slog.String("facilityId", facilityID),
+		slog.Int("unitCount", len(gridResp.Facility.Units)))
+
+	var campsiteInfos []CampsiteInfo
+	for _, unit := range gridResp.Facility.Units {
+		// Get detailed campsite information with retries
+		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/startdate/%s",
+			unit.UnitId, start.Format("2006-01-02"))
+
+		// Try to get details with exponential backoff
+		var detailsResp struct {
+			Unit struct {
+				UnitId          int    `json:"UnitId"`
+				Name            string `json:"Name"`
+				DescriptionHtml string `json:"DescriptionHtml"`
+				IsADA           bool   `json:"IsADA"`
+				IsTentSite      bool   `json:"IsTentSite"`
+				IsRVSite        bool   `json:"IsRVSite"`
+				VehicleLength   int    `json:"VehicleLength"`
+			} `json:"Unit"`
+			Rate        string `json:"Rate"`
+			UnitImage   string `json:"UnitImage"`
+			NightlyUnit struct {
+				MaxOccupancy int `json:"MaxOccupancy"`
+				MaxVehicles  int `json:"MaxVehicles"`
+			} `json:"NightlyUnit"`
+			UnitType struct {
+				Name string `json:"Name"`
+			} `json:"UnitType"`
+		}
+
+		maxRetries := 3
+		var detailErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailsURL, nil)
+			if err != nil {
+				detailErr = err
+				break
+			}
+			httpx.SpoofChromeHeaders(detailReq)
+			detailReq.Header.Set("Origin", "https://reservecalifornia.com")
+			detailReq.Header.Set("Referer", "https://reservecalifornia.com/")
+
+			detailResp, err := r.client.Do(detailReq)
+			if err != nil {
+				detailErr = err
+				if attempt < maxRetries-1 {
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+
+			detailBody, err := io.ReadAll(detailResp.Body)
+			detailResp.Body.Close()
+
+			if err != nil {
+				detailErr = err
+				if attempt < maxRetries-1 {
+					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+
+			if detailResp.StatusCode == http.StatusTooManyRequests || detailResp.StatusCode >= 500 {
+				detailErr = fmt.Errorf("server error %d: %s", detailResp.StatusCode, clipBody(detailBody))
+				slog.Warn("server error for campsite details",
+					slog.Int("unitId", unit.UnitId),
+					slog.Int("status", detailResp.StatusCode),
+					slog.Int("attempt", attempt+1),
+					slog.String("response", clipBody(detailBody)))
+				if attempt < maxRetries-1 {
+					time.Sleep(time.Duration(attempt+1) * 1000 * time.Millisecond)
+					continue
+				}
+				break
+			}
+
+			if detailResp.StatusCode != http.StatusOK {
+				detailErr = fmt.Errorf("status %d: %s", detailResp.StatusCode, clipBody(detailBody))
+				slog.Warn("non-200 status for campsite details",
+					slog.Int("unitId", unit.UnitId),
+					slog.Int("status", detailResp.StatusCode),
+					slog.String("response", clipBody(detailBody)))
+				break
+			}
+
+			if err := json.Unmarshal(detailBody, &detailsResp); err != nil {
+				detailErr = err
+				break
+			}
+
+			// Success!
+			detailErr = nil
+			break
+		}
+
+		if detailErr != nil {
+			// If we can't get details, create a basic campsite info from the grid data
+			var equipment []string
+			campsiteType := extractCampsiteType(unit.Name)
+
+			// Make some educated guesses based on the name and unit type
+			if strings.Contains(strings.ToLower(unit.Name), "tent") {
+				equipment = append(equipment, "Tent")
+			}
+			if strings.Contains(strings.ToLower(unit.Name), "rv") || unit.VehicleLength > 0 {
+				equipment = append(equipment, "RV")
+				if unit.VehicleLength > 0 {
+					equipment = append(equipment, fmt.Sprintf("RV up to %d ft", unit.VehicleLength))
+				}
+			}
+			if len(equipment) == 0 {
+				equipment = append(equipment, "Standard")
+			}
+
+			campsiteInfos = append(campsiteInfos, CampsiteInfo{
+				ID:              strconv.Itoa(unit.UnitId),
+				Name:            unit.Name,
+				Type:            campsiteType,
+				CostPerNight:    0.0, // Unknown without details
+				Rating:          0.0,
+				Equipment:       equipment,
+				PreviewImageURL: "",
+			})
+			continue
+		}
+
+		// Determine equipment types based on site characteristics
+		var equipment []string
+		if detailsResp.Unit.IsTentSite {
+			equipment = append(equipment, "Tent")
+		}
+		if detailsResp.Unit.IsRVSite {
+			equipment = append(equipment, "RV")
+			if detailsResp.Unit.VehicleLength > 0 {
+				equipment = append(equipment, fmt.Sprintf("RV up to %d ft", detailsResp.Unit.VehicleLength))
+			}
+		}
+		if len(equipment) == 0 {
+			equipment = append(equipment, "Standard")
+		}
+
+		// Parse cost per night
+		var costPerNight float64
+		if detailsResp.Rate != "" {
+			if cost, err := strconv.ParseFloat(detailsResp.Rate, 64); err == nil {
+				costPerNight = cost
+			}
+		}
+
+		// Determine campsite type from unit type name or characteristics
+		campsiteType := detailsResp.UnitType.Name
+		if campsiteType == "" {
+			campsiteType = extractCampsiteType(detailsResp.Unit.Name)
+		}
+
+		campsiteInfos = append(campsiteInfos, CampsiteInfo{
+			ID:              strconv.Itoa(detailsResp.Unit.UnitId),
+			Name:            detailsResp.Unit.Name,
+			Type:            campsiteType,
+			CostPerNight:    costPerNight,
+			Rating:          0.0, // ReserveCalifornia doesn't provide ratings
+			Equipment:       equipment,
+			PreviewImageURL: detailsResp.UnitImage,
+		})
+
+		// Add progressive delay to be respectful to the API
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	slog.Info("Completed campsite metadata fetch",
+		slog.String("facilityId", facilityID),
+		slog.Int("totalUnits", len(gridResp.Facility.Units)),
+		slog.Int("successfulDetails", len(campsiteInfos)))
+
+	return campsiteInfos, nil
 }
 
 // FetchCampsites returns detailed campsite information for a campground

@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     longitude    REAL DEFAULT 0,
     rating       REAL DEFAULT 0,
     amenities    TEXT DEFAULT '{}',
-    campsite_types TEXT DEFAULT '{}',
     image_url    TEXT DEFAULT '',
     price_min    REAL DEFAULT 0,
     price_max    REAL DEFAULT 0,
@@ -94,13 +93,24 @@ CREATE INDEX IF NOT EXISTS idx_campsite_metadata_rating ON campsite_metadata(rat
 
 -- Equipment types available at each campsite (normalized many-to-many)
 CREATE TABLE IF NOT EXISTS campsite_equipment (
-    provider     TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
     campground_id TEXT NOT NULL,
-    campsite_id  TEXT NOT NULL,
+    campsite_id TEXT NOT NULL,
     equipment_type TEXT NOT NULL,
-    last_updated DATETIME NOT NULL,
-    PRIMARY KEY (provider, campground_id, campsite_id, equipment_type),
-    FOREIGN KEY (provider, campground_id, campsite_id) REFERENCES campsite_metadata(provider, campground_id, campsite_id)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, campground_id, campsite_id, equipment_type)
+);
+
+-- Table to store pre-computed campsite types for each campground
+CREATE TABLE IF NOT EXISTS campground_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    campsite_type TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, campground_id, campsite_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_campground ON campsite_equipment(provider, campground_id);

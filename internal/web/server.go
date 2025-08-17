@@ -177,7 +177,7 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportRequest) ([]CampgroundMapData, error) {
 	rows, err := s.store.DB.QueryContext(ctx, `
-		SELECT provider, campground_id, name, latitude, longitude, rating, amenities, campsite_types, image_url, price_min, price_max, price_unit
+		SELECT provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit
 		FROM campgrounds
 		WHERE latitude BETWEEN ? AND ?
 		AND longitude BETWEEN ? AND ?
@@ -190,10 +190,13 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 	defer rows.Close()
 
 	var allCampgrounds []CampgroundMapData
+	var campgroundKeys []string
+	campgroundMap := make(map[string]*CampgroundMapData)
+
 	for rows.Next() {
 		var c CampgroundMapData
-		var amenitiesJSON, campsiteTypesJSON string
-		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON, &campsiteTypesJSON, &c.ImageURL, &c.PriceMin, &c.PriceMax, &c.PriceUnit)
+		var amenitiesJSON string
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating, &amenitiesJSON, &c.ImageURL, &c.PriceMin, &c.PriceMax, &c.PriceUnit)
 		if err != nil {
 			return nil, err
 		}
@@ -203,20 +206,65 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 			json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
 		}
 
-		// Parse campsite types JSON
+		// Initialize empty campsite types - will be filled by batch query
 		c.CampsiteTypes = []string{}
-		if campsiteTypesJSON != "" {
-			json.Unmarshal([]byte(campsiteTypesJSON), &c.CampsiteTypes)
+		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)
+
+		key := c.Provider + ":" + c.ID
+		campgroundKeys = append(campgroundKeys, key)
+		campgroundMap[key] = &c
+		allCampgrounds = append(allCampgrounds, c)
+	}
+
+	// Batch query for campsite types to avoid database locking
+	if len(campgroundKeys) > 0 {
+		err = s.populateCampsiteTypes(ctx, campgroundMap)
+		if err != nil {
+			// Log warning but continue - campsite types are optional
+			slog.Warn("failed to populate campsite types", slog.Any("err", err))
 		}
 
-		c.URL = s.mgr.CampgroundURL(c.Provider, c.ID)
-		allCampgrounds = append(allCampgrounds, c)
+		// Update the campgrounds slice with populated data
+		for i, key := range campgroundKeys {
+			if updated, exists := campgroundMap[key]; exists {
+				allCampgrounds[i].CampsiteTypes = updated.CampsiteTypes
+			}
+		}
 	}
 
 	// Apply filters
 	filteredCampgrounds := s.applyFilters(allCampgrounds, req)
 
 	return filteredCampgrounds, rows.Err()
+}
+
+// populateCampsiteTypes efficiently populates campsite types for multiple campgrounds using the campground_types table
+func (s *Server) populateCampsiteTypes(ctx context.Context, campgroundMap map[string]*CampgroundMapData) error {
+	if len(campgroundMap) == 0 {
+		return nil
+	}
+
+	// Get all campground keys
+	var keys []string
+	for key := range campgroundMap {
+		keys = append(keys, key)
+	}
+
+	// Use the new GetCampgroundTypesMap function
+	typesMap, err := s.store.GetCampgroundTypesMap(ctx, keys)
+	if err != nil {
+		slog.Debug("failed to get campground types", "error", err)
+		return nil // Don't fail the whole request if we can't get types
+	}
+
+	// Update campground data
+	for key, campground := range campgroundMap {
+		if types, exists := typesMap[key]; exists {
+			campground.CampsiteTypes = types
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) applyFilters(campgrounds []CampgroundMapData, req ViewportRequest) []CampgroundMapData {
@@ -480,11 +528,12 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Get all unique campsite types
+	// Get all unique campsite types from campsite metadata
 	campsiteTypesRows, err := s.store.DB.QueryContext(ctx, `
-		SELECT DISTINCT campsite_types 
-		FROM campgrounds 
-		WHERE campsite_types IS NOT NULL AND campsite_types != '' AND campsite_types != '{}'
+		SELECT DISTINCT campsite_type 
+		FROM campsite_metadata 
+		WHERE campsite_type IS NOT NULL AND campsite_type != ''
+		ORDER BY campsite_type
 	`)
 	if err != nil {
 		http.Error(w, "Failed to fetch campsite types", http.StatusInternalServerError)
@@ -494,18 +543,12 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 
 	campsiteTypesSet := make(map[string]bool)
 	for campsiteTypesRows.Next() {
-		var campsiteTypesJSON string
-		if err := campsiteTypesRows.Scan(&campsiteTypesJSON); err != nil {
+		var campsiteType string
+		if err := campsiteTypesRows.Scan(&campsiteType); err != nil {
 			continue
 		}
-		var campsiteTypes []string
-		if err := json.Unmarshal([]byte(campsiteTypesJSON), &campsiteTypes); err != nil {
-			continue
-		}
-		for _, campsiteType := range campsiteTypes {
-			if campsiteType != "" {
-				campsiteTypesSet[campsiteType] = true
-			}
+		if campsiteType != "" {
+			campsiteTypesSet[campsiteType] = true
 		}
 	}
 

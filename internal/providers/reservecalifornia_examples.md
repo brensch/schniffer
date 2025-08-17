@@ -1029,3 +1029,12 @@ and that returns
     "ApplicationInstruction": null,
     "ApplicationId": 0
 }
+
+NOTE
+
+you'll have to derive equipment type by looking at 
+
+                "IsTentSite": true,
+                "IsRVSite": true,
+
+                
