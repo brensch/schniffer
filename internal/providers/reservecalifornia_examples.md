@@ -694,3 +694,338 @@ Provider mapping used by this repo:
 - Provider name: reservecalifornia
 - CampgroundID: Use FacilityId from the grid/place responses (e.g., 687).
 The provider fetch collapses requested dates into a single [min..max] range per FacilityId.
+
+
+to get campsites for a campground, POST to:
+
+https://calirdr.usedirect.com/RDR/rdr/search/grid
+
+{"IsADA":false,"MinVehicleLength":0,"UnitCategoryId":0,"StartDate":"2025-08-23","WebOnly":true,"UnitTypesGroupIds":[],"SleepingUnitId":0,"EndDate":"2025-08-30","UnitSort":"orderby","InSeasonOnly":true,"FacilityId":"789","RestrictADA":false}
+
+that returns 
+
+{
+    "Message": "Built in 9.5314 ms size 71189 bytes on IP-AC1226D7",
+    "Filters": {
+        "InSeasonOnly": "True",
+        "WebOnly": "True",
+        "IsADA": "False",
+        "SleepingUnitId": "0",
+        "MinVehicleLength": "0",
+        "UnitCategoryId": "0"
+    },
+    "UnitTypeId": 0,
+    "StartDate": "2025-08-23",
+    "EndDate": "2025-08-30",
+    "NightsRequested": 8,
+    "NightsActual": 8,
+    "TodayDate": "2025-08-16",
+    "TimeZone": "Pacific Standard Time",
+    "TimeStamp": "2025-08-16 17:49:56",
+    "MinDate": "2025-08-16",
+    "MaxDate": "2026-02-16",
+    "AvailableUnitsOnly": false,
+    "UnitSort": "orderby",
+    "TimeGrid": false,
+    "ForUnit": false,
+    "UnitId": 0,
+    "TimeBetween": "",
+    "TimeBetweenEval": "n/a",
+    "Facility": {
+        "FacilityId": 789,
+        "Name": "Creek Campground Upper Section (sites 1-35)",
+        "Description": "Creek Campground Upper Section (sites 1-35)",
+        "FacilityType": 2,
+        "FacilityBehaviourType": 0,
+        "FacilityMapSize": false,
+        "FacilityImage": "California/Facilities/HSS_713_Creek_Campground_Upper_Section.jpg",
+        "FacilityImageVBT": "https://cali-content.usedirect.com/Images/California/Facilities/HSS_713_Creek_Campground_Upper_Section.jpg",
+        "DatesInSeason": 8,
+        "DatesOutOfSeason": 0,
+        "SeasonDates": {
+            "2025-08-23T00:00:00": true,
+            "2025-08-24T00:00:00": true,
+            "2025-08-25T00:00:00": true,
+            "2025-08-26T00:00:00": true,
+            "2025-08-27T00:00:00": true,
+            "2025-08-28T00:00:00": true,
+            "2025-08-29T00:00:00": true,
+            "2025-08-30T00:00:00": true
+        },
+        "TrafficStatuses": {},
+        "UnitCount": 31,
+        "AvailableUnitCount": 23,
+        "SliceCount": 248,
+        "AvailableSliceCount": 50,
+        "Restrictions": {
+            "FutureBookingStarts": "2025-08-16T00:00:00-07:00",
+            "FutureBookingEnds": "2026-02-16T00:00:00-08:00",
+            "MinimumStay": 1,
+            "MaximumStay": 10,
+            "IsRestrictionValid": true,
+            "Time": "0001-01-01T00:00:00"
+        },
+        "Units": {
+            "260.1": {
+                "UnitId": 49547,
+                "Name": "Campsite #C1",
+                "ShortName": "C1",
+                "RecentPopups": 0,
+                "IsAda": false,
+                "AllowWebBooking": true,
+                "MapInfo": {
+                    "UnitImage": "California/Units/tent",
+                    "UnitImageVBT": "https://cali-content.usedirect.com/images/California/Units/tent.NotAvailable.png",
+                    "ImageCoordinateX": 213,
+                    "ImageCoordinateY": 149,
+                    "ImageWidth": 0,
+                    "ImageHeight": 0,
+                    "FontSize": 0.0,
+                    "Latitude": 0.0,
+                    "Longitude": 0.0
+                },
+                "IsWebViewable": true,
+                "IsFiltered": false,
+                "UnitCategoryId": 1,
+                "SleepingUnitIds": [
+                    74,
+                    75,
+                    79,
+                    83
+                ],
+                "UnitTypeGroupId": 1,
+                "UnitTypeId": 4303,
+                "UseType": 4,
+                "VehicleLength": 35,
+                "OrderBy": 1,
+                "SliceCount": 8,
+                "AvailableCount": 4,
+                "IsFavourite": false,
+                "Slices": {
+                    "2025-08-23T00:00:00": {
+                        "Date": "2025-08-23",
+                        "IsFree": false,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 7217515,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-24T00:00:00": {
+                        "Date": "2025-08-24",
+                        "IsFree": true,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 0,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-25T00:00:00": {
+                        "Date": "2025-08-25",
+                        "IsFree": true,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 0,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-26T00:00:00": {
+                        "Date": "2025-08-26",
+                        "IsFree": false,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 7333410,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-27T00:00:00": {
+                        "Date": "2025-08-27",
+                        "IsFree": true,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 0,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-28T00:00:00": {
+                        "Date": "2025-08-28",
+                        "IsFree": true,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 0,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-29T00:00:00": {
+                        "Date": "2025-08-29",
+                        "IsFree": false,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 7242750,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    },
+                    "2025-08-30T00:00:00": {
+                        "Date": "2025-08-30",
+                        "IsFree": false,
+                        "IsBlocked": false,
+                        "IsWalkin": false,
+                        "ReservationId": 7043789,
+                        "Lock": null,
+                        "MinStay": 1,
+                        "IsReservationDraw": false
+                    }
+                },
+                "OrderByRaw": 260,
+                "StartTime": null,
+                "EndTime": null
+            },
+
+            "Unit": {
+                "UnitId": 49542,
+                "FacilityId": 789,
+                "UnitTypeId": 4303,
+                "Name": "C9",
+                "ShortName": "C9",
+                "AllowWebBooking": true,
+                "WebBookingStartTime": "2017-08-23T16:00:00",
+                "WebBookingEndTime": "2017-08-23T20:00:00",
+                "CustomField1": "9997",
+                "DescriptionHtml": "2 vehicle limit enforced. Trailers count as a vehicle. Dogs must be leashed in campground. Dogs prohibited on trails and beaches.",
+                "OrderBy": 9,
+                "IsWebViewable": true,
+                "IsADA": false,
+                "IsTentSite": true,
+                "IsRVSite": true,
+                "VehicleLength": 35,
+                "SiteType": "0",
+                "Inactive": false,
+                "IsNSSUnitInfo": false,
+                "OrderByRaw": 1739
+            },
+        },
+        "Latitude": 35.599058,
+        "Longitude": -121.122464,
+        "TimebaseMaxHours": 0,
+        "TimebaseMinHours": 0,
+        "TimebaseDuration": 0,
+        "IsReservationDrawActive": true,
+        "DrawBookingStartDate": "0001-01-01T00:00:00",
+        "DrawBookingEndDate": "0001-01-01T00:00:00",
+        "ReservationDrawDetail": null,
+        "WalkinCounts": null
+    }
+}
+
+
+to get campsite details, where 49542 is the campsite ID 
+
+https://calirdr.usedirect.com/RDR/rdr/search/details/49542/startdate/2025-08-23
+
+
+and that returns
+{
+    "Message": "Built in 4.0805 ms size 7993 bytes on IP-AC1226A4",
+    "Unit": {
+        "UnitId": 49542,
+        "FacilityId": 789,
+        "UnitTypeId": 4303,
+        "Name": "C9",
+        "ShortName": "C9",
+        "AllowWebBooking": true,
+        "WebBookingStartTime": "2017-08-23T16:00:00",
+        "WebBookingEndTime": "2017-08-23T20:00:00",
+        "CustomField1": "9997",
+        "DescriptionHtml": "2 vehicle limit enforced. Trailers count as a vehicle. Dogs must be leashed in campground. Dogs prohibited on trails and beaches.",
+        "OrderBy": 9,
+        "IsWebViewable": true,
+        "IsADA": false,
+        "IsTentSite": true,
+        "IsRVSite": true,
+        "VehicleLength": 35,
+        "SiteType": "0",
+        "Inactive": false,
+        "IsNSSUnitInfo": false,
+        "OrderByRaw": 1739
+    },
+    "FacilityName": "Creek Campground Upper Section (sites 1-35)",
+    "IsCaptcha": false,
+    "RecentPopups": 0,
+    "InvalidStart": false,
+    "RateTypeName": "Per Hours",
+    "UnitImage": "https://cali-content.usedirect.com/images/California/ParkImages/Units/49542.jpg",
+    "Rate": "35.00",
+    "Fee": "8.25",
+    "MaxStay": 10,
+    "UseTypeName": "Nightly",
+    "DayUseUnit": null,
+    "UnitType": {
+        "UnitTypeId": 4303,
+        "UnitCategoryId": 1,
+        "Name": "Campsite",
+        "UseType": 4,
+        "AllowFutureBooking": true,
+        "RateType": 1,
+        "RateBaseHours": 0,
+        "RestrictByPlace": false,
+        "OrderBy": 24,
+        "UDate": "2017-04-06T05:08:50.43",
+        "UserId": 1,
+        "AllowReservationVehicles": false,
+        "UnitTypeFeeCode": "7B7",
+        "MinReservationTypeMinutes": 0,
+        "MinReservationTypeHours": 0,
+        "MinReservationTypeDays": 0,
+        "IsPremium": false,
+        "UnitTypeGroupId": 1
+    },
+    "NightlyUnit": {
+        "UnitId": 49542,
+        "MaxAdult": 0,
+        "MaxChildren": null,
+        "MinAdult": null,
+        "MinChildren": null,
+        "MaxOccupancy": 8,
+        "MaxVehicles": 2,
+        "MinOccupancy": 8,
+        "PullInType": 1,
+        "CheckInStarts": "2017-04-04T14:00:00",
+        "CheckInEnds": "2017-04-04T14:00:00",
+        "CheckOutTime": "2017-04-04T12:00:00",
+        "SleepingUnitRequired": true
+    },
+    "PullInTypeName": "Pull Through",
+    "Amenities": {
+        "12.Campfire Allowed": {
+            "AmenityId": 1066,
+            "Name": "Campfire Allowed",
+            "ShortName": "Campfire Allowed",
+            "AmenityType": 2,
+            "IsSearchable": true,
+            "Description": "Campfire Allowed",
+            "OrderBy": 12,
+            "IDate": "2016-06-24T08:22:36.753",
+            "UDate": "2016-06-24T08:22:36.753",
+            "ImagePath": null,
+            "UCashierName": null,
+            "UStoreId": 0,
+            "IsADA": false,
+            "Value": "Yes"
+        },
+    },
+    "Images": [
+        "ParkImages/Units/49542.jpg"
+    ],
+    "Unit360Image": null,
+    "IsFavourite": false,
+    "ApplicationName": null,
+    "ApplicationInstruction": null,
+    "ApplicationId": 0
+}
