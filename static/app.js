@@ -33,13 +33,11 @@ const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
 // Add the standard layer as default
 osmLayer.addTo(map);
 
-// Create layer control to let users switch between map styles
-const baseLayers = {
-    "🗺️ Standard": osmLayer,
-    "🏔️ Topographic (Parks & Terrain)": topoLayer
+// Store layer references for switching
+const mapLayers = {
+    standard: osmLayer,
+    topographic: topoLayer
 };
-
-const layerControl = L.control.layers(baseLayers).addTo(map);
 
 // Configure popup options globally to remove close button but allow closing on map click
 map.options.closePopupOnClick = true;
@@ -121,14 +119,12 @@ async function loadViewportData() {
         }
         
         renderMarkersFromViewport(currentData);
-        updateStatsFromViewport(currentData);
         updateSaveGroupButton();
     } catch (error) {
         console.error('Failed to load viewport data:', error);
         // Set empty data state on error
         currentData = { type: 'campgrounds', data: [] };
         renderMarkersFromViewport(currentData);
-        updateStatsFromViewport(currentData);
         updateSaveGroupButton();
     }
 }
@@ -275,33 +271,6 @@ function renderMarkersFromViewport(result) {
 
 // Load initial data
 loadViewportData();
-
-function updateStatsFromViewport(result) {
-    if (result.type === 'clusters') {
-        const totalCount = result.data.reduce((sum, cluster) => sum + cluster.count, 0);
-        document.getElementById('stats').textContent = 
-            `${totalCount} campgrounds`;
-    } else {
-        const count = result.data.length;
-        // Check if any filters are active
-        const hasActiveFilters = currentFilters.amenities.length > 0 || 
-                                currentFilters.campsiteTypes.length > 0 || 
-                                currentFilters.minRating > 0 || 
-                                currentFilters.minPrice > 0 || 
-                                currentFilters.maxPrice < 4500;
-        
-        if (hasActiveFilters) {
-            document.getElementById('stats').textContent = 
-                `${count} campgrounds (filtered)`;
-        } else {
-            document.getElementById('stats').textContent = 
-                `${count} campgrounds in viewport`;
-        }
-    }
-    
-    // Update the save group button
-    updateSaveGroupButton();
-}
 
 // Event listeners
 map.on('moveend zoomend', loadViewportData);
@@ -820,6 +789,21 @@ function matchesFilters(campground) {
     }
     
     return true;
+}
+
+// Map layer switching
+function switchMapLayer(layerType) {
+    // Remove all layers first
+    Object.values(mapLayers).forEach(layer => {
+        if (map.hasLayer(layer)) {
+            map.removeLayer(layer);
+        }
+    });
+    
+    // Add the selected layer
+    if (mapLayers[layerType]) {
+        mapLayers[layerType].addTo(map);
+    }
 }
 
 // Load filter options on page load
