@@ -28,10 +28,8 @@ func Open(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
 	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
 		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
-			if duration > 1*time.Millisecond {
+			if duration > 10*time.Millisecond {
 				slog.Info("slow query succeeded", slog.Any("args", args), slog.String("query", query), slog.Duration("took", duration))
-			} else {
-				slog.Debug("query succeeded", slog.Any("args", args), slog.Duration("took", duration))
 			}
 		},
 	})
@@ -56,7 +54,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
 	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
 		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
-			if duration > 1*time.Millisecond {
+			if duration > 10*time.Millisecond {
 				slog.Debug("query succeeded", slog.String("query", query), slog.Duration("took", duration))
 			}
 		},
@@ -1354,37 +1352,6 @@ func (s *Store) RefreshCampgroundTypes(ctx context.Context) error {
 
 	return nil
 }
-
-// // GetCampgroundTypesMap returns a map of campground keys to their campsite types
-// func (s *Store) GetCampgroundTypesMap(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
-// 	if len(campgroundKeys) == 0 {
-// 		return make(map[string][]string), nil
-// 	}
-
-// 	result := make(map[string][]string)
-
-// 	// Process in batches to avoid "Expression tree too large" error
-// 	batchSize := 100 // Safe batch size to avoid SQLite expression limits
-// 	for i := 0; i < len(campgroundKeys); i += batchSize {
-// 		end := i + batchSize
-// 		if end > len(campgroundKeys) {
-// 			end = len(campgroundKeys)
-// 		}
-
-// 		batch := campgroundKeys[i:end]
-// 		batchResult, err := s.getCampgroundTypesBatch(ctx, batch)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-
-// 		// Merge batch results
-// 		for key, types := range batchResult {
-// 			result[key] = types
-// 		}
-// 	}
-
-// 	return result, nil
-// }
 
 // getCampgroundTypesBatch processes a small batch of campground keys
 func (s *Store) getCampgroundTypesBatch(ctx context.Context, campgroundKeys []string) (map[string][]string, error) {
