@@ -34,19 +34,75 @@ func Open(path string) (*Store, error) {
 		},
 	})
 
-	db, err := sql.Open(driverName, path+"?_foreign_keys=on")
+	// Enhanced connection string with concurrency optimizations
+	dsn := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=-64000&_temp_store=memory&_mmap_size=268435456&_busy_timeout=5000", path)
+
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
+
+	// Set connection pool settings for better concurrency
+	db.SetMaxOpenConns(25) // Allow more concurrent connections
+	db.SetMaxIdleConns(10) // Keep connections alive
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	err = db.Ping()
 	if err != nil {
 		return nil, err
 	}
+
+	// Apply additional pragmas for concurrency optimization
+	err = applyOptimizedPragmas(db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply optimized pragmas: %w", err)
+	}
+
 	err = migrate(db)
 	if err != nil {
 		return nil, err
 	}
 	return &Store{DB: db}, nil
+}
+
+// applyOptimizedPragmas applies SQLite pragmas optimized for concurrent read/write workloads
+func applyOptimizedPragmas(db *sql.DB) error {
+	pragmas := []string{
+		// WAL mode for better concurrency (readers don't block writers)
+		"PRAGMA journal_mode = WAL",
+
+		// NORMAL synchronous mode (faster than FULL, still safe)
+		"PRAGMA synchronous = NORMAL",
+
+		// Larger cache size (64MB) for better performance
+		"PRAGMA cache_size = -64000",
+
+		// Store temporary tables in memory
+		"PRAGMA temp_store = memory",
+
+		// Memory-mapped I/O for faster reads (256MB)
+		"PRAGMA mmap_size = 268435456",
+
+		// Optimize for queries
+		"PRAGMA optimize",
+
+		// WAL auto-checkpoint at 1000 pages to prevent WAL from growing too large
+		"PRAGMA wal_autocheckpoint = 1000",
+
+		// Busy timeout for lock contention (5 seconds)
+		"PRAGMA busy_timeout = 5000",
+
+		// Analysis limit for query planner
+		"PRAGMA analysis_limit = 1000",
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to execute pragma '%s': %w", pragma, err)
+		}
+	}
+
+	return nil
 }
 
 // OpenReadOnly opens the database in READ_ONLY mode
@@ -63,10 +119,19 @@ func OpenReadOnly(path string) (*Store, error) {
 		return nil, fmt.Errorf("failed to register query logging driver: %w", err)
 	}
 
-	db, err := sql.Open(driverName, path+"?mode=ro")
+	// Read-only mode with optimizations
+	dsn := fmt.Sprintf("%s?mode=ro&_cache_size=-32000&_temp_store=memory&_mmap_size=268435456", path)
+
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
+
+	// Read-only connections can have more connections since they don't write
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(20)
+	db.SetConnMaxLifetime(10 * time.Minute)
+
 	err = db.Ping()
 	if err != nil {
 		return nil, err
@@ -297,7 +362,30 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	if len(states) == 0 {
 		return nil
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
+
+	// Process in smaller chunks to reduce lock time
+	chunkSize := 500 // Reduced from potentially thousands to 500
+
+	for i := 0; i < len(states); i += chunkSize {
+		end := i + chunkSize
+		if end > len(states) {
+			end = len(states)
+		}
+
+		chunk := states[i:end]
+		err := s.upsertCampsiteAvailabilityChunk(ctx, chunk)
+		if err != nil {
+			return fmt.Errorf("failed to process chunk %d-%d: %w", i, end, err)
+		}
+	}
+
+	return nil
+}
+
+// upsertCampsiteAvailabilityChunk processes a single chunk of availability data
+func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []CampsiteAvailability) error {
+	// Use ReadCommitted isolation to reduce lock contention
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -324,21 +412,10 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	}
 	defer stateChangeStmt.Close()
 
-	// Get previous states for comparison
-	prevStates := make(map[string]bool) // key: provider_campground_campsite_date, value: was_available
-	for _, st := range states {
-		key := fmt.Sprintf("%s_%s_%s_%s", st.Provider, st.CampgroundID, st.CampsiteID, st.Date.Format("2006-01-02"))
-
-		var prevAvailable bool
-		err := tx.QueryRowContext(ctx, `
-			SELECT available FROM campsite_availability 
-			WHERE provider=? AND campground_id=? AND campsite_id=? AND date=?
-		`, st.Provider, st.CampgroundID, st.CampsiteID, st.Date).Scan(&prevAvailable)
-
-		if err == nil {
-			prevStates[key] = prevAvailable
-		}
-		// If err != nil, this is a new entry (no previous state)
+	// Batch fetch previous states to reduce individual queries
+	prevStates, err := s.batchGetPreviousStates(tx, states)
+	if err != nil {
+		return err
 	}
 
 	now := time.Now()
@@ -354,9 +431,6 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 		key := fmt.Sprintf("%s_%s_%s_%s", st.Provider, st.CampgroundID, st.CampsiteID, st.Date.Format("2006-01-02"))
 		prevAvailable, hadPrevious := prevStates[key]
 
-		// Record state change if:
-		// 1. No previous state and now available (ignore new unavailable entries)
-		// 2. Previous state different from current state
 		shouldRecord := false
 		if !hadPrevious && st.Available {
 			shouldRecord = true // New available site
@@ -373,6 +447,72 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	}
 
 	return tx.Commit()
+}
+
+// batchGetPreviousStates fetches previous states more efficiently
+func (s *Store) batchGetPreviousStates(tx *sql.Tx, states []CampsiteAvailability) (map[string]bool, error) {
+	if len(states) == 0 {
+		return make(map[string]bool), nil
+	}
+
+	// Group by provider and campground for more efficient queries
+	byProviderCampground := make(map[string][]CampsiteAvailability)
+	for _, st := range states {
+		key := st.Provider + "_" + st.CampgroundID
+		byProviderCampground[key] = append(byProviderCampground[key], st)
+	}
+
+	prevStates := make(map[string]bool)
+
+	for _, groupStates := range byProviderCampground {
+		if len(groupStates) == 0 {
+			continue
+		}
+
+		provider := groupStates[0].Provider
+		campgroundID := groupStates[0].CampgroundID
+
+		// Create IN clause for campsites and dates
+		placeholders := make([]string, 0, len(groupStates)*2)
+		args := []interface{}{provider, campgroundID}
+
+		for _, st := range groupStates {
+			placeholders = append(placeholders, "(campsite_id = ? AND date = ?)")
+			args = append(args, st.CampsiteID, st.Date)
+		}
+
+		if len(placeholders) == 0 {
+			continue
+		}
+
+		query := fmt.Sprintf(`
+			SELECT campsite_id, date, available 
+			FROM campsite_availability 
+			WHERE provider = ? AND campground_id = ? AND (%s)
+		`, strings.Join(placeholders, " OR "))
+
+		rows, err := tx.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+
+		for rows.Next() {
+			var campsiteID string
+			var date time.Time
+			var available bool
+
+			if err := rows.Scan(&campsiteID, &date, &available); err != nil {
+				rows.Close()
+				return nil, err
+			}
+
+			key := fmt.Sprintf("%s_%s_%s_%s", provider, campgroundID, campsiteID, date.Format("2006-01-02"))
+			prevStates[key] = available
+		}
+		rows.Close()
+	}
+
+	return prevStates, nil
 }
 
 // GetAvailabilityChangesForNotifications finds what has changed since the last notification batch for a schniff request
@@ -851,22 +991,46 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 		return nil
 	}
 
-	tx, err := s.DB.BeginTx(ctx, nil)
+	// Process in smaller chunks to reduce lock time
+	chunkSize := 200 // Smaller chunks for metadata operations
+
+	// Clear existing equipment entries for this campground first
+	if len(metadata) > 0 {
+		_, err := s.DB.ExecContext(ctx, `
+			DELETE FROM campsite_equipment
+			WHERE provider = ? AND campground_id = ?
+		`, provider, campgroundID)
+		if err != nil {
+			return fmt.Errorf("failed to clear existing equipment: %w", err)
+		}
+	}
+
+	for i := 0; i < len(metadata); i += chunkSize {
+		end := i + chunkSize
+		if end > len(metadata) {
+			end = len(metadata)
+		}
+
+		chunk := metadata[i:end]
+		err := s.upsertCampsiteMetadataChunk(ctx, provider, campgroundID, chunk)
+		if err != nil {
+			return fmt.Errorf("failed to process metadata chunk %d-%d: %w", i, end, err)
+		}
+	}
+
+	return nil
+}
+
+// upsertCampsiteMetadataChunk processes a single chunk of metadata
+func (s *Store) upsertCampsiteMetadataChunk(ctx context.Context, provider string, campgroundID string, metadata []providers.CampsiteInfo) error {
+	// Use ReadCommitted isolation to reduce lock contention
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
 	now := time.Now()
-
-	// Clear existing equipment entries for this campground to avoid duplicates
-	_, err = tx.ExecContext(ctx, `
-		DELETE FROM campsite_equipment
-		WHERE provider = ? AND campground_id = ?
-	`, provider, campgroundID)
-	if err != nil {
-		return err
-	}
 
 	// Prepare statements for efficiency
 	metadataStmt, err := tx.PrepareContext(ctx, `
@@ -879,7 +1043,7 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 	defer metadataStmt.Close()
 
 	equipmentStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
+		INSERT OR IGNORE INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
 		VALUES (?, ?, ?, ?, ?)
 	`)
 	if err != nil {
