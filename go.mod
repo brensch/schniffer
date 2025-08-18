@@ -6,7 +6,7 @@ toolchain go1.24.6
 
 require (
 	github.com/bwmarrin/discordgo v0.27.1
-	github.com/mattn/go-sqlite3 v1.14.24
+	github.com/mattn/go-sqlite3 v1.14.32
 )
 
 require (

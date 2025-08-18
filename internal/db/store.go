@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/brensch/schniffer/internal/providers"
-	"github.com/mattn/go-sqlite3"
+	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stephennancekivell/querypulse"
 )
@@ -429,7 +429,7 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 
 	// With single write connection and WAL mode, we can handle larger chunks
 	// But still chunk for memory management and progress visibility
-	chunkSize := 2000 // Increased from 500 - WAL mode handles larger transactions well
+	chunkSize := 4000 // Increased from 500 - WAL mode handles larger transactions well
 
 	for i := 0; i < len(states); i += chunkSize {
 		end := i + chunkSize
@@ -447,167 +447,106 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	return nil
 }
 
-// Portable, UPSERT-free batch write with change recording.
-// Works on SQLite builds that lack ON CONFLICT DO UPDATE / RETURNING.
+// upsertCampsiteAvailabilityChunk writes a batch efficiently using a temporary table.
 func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []CampsiteAvailability) error {
 	if len(states) == 0 {
 		return nil
 	}
 
-	const paramsPerRow = 6 // provider,campground_id,campsite_id,date,available,last_checked
-	const maxParams = 999
-	maxRowsPerBatch := maxParams / paramsPerRow
-	if maxRowsPerBatch < 1 {
-		maxRowsPerBatch = 1
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// THIS IS THE FIX: Generate a unique name using a UUID.
+	// We remove hyphens for a cleaner table name.
+	id := uuid.NewString()
+	cleanID := strings.ReplaceAll(id, "-", "")
+	tableName := fmt.Sprintf("temp_new_states_%s", cleanID)
+
+	// 1. Create the uniquely named temporary table.
+	createSQL := fmt.Sprintf(`
+        CREATE TEMP TABLE %s (
+            provider TEXT,
+            campground_id TEXT,
+            campsite_id TEXT,
+            date TEXT,
+            available INTEGER,
+            last_checked TEXT
+        );
+    `, tableName)
+
+	_, err = tx.ExecContext(ctx, createSQL)
+	if err != nil {
+		return fmt.Errorf("create temp table: %w", err)
 	}
 
-	now := time.Now().UTC()
+	// Drop the table when the function exits to ensure cleanup.
+	// Using s.DB.Exec runs it on the connection outside the transaction,
+	// which is safer after the transaction is committed/rolled back.
+	defer func() {
+		_, _ = s.DB.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s;`, tableName))
+	}()
 
-	for off := 0; off < len(states); off += maxRowsPerBatch {
-		end := off + maxRowsPerBatch
-		if end > len(states) {
-			end = len(states)
-		}
-		chunk := states[off:end]
+	// Prepare the insert statement with the unique table name.
+	insertSQL := fmt.Sprintf(`
+        INSERT INTO %s 
+        (provider, campground_id, campsite_id, date, available, last_checked) 
+        VALUES (?, ?, ?, ?, ?, ?);
+    `, tableName)
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert into temp table: %w", err)
+	}
+	defer stmt.Close()
 
-		// Build VALUES (?,...,?)... for this chunk
-		values := make([]string, 0, len(chunk))
-		args := make([]any, 0, len(chunk)*paramsPerRow)
-		for _, st := range chunk {
-			values = append(values, "(?, ?, ?, ?, ?, ?)")
-			args = append(args,
-				st.Provider,
-				st.CampgroundID,
-				st.CampsiteID,
-				st.Date,        // keep type consistent with schema (TEXT/INTEGER/TIMESTAMP)
-				st.Available,   // bool -> 0/1 handled by mattn driver
-				st.LastChecked, // same type as column
-			)
-		}
-
-		// 1) Create/clear TEMP staging table
-		tx, err := s.DB.BeginTx(ctx, nil)
+	// 2. Insert all states into the temporary table.
+	for _, st := range states {
+		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked)
 		if err != nil {
-			return fmt.Errorf("begin tx (chunk %d-%d rows=%d): %w", off, end, len(chunk), err)
+			return fmt.Errorf("insert into temp table: %w", err)
 		}
-		defer func() { _ = tx.Rollback() }()
+	}
 
-		if _, err := tx.ExecContext(ctx, `
-			CREATE TEMP TABLE IF NOT EXISTS temp_new_states (
-				provider      TEXT NOT NULL,
-				campground_id TEXT NOT NULL,
-				campsite_id   TEXT NOT NULL,
-				date          /* match your type */ NOT NULL,
-				available     INTEGER NOT NULL,
-				last_checked  /* match your type */ NOT NULL
-			);
-			DELETE FROM temp_new_states;
-		`); err != nil {
-			return enrichSQLErr(tx, err, "prepare temp table", off, end, len(chunk), 0, "CREATE TEMP/DELETE", nil)
-		}
+	// 3. Record state changes.
+	sqlChanges := fmt.Sprintf(`
+        INSERT INTO state_changes (provider, campground_id, campsite_id, date, new_available, changed_at)
+        SELECT
+            ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, CURRENT_TIMESTAMP
+        FROM %s AS ns
+        LEFT JOIN campsite_availability AS ca
+            ON  ca.provider = ns.provider
+            AND ca.campground_id = ns.campground_id
+            AND ca.campsite_id = ns.campsite_id
+            AND ca.date = ns.date
+        WHERE
+            (ca.provider IS NULL AND ns.available = 1) OR (ca.provider IS NOT NULL AND ca.available != ns.available);
+    `, tableName)
+	if _, err := tx.ExecContext(ctx, sqlChanges); err != nil {
+		return fmt.Errorf("insert state_changes from temp table: %w", err)
+	}
 
-		// 2) Bulk insert the staged rows
-		insTemp := `INSERT INTO temp_new_states (provider, campground_id, campsite_id, date, available, last_checked) VALUES ` + strings.Join(values, ",")
-		if _, err := tx.ExecContext(ctx, insTemp, args...); err != nil {
-			return enrichSQLErr(tx, err, "insert temp rows", off, end, len(chunk), len(args), insTemp, args)
-		}
+	// 4. Upsert into the main availability table.
+	sqlUpsert := fmt.Sprintf(`
+        INSERT INTO campsite_availability (provider, campground_id, campsite_id, date, available, last_checked)
+        SELECT provider, campground_id, campsite_id, date, available, last_checked
+        FROM %s
+        WHERE true
+        ON CONFLICT (provider, campground_id, campsite_id, date)
+        DO UPDATE SET
+            available = excluded.available,
+            last_checked = excluded.last_checked;
+    `, tableName)
+	if _, err := tx.ExecContext(ctx, sqlUpsert); err != nil {
+		return fmt.Errorf("upsert availability from temp table: %w", err)
+	}
 
-		// 3) Record state changes (new available OR availability changed)
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO state_changes (provider, campground_id, campsite_id, date, new_available, changed_at)
-			SELECT ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, ?
-			FROM temp_new_states ns
-			LEFT JOIN campsite_availability ca
-			  ON ca.provider      = ns.provider
-			 AND ca.campground_id = ns.campground_id
-			 AND ca.campsite_id   = ns.campsite_id
-			 AND ca.date          = ns.date
-			WHERE (ca.provider IS NULL AND ns.available = 1)
-			   OR (ca.provider IS NOT NULL AND ca.available != ns.available);
-		`, now); err != nil {
-			return enrichSQLErr(tx, err, "insert state_changes", off, end, len(chunk), len(args)+1, "INSERT INTO state_changes ... SELECT ...", append(append([]any{}, args...), now))
-		}
-
-		// 4) UPDATE existing rows that need changing (availability changed or newer last_checked)
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE campsite_availability AS ca
-			SET
-				available    = (SELECT ns.available    FROM temp_new_states ns
-				               WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
-				                 AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date),
-				last_checked = (SELECT ns.last_checked FROM temp_new_states ns
-				               WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
-				                 AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date)
-			WHERE EXISTS (
-				SELECT 1 FROM temp_new_states ns
-				WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
-				  AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date
-				  AND (ca.available != ns.available OR ca.last_checked < ns.last_checked)
-			);
-		`); err != nil {
-			return enrichSQLErr(tx, err, "update existing rows", off, end, len(chunk), 0, "UPDATE ... WHERE EXISTS", nil)
-		}
-
-		// 5) INSERT rows that don't exist yet
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO campsite_availability (provider, campground_id, campsite_id, date, available, last_checked)
-			SELECT ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, ns.last_checked
-			FROM temp_new_states ns
-			WHERE NOT EXISTS (
-				SELECT 1 FROM campsite_availability ca
-				WHERE ca.provider=ns.provider AND ca.campground_id=ns.campground_id
-				  AND ca.campsite_id=ns.campsite_id AND ca.date=ns.date
-			);
-		`); err != nil {
-			return enrichSQLErr(tx, err, "insert new rows", off, end, len(chunk), 0, "INSERT ... SELECT ... WHERE NOT EXISTS", nil)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit (chunk %d-%d rows=%d): %w", off, end, len(chunk), err)
-		}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
 	}
 
 	return nil
-}
-
-// Same helper you already have in your code above:
-func enrichSQLErr(tx *sql.Tx, err error, op string, off, end, rows, params int, sqlText string, bindArgs []any) error {
-	detail := fmt.Sprintf("%s (chunk %d-%d, rows=%d, params=%d)", op, off, end, rows, params)
-	var se sqlite3.Error
-	if errors.As(err, &se) {
-		detail += fmt.Sprintf(" [sqlite code=%d extended=%d]", int(se.Code), int(se.ExtendedCode))
-	}
-	var ver string
-	_ = tx.QueryRowContext(context.Background(), "select sqlite_version()").Scan(&ver)
-	if ver != "" {
-		detail += " [sqlite_version=" + ver + "]"
-	}
-	const maxArgSample = 24
-	sample := bindArgs
-	if len(sample) > maxArgSample {
-		sample = sample[:maxArgSample]
-	}
-	return fmt.Errorf("%s: %w\nSQL: %s\nArgSample(%d/%d): %#v",
-		detail, err, sqlText, len(sample), len(bindArgs), sample)
-}
-
-// compactSpaces collapses whitespace for tidy one-line SQL in logs.
-func compactSpaces(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	space := false
-	for _, r := range s {
-		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
-			if !space {
-				b.WriteByte(' ')
-				space = true
-			}
-			continue
-		}
-		space = false
-		b.WriteRune(r)
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // GetAvailabilityChangesForNotifications finds what has changed since the last notification batch for a schniff request

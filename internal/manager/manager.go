@@ -58,14 +58,10 @@ func (m *Manager) executeDBOperation(operation func() error) error {
 		result:    result,
 	}
 
-	select {
-	case m.dbWriteChan <- req:
-		return <-result
-	default:
-		// Channel is full, execute directly (fallback)
-		m.logger.Warn("database write channel full, executing operation directly")
-		return operation()
-	}
+	// This will block and wait if the channel is full,
+	// guaranteeing sequential execution.
+	m.dbWriteChan <- req
+	return <-result
 }
 
 // Helper types for streaming sync
@@ -291,9 +287,9 @@ type PollResult struct {
 	States int // number of campsite states observed this run (before persist)
 }
 
-func (m *Manager) PollOnce(ctx context.Context) {
-	_ = m.PollOnceResult(ctx)
-}
+// func (m *Manager) PollOnce(ctx context.Context) {
+// 	_ = m.PollOnceResult(ctx)
+// }
 
 // normalizeDay returns t truncated to 00:00:00 UTC.
 func normalizeDay(t time.Time) time.Time {
@@ -355,110 +351,110 @@ func collectDatesByPC(reqs []db.SchniffRequest) (map[pc]map[time.Time]struct{}, 
 	return datesBy, reqsBy
 }
 
-// pollOnceResult performs one poll cycle and returns a summary for tests.
-func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
-	// First, deactivate any expired requests
-	expiredCount, err := m.store.DeactivateExpiredRequests(ctx)
-	if err != nil {
-		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
-	} else if expiredCount > 0 {
-		m.logger.Info("deactivated expired requests", slog.Int64("count", expiredCount))
-	}
+// // pollOnceResult performs one poll cycle and returns a summary for tests.
+// func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
+// 	// First, deactivate any expired requests
+// 	expiredCount, err := m.store.DeactivateExpiredRequests(ctx)
+// 	if err != nil {
+// 		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
+// 	} else if expiredCount > 0 {
+// 		m.logger.Info("deactivated expired requests", slog.Int64("count", expiredCount))
+// 	}
 
-	requests, err := m.store.ListActiveRequests(ctx)
-	if err != nil {
-		m.logger.Error("list requests failed", slog.Any("err", err))
-		return PollResult{}
-	}
-	// dedupe by provider+campground, then provider decides how to bucket dates
-	datesByPC, _ := collectDatesByPC(requests)
-	var result PollResult
-	for k, datesSet := range datesByPC {
-		prov, ok := m.reg.Get(k.prov)
-		if !ok {
-			continue
-		}
-		// to sorted slice
-		dates := datesFromSet(datesSet)
-		// provider decides minimal set of requests
-		buckets := prov.PlanBuckets(dates)
-		// collect all states for this provider+campground across buckets to enable bundled notifications
-		collectedStates := make([]providers.CampsiteAvailability, 0, 128)
-		for _, b := range buckets {
-			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
-			call := struct {
-				Provider     string
-				CampgroundID string
-				Start        time.Time
-				End          time.Time
-				Success      bool
-				Error        string
-			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
-			if err != nil {
-				call.Error = err.Error()
-				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, ErrorMsg: err.Error(), CampsiteCount: 0}); err2 != nil {
-					m.logger.Warn("record lookup failed", slog.Any("err", err2))
-				}
-				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
-				result.Calls = append(result.Calls, call)
-				continue
-			}
-			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true, CampsiteCount: len(states)}); err2 != nil {
-				m.logger.Warn("record lookup failed", slog.Any("err", err2))
-			}
-			result.Calls = append(result.Calls, call)
-			result.States += len(states)
-			if len(states) == 0 {
-				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
-			}
-			// collect for later bundled change detection and notification
-			collectedStates = append(collectedStates, states...)
-		}
+// 	requests, err := m.store.ListActiveRequests(ctx)
+// 	if err != nil {
+// 		m.logger.Error("list requests failed", slog.Any("err", err))
+// 		return PollResult{}
+// 	}
+// 	// dedupe by provider+campground, then provider decides how to bucket dates
+// 	datesByPC, _ := collectDatesByPC(requests)
+// 	var result PollResult
+// 	for k, datesSet := range datesByPC {
+// 		prov, ok := m.reg.Get(k.prov)
+// 		if !ok {
+// 			continue
+// 		}
+// 		// to sorted slice
+// 		dates := datesFromSet(datesSet)
+// 		// provider decides minimal set of requests
+// 		buckets := prov.PlanBuckets(dates)
+// 		// collect all states for this provider+campground across buckets to enable bundled notifications
+// 		collectedStates := make([]providers.CampsiteAvailability, 0, 128)
+// 		for _, b := range buckets {
+// 			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
+// 			call := struct {
+// 				Provider     string
+// 				CampgroundID string
+// 				Start        time.Time
+// 				End          time.Time
+// 				Success      bool
+// 				Error        string
+// 			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
+// 			if err != nil {
+// 				call.Error = err.Error()
+// 				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, ErrorMsg: err.Error(), CampsiteCount: 0}); err2 != nil {
+// 					m.logger.Warn("record lookup failed", slog.Any("err", err2))
+// 				}
+// 				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
+// 				result.Calls = append(result.Calls, call)
+// 				continue
+// 			}
+// 			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true, CampsiteCount: len(states)}); err2 != nil {
+// 				m.logger.Warn("record lookup failed", slog.Any("err", err2))
+// 			}
+// 			result.Calls = append(result.Calls, call)
+// 			result.States += len(states)
+// 			if len(states) == 0 {
+// 				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
+// 			}
+// 			// collect for later bundled change detection and notification
+// 			collectedStates = append(collectedStates, states...)
+// 		}
 
-		// Process all collected states for this provider+campground at once
-		if len(collectedStates) > 0 {
-			// Convert to db format
-			batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
-			now := time.Now()
-			for _, s := range collectedStates {
-				batch = append(batch, db.CampsiteAvailability{
-					Provider:     k.prov,
-					CampgroundID: k.cg,
-					CampsiteID:   s.ID,
-					Date:         s.Date,
-					Available:    s.Available,
-					LastChecked:  now,
-				})
-			}
+// 		// Process all collected states for this provider+campground at once
+// 		if len(collectedStates) > 0 {
+// 			// Convert to db format
+// 			batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
+// 			now := time.Now()
+// 			for _, s := range collectedStates {
+// 				batch = append(batch, db.CampsiteAvailability{
+// 					Provider:     k.prov,
+// 					CampgroundID: k.cg,
+// 					CampsiteID:   s.ID,
+// 					Date:         s.Date,
+// 					Available:    s.Available,
+// 					LastChecked:  now,
+// 				})
+// 			}
 
-			// Upsert states
-			start := time.Now()
-			err := m.executeDBOperation(func() error {
-				return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
-			})
-			if err != nil {
-				m.logger.Error("upsert states failed", slog.Any("err", err))
-			} else {
-				m.logger.Info("persisted campsite states",
-					slog.String("provider", k.prov),
-					slog.String("campground", k.cg),
-					slog.Int("count", len(batch)),
-					slog.Duration("duration_ms", time.Since(start)),
-				)
-			}
-		}
-	}
+// 			// Upsert states
+// 			start := time.Now()
+// 			err := m.executeDBOperation(func() error {
+// 				return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+// 			})
+// 			if err != nil {
+// 				m.logger.Error("upsert states failed", slog.Any("err", err))
+// 			} else {
+// 				m.logger.Info("persisted campsite states",
+// 					slog.String("provider", k.prov),
+// 					slog.String("campground", k.cg),
+// 					slog.Int("count", len(batch)),
+// 					slog.Duration("duration_ms", time.Since(start)),
+// 				)
+// 			}
+// 		}
+// 	}
 
-	// After processing all states, check for notifications
-	if len(requests) > 0 {
-		err := m.ProcessNotificationsWithBatches(ctx, requests)
-		if err != nil {
-			m.logger.Warn("process notifications failed", slog.Any("err", err))
-		}
-	}
+// 	// After processing all states, check for notifications
+// 	if len(requests) > 0 {
+// 		err := m.ProcessNotificationsWithBatches(ctx, requests)
+// 		if err != nil {
+// 			m.logger.Warn("process notifications failed", slog.Any("err", err))
+// 		}
+// 	}
 
-	return result
-}
+// 	return result
+// }
 
 // Notifier must be provided by bot; here we define an interface to call back.
 
