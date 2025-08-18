@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/brensch/schniffer/internal/providers"
+	"github.com/mattn/go-sqlite3"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stephennancekivell/querypulse"
 )
@@ -21,7 +22,8 @@ import (
 var schemaFS embed.FS
 
 type Store struct {
-	DB *sql.DB
+	DB     *sql.DB // Read-write connection (single connection)
+	ReadDB *sql.DB // Read-only connection pool (multiple connections)
 }
 
 func Open(path string) (*Store, error) {
@@ -35,34 +37,97 @@ func Open(path string) (*Store, error) {
 	})
 
 	// Enhanced connection string with concurrency optimizations
-	dsn := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=-64000&_temp_store=memory&_mmap_size=268435456&_busy_timeout=5000", path)
+	baseDSN := fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_cache_size=-64000&_temp_store=memory&_mmap_size=268435456&_busy_timeout=5000", path)
 
-	db, err := sql.Open(driverName, dsn)
+	// Read-write connection (single connection for writes)
+	writeDB, err := sql.Open(driverName, baseDSN)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set connection pool settings for better concurrency
-	db.SetMaxOpenConns(25) // Allow more concurrent connections
-	db.SetMaxIdleConns(10) // Keep connections alive
-	db.SetConnMaxLifetime(5 * time.Minute)
+	// Configure write connection for single connection
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+	writeDB.SetConnMaxLifetime(0) // No limit for write connection
 
-	err = db.Ping()
+	// Read-only connection (multiple connections for reads)
+	readDSN := baseDSN + "&_query_only=true"
+	readDB, err := sql.Open(driverName, readDSN)
 	if err != nil {
+		writeDB.Close()
+		return nil, err
+	}
+
+	// Configure read connection pool for high concurrency
+	readDB.SetMaxOpenConns(25) // Allow many concurrent reads
+	readDB.SetMaxIdleConns(10) // Keep connections alive
+	readDB.SetConnMaxLifetime(5 * time.Minute)
+
+	err = writeDB.Ping()
+	if err != nil {
+		writeDB.Close()
+		readDB.Close()
+		return nil, err
+	}
+
+	err = readDB.Ping()
+	if err != nil {
+		writeDB.Close()
+		readDB.Close()
 		return nil, err
 	}
 
 	// Apply additional pragmas for concurrency optimization
-	err = applyOptimizedPragmas(db)
+	err = applyOptimizedPragmas(writeDB)
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply optimized pragmas: %w", err)
+		writeDB.Close()
+		readDB.Close()
+		return nil, fmt.Errorf("failed to apply optimized pragmas to write DB: %w", err)
 	}
 
-	err = migrate(db)
+	err = applyOptimizedPragmas(readDB)
 	if err != nil {
+		writeDB.Close()
+		readDB.Close()
+		return nil, fmt.Errorf("failed to apply optimized pragmas to read DB: %w", err)
+	}
+
+	err = migrate(writeDB)
+	if err != nil {
+		writeDB.Close()
+		readDB.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+
+	return &Store{DB: writeDB, ReadDB: readDB}, nil
+}
+
+// ReadConnection returns the appropriate database connection for read operations
+func (s *Store) ReadConnection() *sql.DB {
+	if s.ReadDB != nil {
+		return s.ReadDB
+	}
+	return s.DB
+}
+
+// WriteConnection returns the appropriate database connection for write operations
+func (s *Store) WriteConnection() *sql.DB {
+	return s.DB
+}
+
+// Close closes both database connections
+func (s *Store) Close() error {
+	var err1, err2 error
+	if s.DB != nil {
+		err1 = s.DB.Close()
+	}
+	if s.ReadDB != nil {
+		err2 = s.ReadDB.Close()
+	}
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }
 
 // applyOptimizedPragmas applies SQLite pragmas optimized for concurrent read/write workloads
@@ -136,10 +201,8 @@ func OpenReadOnly(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return &Store{ReadDB: db}, nil
 }
-
-func (s *Store) Close() error { return s.DB.Close() }
 
 func migrate(db *sql.DB) error {
 	schemaBytes, err := schemaFS.ReadFile("schema.sql")
@@ -364,8 +427,9 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 		return nil
 	}
 
-	// Process in smaller chunks to reduce lock time
-	chunkSize := 500 // Reduced from potentially thousands to 500
+	// With single write connection and WAL mode, we can handle larger chunks
+	// But still chunk for memory management and progress visibility
+	chunkSize := 2000 // Increased from 500 - WAL mode handles larger transactions well
 
 	for i := 0; i < len(states); i += chunkSize {
 		end := i + chunkSize
@@ -383,137 +447,167 @@ func (s *Store) UpsertCampsiteAvailabilityBatch(ctx context.Context, states []Ca
 	return nil
 }
 
-// upsertCampsiteAvailabilityChunk processes a single chunk of availability data
+// Portable, UPSERT-free batch write with change recording.
+// Works on SQLite builds that lack ON CONFLICT DO UPDATE / RETURNING.
 func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []CampsiteAvailability) error {
-	// Use ReadCommitted isolation to reduce lock contention
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	// Prepare statements
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO campsite_availability(provider, campground_id, campsite_id, date, available, last_checked)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	stateChangeStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO state_changes(provider, campground_id, campsite_id, date, new_available, changed_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer stateChangeStmt.Close()
-
-	// Batch fetch previous states to reduce individual queries
-	prevStates, err := s.batchGetPreviousStates(tx, states)
-	if err != nil {
-		return err
+	if len(states) == 0 {
+		return nil
 	}
 
-	now := time.Now()
+	const paramsPerRow = 6 // provider,campground_id,campsite_id,date,available,last_checked
+	const maxParams = 999
+	maxRowsPerBatch := maxParams / paramsPerRow
+	if maxRowsPerBatch < 1 {
+		maxRowsPerBatch = 1
+	}
 
-	for _, st := range states {
-		// Update availability
-		_, err := stmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, st.LastChecked)
+	now := time.Now().UTC()
+
+	for off := 0; off < len(states); off += maxRowsPerBatch {
+		end := off + maxRowsPerBatch
+		if end > len(states) {
+			end = len(states)
+		}
+		chunk := states[off:end]
+
+		// Build VALUES (?,...,?)... for this chunk
+		values := make([]string, 0, len(chunk))
+		args := make([]any, 0, len(chunk)*paramsPerRow)
+		for _, st := range chunk {
+			values = append(values, "(?, ?, ?, ?, ?, ?)")
+			args = append(args,
+				st.Provider,
+				st.CampgroundID,
+				st.CampsiteID,
+				st.Date,        // keep type consistent with schema (TEXT/INTEGER/TIMESTAMP)
+				st.Available,   // bool -> 0/1 handled by mattn driver
+				st.LastChecked, // same type as column
+			)
+		}
+
+		// 1) Create/clear TEMP staging table
+		tx, err := s.DB.BeginTx(ctx, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin tx (chunk %d-%d rows=%d): %w", off, end, len(chunk), err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		if _, err := tx.ExecContext(ctx, `
+			CREATE TEMP TABLE IF NOT EXISTS temp_new_states (
+				provider      TEXT NOT NULL,
+				campground_id TEXT NOT NULL,
+				campsite_id   TEXT NOT NULL,
+				date          /* match your type */ NOT NULL,
+				available     INTEGER NOT NULL,
+				last_checked  /* match your type */ NOT NULL
+			);
+			DELETE FROM temp_new_states;
+		`); err != nil {
+			return enrichSQLErr(tx, err, "prepare temp table", off, end, len(chunk), 0, "CREATE TEMP/DELETE", nil)
 		}
 
-		// Check for state change
-		key := fmt.Sprintf("%s_%s_%s_%s", st.Provider, st.CampgroundID, st.CampsiteID, st.Date.Format("2006-01-02"))
-		prevAvailable, hadPrevious := prevStates[key]
-
-		shouldRecord := false
-		if !hadPrevious && st.Available {
-			shouldRecord = true // New available site
-		} else if hadPrevious && prevAvailable != st.Available {
-			shouldRecord = true // State changed
+		// 2) Bulk insert the staged rows
+		insTemp := `INSERT INTO temp_new_states (provider, campground_id, campsite_id, date, available, last_checked) VALUES ` + strings.Join(values, ",")
+		if _, err := tx.ExecContext(ctx, insTemp, args...); err != nil {
+			return enrichSQLErr(tx, err, "insert temp rows", off, end, len(chunk), len(args), insTemp, args)
 		}
 
-		if shouldRecord {
-			_, err := stateChangeStmt.ExecContext(ctx, st.Provider, st.CampgroundID, st.CampsiteID, st.Date, st.Available, now)
-			if err != nil {
-				return err
-			}
+		// 3) Record state changes (new available OR availability changed)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO state_changes (provider, campground_id, campsite_id, date, new_available, changed_at)
+			SELECT ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, ?
+			FROM temp_new_states ns
+			LEFT JOIN campsite_availability ca
+			  ON ca.provider      = ns.provider
+			 AND ca.campground_id = ns.campground_id
+			 AND ca.campsite_id   = ns.campsite_id
+			 AND ca.date          = ns.date
+			WHERE (ca.provider IS NULL AND ns.available = 1)
+			   OR (ca.provider IS NOT NULL AND ca.available != ns.available);
+		`, now); err != nil {
+			return enrichSQLErr(tx, err, "insert state_changes", off, end, len(chunk), len(args)+1, "INSERT INTO state_changes ... SELECT ...", append(append([]any{}, args...), now))
+		}
+
+		// 4) UPDATE existing rows that need changing (availability changed or newer last_checked)
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE campsite_availability AS ca
+			SET
+				available    = (SELECT ns.available    FROM temp_new_states ns
+				               WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
+				                 AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date),
+				last_checked = (SELECT ns.last_checked FROM temp_new_states ns
+				               WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
+				                 AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date)
+			WHERE EXISTS (
+				SELECT 1 FROM temp_new_states ns
+				WHERE ns.provider=ca.provider AND ns.campground_id=ca.campground_id
+				  AND ns.campsite_id=ca.campsite_id AND ns.date=ca.date
+				  AND (ca.available != ns.available OR ca.last_checked < ns.last_checked)
+			);
+		`); err != nil {
+			return enrichSQLErr(tx, err, "update existing rows", off, end, len(chunk), 0, "UPDATE ... WHERE EXISTS", nil)
+		}
+
+		// 5) INSERT rows that don't exist yet
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO campsite_availability (provider, campground_id, campsite_id, date, available, last_checked)
+			SELECT ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, ns.last_checked
+			FROM temp_new_states ns
+			WHERE NOT EXISTS (
+				SELECT 1 FROM campsite_availability ca
+				WHERE ca.provider=ns.provider AND ca.campground_id=ns.campground_id
+				  AND ca.campsite_id=ns.campsite_id AND ca.date=ns.date
+			);
+		`); err != nil {
+			return enrichSQLErr(tx, err, "insert new rows", off, end, len(chunk), 0, "INSERT ... SELECT ... WHERE NOT EXISTS", nil)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit (chunk %d-%d rows=%d): %w", off, end, len(chunk), err)
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
-// batchGetPreviousStates fetches previous states more efficiently
-func (s *Store) batchGetPreviousStates(tx *sql.Tx, states []CampsiteAvailability) (map[string]bool, error) {
-	if len(states) == 0 {
-		return make(map[string]bool), nil
+// Same helper you already have in your code above:
+func enrichSQLErr(tx *sql.Tx, err error, op string, off, end, rows, params int, sqlText string, bindArgs []any) error {
+	detail := fmt.Sprintf("%s (chunk %d-%d, rows=%d, params=%d)", op, off, end, rows, params)
+	var se sqlite3.Error
+	if errors.As(err, &se) {
+		detail += fmt.Sprintf(" [sqlite code=%d extended=%d]", int(se.Code), int(se.ExtendedCode))
 	}
-
-	// Group by provider and campground for more efficient queries
-	byProviderCampground := make(map[string][]CampsiteAvailability)
-	for _, st := range states {
-		key := st.Provider + "_" + st.CampgroundID
-		byProviderCampground[key] = append(byProviderCampground[key], st)
+	var ver string
+	_ = tx.QueryRowContext(context.Background(), "select sqlite_version()").Scan(&ver)
+	if ver != "" {
+		detail += " [sqlite_version=" + ver + "]"
 	}
+	const maxArgSample = 24
+	sample := bindArgs
+	if len(sample) > maxArgSample {
+		sample = sample[:maxArgSample]
+	}
+	return fmt.Errorf("%s: %w\nSQL: %s\nArgSample(%d/%d): %#v",
+		detail, err, sqlText, len(sample), len(bindArgs), sample)
+}
 
-	prevStates := make(map[string]bool)
-
-	for _, groupStates := range byProviderCampground {
-		if len(groupStates) == 0 {
-			continue
-		}
-
-		provider := groupStates[0].Provider
-		campgroundID := groupStates[0].CampgroundID
-
-		// Create IN clause for campsites and dates
-		placeholders := make([]string, 0, len(groupStates)*2)
-		args := []interface{}{provider, campgroundID}
-
-		for _, st := range groupStates {
-			placeholders = append(placeholders, "(campsite_id = ? AND date = ?)")
-			args = append(args, st.CampsiteID, st.Date)
-		}
-
-		if len(placeholders) == 0 {
-			continue
-		}
-
-		query := fmt.Sprintf(`
-			SELECT campsite_id, date, available 
-			FROM campsite_availability 
-			WHERE provider = ? AND campground_id = ? AND (%s)
-		`, strings.Join(placeholders, " OR "))
-
-		rows, err := tx.Query(query, args...)
-		if err != nil {
-			return nil, err
-		}
-
-		for rows.Next() {
-			var campsiteID string
-			var date time.Time
-			var available bool
-
-			if err := rows.Scan(&campsiteID, &date, &available); err != nil {
-				rows.Close()
-				return nil, err
+// compactSpaces collapses whitespace for tidy one-line SQL in logs.
+func compactSpaces(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	space := false
+	for _, r := range s {
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
+			if !space {
+				b.WriteByte(' ')
+				space = true
 			}
-
-			key := fmt.Sprintf("%s_%s_%s_%s", provider, campgroundID, campsiteID, date.Format("2006-01-02"))
-			prevStates[key] = available
+			continue
 		}
-		rows.Close()
+		space = false
+		b.WriteRune(r)
 	}
-
-	return prevStates, nil
+	return strings.TrimSpace(b.String())
 }
 
 // GetAvailabilityChangesForNotifications finds what has changed since the last notification batch for a schniff request
@@ -1194,7 +1288,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 
 // GetAllCampgrounds returns all campgrounds without any limit
 func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := s.ReadConnection().QueryContext(ctx, `
 		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
 		FROM campgrounds
 		ORDER BY name

@@ -13,6 +13,12 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// dbWriteRequest represents a database write operation to be serialized
+type dbWriteRequest struct {
+	operation func() error
+	result    chan error
+}
+
 type Manager struct {
 	store            *db.Store
 	reg              *providers.Registry
@@ -20,10 +26,46 @@ type Manager struct {
 	notifier         Notifier
 	summaryChannelID string
 	logger           *slog.Logger
+	dbWriteChan      chan dbWriteRequest
 }
 
 func NewManager(store *db.Store, reg *providers.Registry) *Manager {
-	return &Manager{store: store, reg: reg, logger: slog.Default()}
+	m := &Manager{
+		store:       store,
+		reg:         reg,
+		logger:      slog.Default(),
+		dbWriteChan: make(chan dbWriteRequest, 100), // Buffer to prevent blocking
+	}
+	// Start database writer goroutine
+	go m.dbWriter()
+	return m
+}
+
+// dbWriter processes database write operations sequentially to avoid lock contention
+func (m *Manager) dbWriter() {
+	for req := range m.dbWriteChan {
+		err := req.operation()
+		req.result <- err
+		close(req.result)
+	}
+}
+
+// executeDBOperation queues a database operation for sequential execution
+func (m *Manager) executeDBOperation(operation func() error) error {
+	result := make(chan error, 1)
+	req := dbWriteRequest{
+		operation: operation,
+		result:    result,
+	}
+
+	select {
+	case m.dbWriteChan <- req:
+		return <-result
+	default:
+		// Channel is full, execute directly (fallback)
+		m.logger.Warn("database write channel full, executing operation directly")
+		return operation()
+	}
 }
 
 // Helper types for streaming sync
@@ -209,7 +251,9 @@ func (m *Manager) PollOnceResultForProvider(ctx context.Context, targetProvider 
 
 			// Upsert states
 			start := time.Now()
-			err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			err := m.executeDBOperation(func() error {
+				return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			})
 			if err != nil {
 				m.logger.Error("upsert states failed", slog.Any("err", err))
 			} else {
@@ -389,7 +433,9 @@ func (m *Manager) PollOnceResult(ctx context.Context) PollResult {
 
 			// Upsert states
 			start := time.Now()
-			err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			err := m.executeDBOperation(func() error {
+				return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			})
 			if err != nil {
 				m.logger.Error("upsert states failed", slog.Any("err", err))
 			} else {
