@@ -37,21 +37,17 @@ CREATE INDEX IF NOT EXISTS idx_availability_stale ON campsite_availability(last_
 CREATE INDEX IF NOT EXISTS idx_availability_available_filtered ON campsite_availability(provider, campground_id, available, date) WHERE available=1;
 CREATE INDEX IF NOT EXISTS idx_availability_date_range ON campsite_availability(provider, campground_id, date, available);
 
-CREATE TABLE IF NOT EXISTS requests (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      TEXT NOT NULL,
-    provider     TEXT NOT NULL,
-    campground_id TEXT NOT NULL,
-    start_date   DATE NOT NULL,
-    end_date     DATE NOT NULL,
-    status       TEXT NOT NULL,
-    created_at   DATETIME NOT NULL,
-    last_checked DATETIME NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id);
-CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
-CREATE INDEX IF NOT EXISTS idx_requests_stale ON requests(last_checked);
+-- CREATE TABLE IF NOT EXISTS requests (
+--     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+--     user_id      TEXT NOT NULL,
+--     provider     TEXT NOT NULL,
+--     campground_id TEXT NOT NULL,
+--     start_date   DATE NOT NULL,
+--     end_date     DATE NOT NULL,
+--     status       TEXT NOT NULL,
+--     created_at   DATETIME NOT NULL,
+--     last_checked DATETIME NOT NULL
+-- );
 
 CREATE TABLE IF NOT EXISTS campgrounds (
     provider     TEXT NOT NULL,
@@ -70,7 +66,7 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     -- adding these for more efficient queries
     campsite_types TEXT DEFAULT '[]', -- JSON array of campsite types
     equipment    TEXT DEFAULT '[]', -- JSON array of equipment types
-    
+
     PRIMARY KEY (provider, campground_id)
 );
 

@@ -746,6 +746,16 @@ func (s *Store) CountLookupsLast24h(ctx context.Context, provider, campgroundID 
 	return n, row.Scan(&n)
 }
 
+func (s *Store) CountLookupsSinceTime(ctx context.Context, provider, campgroundID string, since time.Time) (int64, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT coalesce(count(*),0)
+		FROM lookup_log
+		WHERE provider=? AND campground_id=? AND datetime(checked_at) >= datetime(?)
+	`, provider, campgroundID, since)
+	var n int64
+	return n, row.Scan(&n)
+}
+
 func (s *Store) CountNotificationsLast24hByRequest(ctx context.Context, requestID int64) (int64, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT coalesce(count(*),0)
