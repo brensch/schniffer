@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
@@ -217,7 +218,7 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			// Build amenities list from activities only
 			var amenities []string
 			for _, activity := range result.Activities {
-				amenities = append(amenities, activity.ActivityName)
+				amenities = append(amenities, strings.ToLower(activity.ActivityName))
 			}
 
 			campground := CampgroundInfo{
@@ -268,62 +269,6 @@ func clipBody(b []byte) string {
 	}
 	return string(b)
 }
-
-// // FetchCampsites fetches detailed campsite information for a campground
-// func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteAvailability, error) {
-// 	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=0", campgroundID)
-
-// 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to create campsites request: %w", err)
-// 	}
-// 	httpx.SpoofChromeHeaders(req)
-
-// 	resp, err := r.client.Do(req)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to fetch campsites: %w", err)
-// 	}
-// 	defer resp.Body.Close()
-
-// 	if resp.StatusCode != http.StatusOK {
-// 		return nil, fmt.Errorf("campsites request failed with status %d", resp.StatusCode)
-// 	}
-
-// 	body, err := io.ReadAll(resp.Body)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to read campsites response: %w", err)
-// 	}
-
-// 	var response struct {
-// 		Campsites []struct {
-// 			CampsiteID    string  `json:"campsite_id"`
-// 			Name          string  `json:"name"`
-// 			Type          string  `json:"type"`
-// 			AverageRating float64 `json:"average_rating"`
-// 		} `json:"campsites"`
-// 	}
-
-// 	if err := json.Unmarshal(body, &response); err != nil {
-// 		return nil, fmt.Errorf("failed to parse campsites response: %w", err)
-// 	}
-
-// 	var campsites []CampsiteAvailability
-// 	for _, site := range response.Campsites {
-// 		campsite := CampsiteAvailability{
-// 			ID:        site.CampsiteID,
-// 			Available: false,       // This will be set by availability queries
-// 			Date:      time.Time{}, // This will be set by availability queries
-// 		}
-
-// 		campsites = append(campsites, campsite)
-// 	}
-
-// 	slog.Debug("fetched campsites for campground",
-// 		slog.String("campgroundID", campgroundID),
-// 		slog.Int("campsite_count", len(campsites)))
-
-// 	return campsites, nil
-// }
 
 // FetchCampsiteMetadata fetches campsite metadata for storage in the database
 func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
@@ -382,16 +327,17 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 
 		var equipment []string
 		for equipType := range equipmentTypes {
-			equipment = append(equipment, equipType)
+			equipment = append(equipment, strings.ToLower(equipType))
 		}
 
 		campsiteInfo := CampsiteInfo{
 			ID:              site.CampsiteID,
 			Name:            site.Name,
-			Type:            site.Type,
+			Type:            strings.ToLower(site.Type),
 			CostPerNight:    0.0, // We don't have cost info in this endpoint
 			Rating:          site.AverageRating,
 			Equipment:       equipment,
+			Amenities:       []string{}, // No campsite-level amenities available in rec.gov API
 			PreviewImageURL: site.PreviewImageURL,
 		}
 		campsiteInfos = append(campsiteInfos, campsiteInfo)

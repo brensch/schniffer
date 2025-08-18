@@ -964,18 +964,20 @@ func (s *Store) UpdateCampgroundWithCampsiteData(ctx context.Context, provider, 
 	return err
 }
 
-// UpdateCampgroundWithCampsiteTypes updates a campground with provided campsite types and equipment arrays
-func (s *Store) UpdateCampgroundWithCampsiteTypes(ctx context.Context, provider, campgroundID string, campsiteTypes, equipment []string) error {
+// UpdateCampgroundBasedOnCampsites updates a campground with provided campsite types and equipment arrays, plus max and min cost
+func (s *Store) UpdateCampgroundBasedOnCampsites(ctx context.Context, provider, campgroundID string, campsiteTypes, equipment []string, minPrice, maxPrice float64) error {
 	// Marshal to JSON
 	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
 	equipmentJSON, _ := json.Marshal(equipment)
 
+	fmt.Printf("Updating campground %s/%s with types: %s, equipment: %s, min price: %.2f, max price: %.2f\n", provider, campgroundID, string(campsiteTypesJSON), string(equipmentJSON), minPrice, maxPrice)
+
 	// Update the campground with aggregated data
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE campgrounds 
-		SET campsite_types = ?, equipment = ?, last_updated = ?
+		SET campsite_types = ?, equipment = ?, last_updated = ?, price_min = ?, price_max = ?
 		WHERE provider = ? AND campground_id = ?
-	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), provider, campgroundID)
+	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), minPrice, maxPrice, provider, campgroundID)
 
 	return err
 }

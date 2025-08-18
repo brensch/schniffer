@@ -178,37 +178,6 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 	return out, nil
 }
 
-// extractCampsiteType extracts the campsite type from ReserveCalifornia unit names
-// e.g., "Tent Campsite #C36" -> "Tent", "RV Campsite #A12" -> "RV"
-func extractCampsiteType(unitName string) string {
-	unitLower := strings.ToLower(unitName)
-
-	if strings.Contains(unitLower, "tent") {
-		return "Tent"
-	}
-	if strings.Contains(unitLower, "rv") {
-		return "RV"
-	}
-	if strings.Contains(unitLower, "cabin") {
-		return "Cabin"
-	}
-	if strings.Contains(unitLower, "group") {
-		return "Group"
-	}
-	if strings.Contains(unitLower, "primitive") {
-		return "Primitive"
-	}
-	if strings.Contains(unitLower, "yurt") {
-		return "Yurt"
-	}
-	if strings.Contains(unitLower, "camp") {
-		return "Campsite"
-	}
-
-	// Default to "Standard" if no specific type is detected
-	return "Standard"
-}
-
 // FetchAllCampgrounds enumerates city parks, then places and facilities to build a list of campgrounds keyed by FacilityId.
 func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error) {
 	// 1) Fetch all city parks
@@ -245,13 +214,14 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	// 2) For each park/place, fetch facilities via search/place
 	type placeResp struct {
 		SelectedPlace struct {
-			PlaceId     int     `json:"PlaceId"`
-			Name        string  `json:"Name"`
-			Description string  `json:"Description"`
-			Latitude    float64 `json:"Latitude"`
-			Longitude   float64 `json:"Longitude"`
-			ImageUrl    string  `json:"ImageUrl"`
-			Facilities  map[string]struct {
+			PlaceId       int     `json:"PlaceId"`
+			Name          string  `json:"Name"`
+			Description   string  `json:"Description"`
+			Latitude      float64 `json:"Latitude"`
+			Longitude     float64 `json:"Longitude"`
+			ImageUrl      string  `json:"ImageUrl"`
+			Allhighlights string  `json:"Allhighlights"`
+			Facilities    map[string]struct {
 				FacilityId    int     `json:"FacilityId"`
 				Name          string  `json:"Name"`
 				Description   string  `json:"Description"`
@@ -318,13 +288,19 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 
 			// Extract amenities from highlights if available
 			var amenities []string
-			if f.Allhighlights != "" {
+			highlights := f.Allhighlights
+			// If facility doesn't have highlights, try using parent place highlights
+			if highlights == "" {
+				highlights = prParsed.SelectedPlace.Allhighlights
+			}
+
+			if highlights != "" {
 				// Parse highlights like "Birdwatching<br>Boating<br>Boat launch<br>..."
-				highlightParts := strings.Split(f.Allhighlights, "<br>")
+				highlightParts := strings.Split(highlights, "<br>")
 				for _, highlight := range highlightParts {
 					highlight = strings.TrimSpace(highlight)
 					if highlight != "" {
-						amenities = append(amenities, highlight)
+						amenities = append(amenities, strings.ToLower(highlight))
 					}
 				}
 			}
@@ -466,6 +442,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 				VehicleLength   int    `json:"VehicleLength"`
 			} `json:"Unit"`
 			Rate        string `json:"Rate"`
+			Fee         string `json:"Fee"`
 			UnitImage   string `json:"UnitImage"`
 			NightlyUnit struct {
 				MaxOccupancy int `json:"MaxOccupancy"`
@@ -474,6 +451,13 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			UnitType struct {
 				Name string `json:"Name"`
 			} `json:"UnitType"`
+			Amenities map[string]struct {
+				AmenityId   int    `json:"AmenityId"`
+				Name        string `json:"Name"`
+				ShortName   string `json:"ShortName"`
+				Description string `json:"Description"`
+				Value       string `json:"Value"`
+			} `json:"Amenities"`
 		}
 
 		maxRetries := 3
@@ -546,29 +530,62 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		if detailErr != nil {
 			// If we can't get details, create a basic campsite info from the grid data
 			var equipment []string
-			campsiteType := extractCampsiteType(unit.Name)
+
+			// Determine campsite type from unit name (inline, returning lowercase)
+			unitLower := strings.ToLower(unit.Name)
+			var campsiteType string
+			switch {
+			case strings.Contains(unitLower, "tent"):
+				campsiteType = "tent"
+			case strings.Contains(unitLower, "rv"):
+				campsiteType = "rv"
+			case strings.Contains(unitLower, "cabin"):
+				campsiteType = "cabin"
+			case strings.Contains(unitLower, "group"):
+				campsiteType = "group"
+			case strings.Contains(unitLower, "primitive"):
+				campsiteType = "primitive"
+			case strings.Contains(unitLower, "yurt"):
+				campsiteType = "yurt"
+			case strings.Contains(unitLower, "camp"):
+				campsiteType = "campsite"
+			default:
+				campsiteType = "standard"
+			}
 
 			// Make some educated guesses based on the name and unit type
 			if strings.Contains(strings.ToLower(unit.Name), "tent") {
-				equipment = append(equipment, "Tent")
+				equipment = append(equipment, "tent")
 			}
 			if strings.Contains(strings.ToLower(unit.Name), "rv") || unit.VehicleLength > 0 {
-				equipment = append(equipment, "RV")
+				equipment = append(equipment, "rv")
 				if unit.VehicleLength > 0 {
-					equipment = append(equipment, fmt.Sprintf("RV up to %d ft", unit.VehicleLength))
+					equipment = append(equipment, fmt.Sprintf("rv up to %d ft", unit.VehicleLength))
 				}
 			}
 			if len(equipment) == 0 {
-				equipment = append(equipment, "Standard")
+				equipment = append(equipment, "standard")
 			}
+
+			// cost per night is rate+fee i think
+			rateFloat, err := strconv.ParseFloat(detailsResp.Rate, 64)
+			if err != nil {
+				rateFloat = 0.0
+			}
+			feeFloat, err := strconv.ParseFloat(detailsResp.Fee, 64)
+			if err != nil {
+				feeFloat = 0.0
+			}
+			costPerNight := rateFloat + feeFloat
 
 			campsiteInfos = append(campsiteInfos, CampsiteInfo{
 				ID:              strconv.Itoa(unit.UnitId),
 				Name:            unit.Name,
 				Type:            campsiteType,
-				CostPerNight:    0.0, // Unknown without details
+				CostPerNight:    costPerNight,
 				Rating:          0.0,
 				Equipment:       equipment,
+				Amenities:       []string{}, // No amenities available without details
 				PreviewImageURL: "",
 			})
 			continue
@@ -577,16 +594,16 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		// Determine equipment types based on site characteristics
 		var equipment []string
 		if detailsResp.Unit.IsTentSite {
-			equipment = append(equipment, "Tent")
+			equipment = append(equipment, "tent")
 		}
 		if detailsResp.Unit.IsRVSite {
-			equipment = append(equipment, "RV")
+			equipment = append(equipment, "rv")
 			if detailsResp.Unit.VehicleLength > 0 {
-				equipment = append(equipment, fmt.Sprintf("RV up to %d ft", detailsResp.Unit.VehicleLength))
+				equipment = append(equipment, fmt.Sprintf("rv up to %d ft", detailsResp.Unit.VehicleLength))
 			}
 		}
 		if len(equipment) == 0 {
-			equipment = append(equipment, "Standard")
+			equipment = append(equipment, "standard")
 		}
 
 		// Parse cost per night
@@ -597,10 +614,39 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			}
 		}
 
-		// Determine campsite type from unit type name or characteristics
-		campsiteType := detailsResp.UnitType.Name
+		// Determine campsite type from unit type name or characteristics (convert to lowercase)
+		campsiteType := strings.ToLower(detailsResp.UnitType.Name)
 		if campsiteType == "" {
-			campsiteType = extractCampsiteType(detailsResp.Unit.Name)
+			// Inline campsite type detection (returning lowercase)
+			unitLower := strings.ToLower(detailsResp.Unit.Name)
+			switch {
+			case strings.Contains(unitLower, "tent"):
+				campsiteType = "tent"
+			case strings.Contains(unitLower, "rv"):
+				campsiteType = "rv"
+			case strings.Contains(unitLower, "cabin"):
+				campsiteType = "cabin"
+			case strings.Contains(unitLower, "group"):
+				campsiteType = "group"
+			case strings.Contains(unitLower, "primitive"):
+				campsiteType = "primitive"
+			case strings.Contains(unitLower, "yurt"):
+				campsiteType = "yurt"
+			case strings.Contains(unitLower, "camp"):
+				campsiteType = "campsite"
+			default:
+				campsiteType = "standard"
+			}
+		}
+
+		// Extract amenities from the detailed response
+		var amenities []string
+		for _, amenity := range detailsResp.Amenities {
+			// Convert amenity names to lowercase and add to list
+			amenityName := strings.ToLower(amenity.Name)
+			if amenityName != "" {
+				amenities = append(amenities, amenityName)
+			}
 		}
 
 		campsiteInfos = append(campsiteInfos, CampsiteInfo{
@@ -610,6 +656,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			CostPerNight:    costPerNight,
 			Rating:          0.0, // ReserveCalifornia doesn't provide ratings
 			Equipment:       equipment,
+			Amenities:       amenities,
 			PreviewImageURL: detailsResp.UnitImage,
 		})
 

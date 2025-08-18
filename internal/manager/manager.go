@@ -516,8 +516,24 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 			equipment = append(equipment, e)
 		}
 
+		// get max min price from campsites
+		var minPrice, maxPrice float64
+		for _, campsite := range campsiteInfos {
+			if campsite.CostPerNight < minPrice || minPrice == 0 {
+				minPrice = campsite.CostPerNight
+			}
+			if campsite.CostPerNight > maxPrice {
+				maxPrice = campsite.CostPerNight
+			}
+		}
+
+		fmt.Println("Campsite types:", campsiteTypes)
+		fmt.Println("Equipment:", equipment)
+		fmt.Println("Min price:", minPrice)
+		fmt.Println("Max price:", maxPrice)
+
 		// Update campground with aggregated campsite types and equipment
-		err = m.store.UpdateCampgroundWithCampsiteTypes(ctx, providerName, campground.ID, campsiteTypes, equipment)
+		err = m.store.UpdateCampgroundBasedOnCampsites(ctx, providerName, campground.ID, campsiteTypes, equipment, minPrice, maxPrice)
 		if err != nil {
 			m.logger.Warn("failed to update campground with campsite data",
 				slog.String("provider", providerName),

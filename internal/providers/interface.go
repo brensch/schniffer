@@ -18,6 +18,7 @@ type CampsiteInfo struct {
 	CostPerNight    float64  // Cost per night in USD, 0 if unknown
 	Rating          float64  // Campsite rating (0-5), 0 if unknown
 	Equipment       []string // Equipment types supported at this campsite
+	Amenities       []string // Individual campsite amenities
 	PreviewImageURL string   // Preview image URL
 }
 
