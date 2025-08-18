@@ -154,9 +154,7 @@ function renderMarkersFromViewport(result) {
                 <div class="custom-popup">
                     <div class="popup-title">${cluster.count} Schniffgrounds</div>
                     <div class="popup-details">
-                        <div style="margin: 0.8rem 0; padding: 0.6rem; background-color: #f0f8f0; border: 2px solid #2d5a3d; border-radius: 4px;">
-                            <div style="font-size: 0.9rem; color: #2d5a3d; font-weight: 600;">🔍 Zoom in to explore individual schniffgrounds</div>
-                        </div>
+                        <div class="popup-aggregate-message">🔍 Zoom in to explore individual schniffgrounds</div>
                     </div>
                 </div>
             `, {
@@ -228,43 +226,34 @@ function renderMarkersFromViewport(result) {
             // Format amenities display (show all amenities)
             let amenitiesDisplay = '';
             if (campground.amenities && campground.amenities.length > 0) {
-                const amenityList = campground.amenities.map(name => `• ${name}`).join('<br>');
+                const amenityList = campground.amenities.join(', ');
                 amenitiesDisplay = `<div class="popup-amenities">
-                    <strong>🛝 Features</strong><br>
-                    ${amenityList}
+                    🛝 ${amenityList}
                 </div>`;
             }
             
             const linkHtml = campground.url ? 
-                `<div class="popup-provider-line">
-                    <a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
-                        ${providerName} →
-                    </a>
-                    ${priceRatingDisplay}
-                </div>` : 
-                `<div class="popup-provider-line">
-                    <div class="popup-provider ${campground.provider}">
-                        ${providerName}
-                    </div>
-                    ${priceRatingDisplay}
-                </div>`;
+                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
+                    🔗 ${providerName}
+                </a>
+                ${priceRatingDisplay}` : 
+                `<div class="popup-provider ${campground.provider}">
+                    ${providerName}
+                </div>
+                ${priceRatingDisplay}`;
             
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
                     <div class="custom-popup">
                         ${imageDisplay}
                         <div class="popup-title">${campground.name}</div>
-                        <div class="popup-details">
-                            ${campsiteTypesDisplay}
-                            ${equipmentDisplay}
-                            ${amenitiesDisplay}
-                        </div>
+                        ${campsiteTypesDisplay}
+                        ${equipmentDisplay}
+                        ${amenitiesDisplay}
                         ${linkHtml}
-                        <div class="popup-actions">
-                            <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
-                                🧭 Directions
-                            </button>
-                        </div>
+                        <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
+                            🧭 Directions
+                        </button>
                     </div>
                 `, {
                     closeButton: false,
