@@ -195,52 +195,52 @@ func (s *Server) shouldClusterViewport(ctx context.Context, req ViewportRequest)
 		WHERE c.latitude BETWEEN ? AND ?
 		AND c.longitude BETWEEN ? AND ?
 		AND c.latitude != 0 AND c.longitude != 0`
-
+	
 	args = []interface{}{req.South, req.North, req.West, req.East}
 
-	// Add campsite types filter - OR within category
+	// Add campsite types filter - OR within category, exact JSON matching
 	if len(req.CampsiteTypes) > 0 {
 		var conditions []string
 		for _, campsiteType := range req.CampsiteTypes {
-			conditions = append(conditions, "c.campsite_types LIKE ?")
-			args = append(args, `%"`+campsiteType+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.campsite_types) WHERE value = ?)")
+			args = append(args, campsiteType)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add equipment filter - OR within category
+	// Add equipment filter - OR within category, exact JSON matching
 	if len(req.Equipment) > 0 {
 		var conditions []string
 		for _, equipment := range req.Equipment {
-			conditions = append(conditions, "c.equipment LIKE ?")
-			args = append(args, `%"`+equipment+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.equipment) WHERE value = ?)")
+			args = append(args, equipment)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add amenities filter - OR within category
+	// Add amenities filter - OR within category, exact JSON matching
 	if len(req.Amenities) > 0 {
 		var conditions []string
 		for _, amenity := range req.Amenities {
-			conditions = append(conditions, "c.amenities LIKE ?")
-			args = append(args, `%"`+amenity+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.amenities) WHERE value = ?)")
+			args = append(args, amenity)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add rating filter
+	// Add rating filter - apply to all campgrounds when user sets a minimum rating
 	if req.MinRating > 0 {
 		query += ` AND c.rating >= ?`
 		args = append(args, req.MinRating)
 	}
 
-	// Add price filter
+	// Add price filter - only apply if campground has price data
 	if req.MinPrice > 0 {
-		query += ` AND c.price_max >= ?`
+		query += ` AND (c.price_max = 0 OR c.price_max >= ?)`
 		args = append(args, req.MinPrice)
 	}
 	if req.MaxPrice > 0 {
-		query += ` AND c.price_min <= ?`
+		query += ` AND (c.price_min = 0 OR c.price_min <= ?)`
 		args = append(args, req.MaxPrice)
 	}
 
@@ -302,49 +302,49 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 
 	args := []interface{}{req.South, req.North, req.West, req.East}
 
-	// Add campsite types filter - OR within category
+	// Add campsite types filter - OR within category, exact JSON matching
 	if len(req.CampsiteTypes) > 0 {
 		var conditions []string
 		for _, campsiteType := range req.CampsiteTypes {
-			conditions = append(conditions, "c.campsite_types LIKE ?")
-			args = append(args, `%"`+campsiteType+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.campsite_types) WHERE value = ?)")
+			args = append(args, campsiteType)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add equipment filter - OR within category
+	// Add equipment filter - OR within category, exact JSON matching
 	if len(req.Equipment) > 0 {
 		var conditions []string
 		for _, equipment := range req.Equipment {
-			conditions = append(conditions, "c.equipment LIKE ?")
-			args = append(args, `%"`+equipment+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.equipment) WHERE value = ?)")
+			args = append(args, equipment)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add amenities filter - OR within category
+	// Add amenities filter - OR within category, exact JSON matching
 	if len(req.Amenities) > 0 {
 		var conditions []string
 		for _, amenity := range req.Amenities {
-			conditions = append(conditions, "c.amenities LIKE ?")
-			args = append(args, `%"`+amenity+`"%`)
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(c.amenities) WHERE value = ?)")
+			args = append(args, amenity)
 		}
 		query += ` AND (` + strings.Join(conditions, " OR ") + `)`
 	}
 
-	// Add rating filter
+	// Add rating filter - apply to all campgrounds when user sets a minimum rating
 	if req.MinRating > 0 {
 		query += ` AND c.rating >= ?`
 		args = append(args, req.MinRating)
 	}
 
-	// Add price filter
+	// Add price filter - only apply if campground has price data
 	if req.MinPrice > 0 {
-		query += ` AND c.price_max >= ?`
+		query += ` AND (c.price_max = 0 OR c.price_max >= ?)`
 		args = append(args, req.MinPrice)
 	}
 	if req.MaxPrice > 0 {
-		query += ` AND c.price_min <= ?`
+		query += ` AND (c.price_min = 0 OR c.price_min <= ?)`
 		args = append(args, req.MaxPrice)
 	}
 
