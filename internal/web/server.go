@@ -174,6 +174,8 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 			"data": clusters,
 		})
 	} else {
+		// Always populate detailed campsite/equipment data when showing individual campgrounds
+		campgrounds = s.populateDetailedData(r.Context(), campgrounds)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"type": "individual",
 			"data": campgrounds,
@@ -184,46 +186,85 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportRequest) ([]CampgroundMapData, error) {
 	start := time.Now()
 
-	// Build the base query
-	query := `
-		SELECT 
-			c.provider, 
-			c.campground_id, 
-			c.name, 
-			c.latitude, 
-			c.longitude, 
-			c.rating, 
-			c.amenities, 
-			c.image_url, 
-			c.price_min, 
-			c.price_max, 
-			c.price_unit,
-			COALESCE(GROUP_CONCAT(DISTINCT ct.campsite_type), '') as campsite_types,
-			COALESCE(GROUP_CONCAT(DISTINCT ce.equipment_type), '') as equipment_types
-		FROM campgrounds c
-		LEFT JOIN campground_types ct ON c.provider = ct.provider AND c.campground_id = ct.campground_id
-		LEFT JOIN campsite_equipment ce ON c.provider = ce.provider AND c.campground_id = ce.campground_id
-		WHERE c.latitude BETWEEN ? AND ?
-		AND c.longitude BETWEEN ? AND ?
-		AND c.latitude != 0 AND c.longitude != 0`
+	// Build the base query with optimized filtering
+	var query string
+	var args []interface{}
 
-	args := []interface{}{req.South, req.North, req.West, req.East}
+	if len(req.CampsiteTypes) > 0 || len(req.Equipment) > 0 {
+		// Use EXISTS clauses for better performance instead of subqueries
+		query = `
+			SELECT 
+				c.provider, 
+				c.campground_id, 
+				c.name, 
+				c.latitude, 
+				c.longitude, 
+				c.rating, 
+				c.amenities, 
+				c.image_url, 
+				c.price_min, 
+				c.price_max, 
+				c.price_unit,
+				'' as campsite_types,
+				'' as equipment_types
+			FROM campgrounds c
+			WHERE c.latitude BETWEEN ? AND ?
+			AND c.longitude BETWEEN ? AND ?
+			AND c.latitude != 0 AND c.longitude != 0`
+	} else {
+		// Use faster query without any joins when no filters are applied
+		query = `
+			SELECT 
+				c.provider, 
+				c.campground_id, 
+				c.name, 
+				c.latitude, 
+				c.longitude, 
+				c.rating, 
+				c.amenities, 
+				c.image_url, 
+				c.price_min, 
+				c.price_max, 
+				c.price_unit,
+				'' as campsite_types,
+				'' as equipment_types
+			FROM campgrounds c
+			WHERE c.latitude BETWEEN ? AND ?
+			AND c.longitude BETWEEN ? AND ?
+			AND c.latitude != 0 AND c.longitude != 0`
+	}
 
-	// Add equipment filter if specified
+	args = []interface{}{req.South, req.North, req.West, req.East}
+
+	// Add campsite types filter using EXISTS for better performance
+	if len(req.CampsiteTypes) > 0 {
+		placeholders := make([]string, len(req.CampsiteTypes))
+		for i := range req.CampsiteTypes {
+			placeholders[i] = "?"
+			args = append(args, req.CampsiteTypes[i])
+		}
+		query += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM campsite_metadata cm2 
+			WHERE cm2.provider = c.provider 
+			AND cm2.campground_id = c.campground_id 
+			AND cm2.campsite_type IN (%s)
+		)`, strings.Join(placeholders, ","))
+	}
+
+	// Add equipment filter using EXISTS for better performance
 	if len(req.Equipment) > 0 {
 		placeholders := make([]string, len(req.Equipment))
 		for i := range req.Equipment {
 			placeholders[i] = "?"
 			args = append(args, req.Equipment[i])
 		}
-		query += fmt.Sprintf(` AND c.provider||'|'||c.campground_id IN (
-			SELECT DISTINCT ce2.provider||'|'||ce2.campground_id 
-			FROM campsite_equipment ce2 
-			WHERE ce2.equipment_type IN (%s)
+		query += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM campsite_equipment ce2 
+			WHERE ce2.provider = c.provider 
+			AND ce2.campground_id = c.campground_id 
+			AND ce2.equipment_type IN (%s)
 		)`, strings.Join(placeholders, ","))
 	}
-
-	query += ` GROUP BY c.provider, c.campground_id, c.name, c.latitude, c.longitude, c.rating, c.amenities, c.image_url, c.price_min, c.price_max, c.price_unit`
 
 	rows, err := s.store.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -264,44 +305,95 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		allCampgrounds = append(allCampgrounds, c)
 	}
 
-	// Apply filters
-	filteredCampgrounds := s.applyFilters(allCampgrounds, req)
+	slog.Debug("fetched campgrounds before filtering", "count", len(allCampgrounds), "hasFilters", len(req.CampsiteTypes) > 0 || len(req.Equipment) > 0)
 
-	slog.Debug("fetched campgrounds in viewport filter", "duration", time.Since(start))
+	// Apply remaining filters (only rating and price, since campsite types and equipment are already filtered in SQL)
+	var filteredCampgrounds []CampgroundMapData
+	if len(req.CampsiteTypes) > 0 || len(req.Equipment) > 0 {
+		// SQL already filtered campsite types and equipment, only apply rating and price filters
+		filteredCampgrounds = s.applyRemainingFilters(allCampgrounds, req)
+	} else {
+		// No SQL filtering applied, apply all filters
+		filteredCampgrounds = s.applyFilters(allCampgrounds, req)
+	}
+
+	slog.Debug("fetched campgrounds after filtering", "count", len(filteredCampgrounds), "duration", time.Since(start))
 
 	return filteredCampgrounds, rows.Err()
 }
 
-// // populateCampsiteTypes efficiently populates campsite types for multiple campgrounds using the campground_types table
-// func (s *Server) populateCampsiteTypes(ctx context.Context, campgroundMap map[string]*CampgroundMapData) error {
-// 	if len(campgroundMap) == 0 {
-// 		return nil
-// 	}
+func (s *Server) populateDetailedData(ctx context.Context, campgrounds []CampgroundMapData) []CampgroundMapData {
+	if len(campgrounds) == 0 {
+		return campgrounds
+	}
 
-// 	// Get all campground keys
-// 	var keys []string
-// 	for key := range campgroundMap {
-// 		keys = append(keys, key)
-// 	}
+	// Build a map for quick lookup
+	campgroundMap := make(map[string]*CampgroundMapData)
+	var placeholders []string
+	var args []interface{}
 
-// 	// Use the new GetCampgroundTypesMap function
-// 	start := time.Now()
-// 	typesMap, err := s.store.GetCampgroundTypesMap(ctx, keys)
-// 	if err != nil {
-// 		slog.Debug("failed to get campground types", "error", err)
-// 		return nil // Don't fail the whole request if we can't get types
-// 	}
-// 	slog.Debug("fetched campground types", "duration", time.Since(start))
+	for i := range campgrounds {
+		key := campgrounds[i].Provider + "|" + campgrounds[i].ID
+		campgroundMap[key] = &campgrounds[i]
 
-// 	// Update campground data
-// 	for key, campground := range campgroundMap {
-// 		if types, exists := typesMap[key]; exists {
-// 			campground.CampsiteTypes = types
-// 		}
-// 	}
+		placeholders = append(placeholders, "(?, ?)")
+		args = append(args, campgrounds[i].Provider, campgrounds[i].ID)
+	}
 
-// 	return nil
-// }
+	// Query campsite types for all campgrounds using tuple matching
+	query := fmt.Sprintf(`
+		SELECT 
+			provider||'|'||campground_id as key,
+			GROUP_CONCAT(DISTINCT campsite_type) as campsite_types
+		FROM campsite_metadata 
+		WHERE (provider, campground_id) IN (%s)
+		AND campsite_type != ''
+		GROUP BY provider, campground_id
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.store.DB.QueryContext(ctx, query, args...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var key, campsiteTypesStr string
+			if err := rows.Scan(&key, &campsiteTypesStr); err == nil {
+				if campground, exists := campgroundMap[key]; exists {
+					if campsiteTypesStr != "" {
+						campground.CampsiteTypes = strings.Split(campsiteTypesStr, ",")
+					}
+				}
+			}
+		}
+	}
+
+	// Query equipment types for all campgrounds
+	query = fmt.Sprintf(`
+		SELECT 
+			provider||'|'||campground_id as key,
+			GROUP_CONCAT(DISTINCT equipment_type) as equipment_types
+		FROM campsite_equipment 
+		WHERE (provider, campground_id) IN (%s)
+		AND equipment_type != ''
+		GROUP BY provider, campground_id
+	`, strings.Join(placeholders, ","))
+
+	rows, err = s.store.DB.QueryContext(ctx, query, args...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var key, equipmentTypesStr string
+			if err := rows.Scan(&key, &equipmentTypesStr); err == nil {
+				if campground, exists := campgroundMap[key]; exists {
+					if equipmentTypesStr != "" {
+						campground.Equipment = strings.Split(equipmentTypesStr, ",")
+					}
+				}
+			}
+		}
+	}
+
+	return campgrounds
+}
 
 func (s *Server) applyFilters(campgrounds []CampgroundMapData, req ViewportRequest) []CampgroundMapData {
 	var filtered []CampgroundMapData
@@ -376,6 +468,51 @@ func (s *Server) applyFilters(campgrounds []CampgroundMapData, req ViewportReque
 				continue
 			}
 		}
+
+		// If we get here, the campground passed all filters
+		filtered = append(filtered, campground)
+	}
+
+	return filtered
+}
+
+func (s *Server) applyRemainingFilters(campgrounds []CampgroundMapData, req ViewportRequest) []CampgroundMapData {
+	var filtered []CampgroundMapData
+
+	for _, campground := range campgrounds {
+		// Check rating filter
+		if req.MinRating > 0 && campground.Rating < req.MinRating {
+			continue
+		}
+
+		// Check price filter
+		if req.MinPrice > 0 && campground.PriceMin > 0 && campground.PriceMin < req.MinPrice {
+			continue
+		}
+		if req.MaxPrice > 0 && campground.PriceMax > 0 && campground.PriceMax > req.MaxPrice {
+			continue
+		}
+
+		// Check amenities filter
+		if len(req.Amenities) > 0 {
+			hasRequiredAmenity := false
+			for _, reqAmenity := range req.Amenities {
+				for _, campAmenity := range campground.Amenities {
+					if reqAmenity == campAmenity {
+						hasRequiredAmenity = true
+						break
+					}
+				}
+				if hasRequiredAmenity {
+					break
+				}
+			}
+			if !hasRequiredAmenity {
+				continue
+			}
+		}
+
+		// Skip campsite types and equipment filters since they were already applied in SQL
 
 		// If we get here, the campground passed all filters
 		filtered = append(filtered, campground)
@@ -536,6 +673,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 type FilterOptions struct {
 	Amenities     []string `json:"amenities"`
 	CampsiteTypes []string `json:"campsite_types"`
+	Equipment     []string `json:"equipment"`
 	PriceRange    struct {
 		Min float64 `json:"min"`
 		Max float64 `json:"max"`
@@ -583,7 +721,7 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Get all unique campsite types from campsite metadata
+	// Get all unique campsite types from campsite_metadata table
 	campsiteTypesRows, err := s.store.DB.QueryContext(ctx, `
 		SELECT DISTINCT campsite_type 
 		FROM campsite_metadata 
@@ -604,6 +742,30 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 		}
 		if campsiteType != "" {
 			campsiteTypesSet[campsiteType] = true
+		}
+	}
+
+	// Get all unique equipment types from campsite_equipment table
+	equipmentTypesRows, err := s.store.DB.QueryContext(ctx, `
+		SELECT DISTINCT equipment_type 
+		FROM campsite_equipment 
+		WHERE equipment_type IS NOT NULL AND equipment_type != ''
+		ORDER BY equipment_type
+	`)
+	if err != nil {
+		http.Error(w, "Failed to fetch equipment types", http.StatusInternalServerError)
+		return
+	}
+	defer equipmentTypesRows.Close()
+
+	equipmentTypesSet := make(map[string]bool)
+	for equipmentTypesRows.Next() {
+		var equipmentType string
+		if err := equipmentTypesRows.Scan(&equipmentType); err != nil {
+			continue
+		}
+		if equipmentType != "" {
+			equipmentTypesSet[equipmentType] = true
 		}
 	}
 
@@ -633,9 +795,15 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 		campsiteTypesList = append(campsiteTypesList, campsiteType)
 	}
 
+	var equipmentTypesList []string
+	for equipmentType := range equipmentTypesSet {
+		equipmentTypesList = append(equipmentTypesList, equipmentType)
+	}
+
 	options := FilterOptions{
 		Amenities:     amenitiesList,
 		CampsiteTypes: campsiteTypesList,
+		Equipment:     equipmentTypesList,
 	}
 	options.PriceRange.Min = priceMin
 	options.PriceRange.Max = priceMax

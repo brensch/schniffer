@@ -136,6 +136,17 @@ body {
     text-align: center;
 }
 
+.popup-equipment {
+    font-size: 0.8rem;
+    color: #555;
+    margin-bottom: 0.5rem;
+    padding: 0.3rem 0.4rem;
+    background-color: #f5f5dc;
+    border: 2px solid #deb887;
+    border-radius: 0;
+    text-align: center;
+}
+
 .popup-amenities {
     font-size: 0.75rem;
     color: #333;

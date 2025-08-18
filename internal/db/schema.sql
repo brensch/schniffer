@@ -102,20 +102,20 @@ CREATE TABLE IF NOT EXISTS campsite_equipment (
     UNIQUE(provider, campground_id, campsite_id, equipment_type)
 );
 
--- Table to store pre-computed campsite types for each campground
-CREATE TABLE IF NOT EXISTS campground_types (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL,
-    campground_id TEXT NOT NULL,
-    campsite_type TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(provider, campground_id, campsite_type)
-);
+-- -- Table to store pre-computed campsite types for each campground
+-- CREATE TABLE IF NOT EXISTS campground_types (
+--     id INTEGER PRIMARY KEY AUTOINCREMENT,
+--     provider TEXT NOT NULL,
+--     campground_id TEXT NOT NULL,
+--     campsite_type TEXT NOT NULL,
+--     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+--     UNIQUE(provider, campground_id, campsite_type)
+-- );
 
--- Indexes for campground_types table
-CREATE INDEX IF NOT EXISTS idx_campground_types_lookup ON campground_types(provider, campground_id);
-CREATE INDEX IF NOT EXISTS idx_campground_types_composite ON campground_types(provider, campground_id, campsite_type);
+-- Indexes for campground_types table (commented out since table is commented out)
+-- CREATE INDEX IF NOT EXISTS idx_campground_types_lookup ON campground_types(provider, campground_id);
+-- CREATE INDEX IF NOT EXISTS idx_campground_types_composite ON campground_types(provider, campground_id, campsite_type);
 
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_campground ON campsite_equipment(provider, campground_id);
 CREATE INDEX IF NOT EXISTS idx_campsite_equipment_type ON campsite_equipment(equipment_type);

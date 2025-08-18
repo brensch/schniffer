@@ -7,6 +7,7 @@ let filterOptions = null;
 let currentFilters = {
     amenities: [],
     campsiteTypes: [],
+    equipment: [],
     minRating: 0,
     minPrice: 0,
     maxPrice: 500
@@ -90,6 +91,7 @@ async function loadViewportData() {
         // Include filter parameters
         amenities: currentFilters.amenities,
         campsite_types: currentFilters.campsiteTypes,
+        equipment: currentFilters.equipment,
         min_rating: currentFilters.minRating,
         min_price: currentFilters.minPrice,
         max_price: currentFilters.maxPrice
@@ -208,6 +210,13 @@ function renderMarkersFromViewport(result) {
                 campsiteTypesDisplay = `<div class="popup-campsite-types">🛖 ${types}</div>`;
             }
             
+            // Format equipment display
+            let equipmentDisplay = '';
+            if (campground.equipment && campground.equipment.length > 0) {
+                const equipment = campground.equipment.slice(0, 3).join(', ');
+                equipmentDisplay = `<div class="popup-equipment">🚐 ${equipment}</div>`;
+            }
+            
             // Format image display
             let imageDisplay = '';
             if (campground.image_url) {
@@ -247,6 +256,7 @@ function renderMarkersFromViewport(result) {
                         <div class="popup-title">${campground.name}</div>
                         <div class="popup-details">
                             ${campsiteTypesDisplay}
+                            ${equipmentDisplay}
                             ${amenitiesDisplay}
                         </div>
                         ${linkHtml}
@@ -649,6 +659,16 @@ function populateFilterOptions() {
             campsiteTypesContainer.appendChild(item);
         });
     }
+    
+    // Populate equipment
+    const equipmentContainer = document.getElementById('equipment-container');
+    equipmentContainer.innerHTML = '';
+    if (filterOptions.equipment) {
+        filterOptions.equipment.sort().forEach(equipment => {
+            const item = createFilterCheckbox('equipment', equipment, equipment);
+            equipmentContainer.appendChild(item);
+        });
+    }
 }
 
 function createFilterCheckbox(type, value, label) {
@@ -679,6 +699,10 @@ function updateFiltersFromCheckboxes() {
     // Update campsite types
     const campsiteTypeCheckboxes = document.querySelectorAll('#campsite-types-container input[type="checkbox"]:checked');
     currentFilters.campsiteTypes = Array.from(campsiteTypeCheckboxes).map(cb => cb.value);
+    
+    // Update equipment
+    const equipmentCheckboxes = document.querySelectorAll('#equipment-container input[type="checkbox"]:checked');
+    currentFilters.equipment = Array.from(equipmentCheckboxes).map(cb => cb.value);
 }
 
 function updateRatingValue(value) {
@@ -725,6 +749,7 @@ function clearAllFilters() {
     // Reset checkboxes
     document.querySelectorAll('#amenities-container input[type="checkbox"]').forEach(cb => cb.checked = false);
     document.querySelectorAll('#campsite-types-container input[type="checkbox"]').forEach(cb => cb.checked = false);
+    document.querySelectorAll('#equipment-container input[type="checkbox"]').forEach(cb => cb.checked = false);
     
     // Reset sliders
     const ratingSlider = document.getElementById('rating-slider');
@@ -742,6 +767,7 @@ function clearAllFilters() {
     currentFilters = {
         amenities: [],
         campsiteTypes: [],
+        equipment: [],
         minRating: filterOptions?.rating_range?.min || 0,
         minPrice: filterOptions?.price_range?.min || 0,
         maxPrice: filterOptions?.price_range?.max || 500
@@ -784,6 +810,16 @@ function matchesFilters(campground) {
             campground.campsite_types && campground.campsite_types.includes(type)
         );
         if (!hasRequiredType) {
+            return false;
+        }
+    }
+    
+    // Check equipment filter
+    if (currentFilters.equipment.length > 0) {
+        const hasRequiredEquipment = currentFilters.equipment.some(equipment => 
+            campground.equipment && campground.equipment.includes(equipment)
+        );
+        if (!hasRequiredEquipment) {
             return false;
         }
     }

@@ -54,8 +54,8 @@ func main() {
 	go mgr.RunDailySummary(ctx)
 
 	// Background campground sync (daily)
-	go mgr.RunCampgroundSync(ctx, "recreation_gov", 24*60*60*1e9)
-	go mgr.RunCampgroundSync(ctx, "reservecalifornia", 24*60*60*1e9)
+	// go mgr.RunCampgroundSync(ctx, "recreation_gov", 24*60*60*1e9)
+	// go mgr.RunCampgroundSync(ctx, "reservecalifornia", 24*60*60*1e9)
 
 	// Start web server
 	webAddr := os.Getenv("WEB_ADDR")
