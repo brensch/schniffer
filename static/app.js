@@ -252,7 +252,7 @@ function renderMarkersFromViewport(result) {
                         ${amenitiesDisplay}
                         ${linkHtml}
                         <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
-                            🧭 Directions
+                            🗺️ Directions
                         </button>
                     </div>
                 `, {

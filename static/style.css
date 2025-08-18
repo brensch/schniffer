@@ -105,16 +105,17 @@ body {
     color: #000;
     font-weight: 500;
     font-family: 'Epilogue', sans-serif;
-    margin: 0.3rem 0;
+    margin: 0.3rem 0.3rem 0.3rem 0;
     text-align: left;
     padding: 0.3rem 0.4rem;
     background-color: #ffa500;
     border: 2px solid #000;
     border-radius: 0;
-    display: block;
+    display: inline-block;
     width: auto;
     max-width: fit-content;
     transition: all 0.2s ease;
+    vertical-align: top;
 }
 
 .popup-rating:hover {
@@ -127,16 +128,17 @@ body {
     color: #000;
     font-weight: 500;
     font-family: 'Epilogue', sans-serif;
-    margin: 0.3rem 0;
+    margin: 0.3rem 0.3rem 0.3rem 0;
     text-align: left;
     padding: 0.3rem 0.4rem;
     background-color: #00ff7f;
     border: 2px solid #000;
     border-radius: 0;
-    display: block;
+    display: inline-block;
     width: auto;
     max-width: fit-content;
     transition: all 0.2s ease;
+    vertical-align: top;
 }
 
 .popup-price:hover {
@@ -150,16 +152,17 @@ body {
     color: #000;
     font-weight: 500;
     font-family: 'Epilogue', sans-serif;
-    margin: 0.3rem 0;
+    margin: 0.3rem 0.3rem 0.3rem 0;
     padding: 0.3rem 0.4rem;
     background-color: #00ffff;
     border: 2px solid #000;
     border-radius: 0;
     text-align: left;
-    display: block;
+    display: inline-block;
     width: auto;
     max-width: fit-content;
     transition: all 0.2s ease;
+    vertical-align: top;
 }
 
 .popup-campsite-types:hover {
@@ -172,16 +175,17 @@ body {
     color: #000;
     font-weight: 500;
     font-family: 'Epilogue', sans-serif;
-    margin: 0.3rem 0;
+    margin: 0.3rem 0.3rem 0.3rem 0;
     padding: 0.3rem 0.4rem;
     background-color: #ff69b4;
     border: 2px solid #000;
     border-radius: 0;
     text-align: left;
-    display: block;
+    display: inline-block;
     width: auto;
     max-width: fit-content;
     transition: all 0.2s ease;
+    vertical-align: top;
 }
 
 .popup-equipment:hover {
@@ -229,11 +233,12 @@ body {
     border: 2px solid #000;
     border-radius: 0;
     text-align: left;
-    margin: 0.3rem 0;
-    display: block;
+    margin: 0.3rem 0.3rem 0.3rem 0;
+    display: inline-block;
     width: auto;
     max-width: fit-content;
     transition: all 0.2s ease;
+    vertical-align: top;
 }
 
 .popup-aggregate-message:hover {
@@ -248,29 +253,30 @@ body {
 .popup-provider {
     padding: 0.3rem 0.4rem;
     background-color: #2d5a3d;
-    color: white;
+    color: #000;
     text-decoration: none;
-    display: block;
+    display: inline-block;
     font-weight: 500;
     font-size: 0.8rem;
     font-family: 'Epilogue', sans-serif;
     border: 2px solid #000;
     border-radius: 0;
     transition: all 0.2s ease;
-    margin: 0.3rem 0;
+    margin: 0.3rem 0.3rem 0.3rem 0;
     text-align: left;
     width: auto;
     max-width: fit-content;
+    vertical-align: top;
 }
 
 .popup-provider.recreation_gov {
     background-color: #2d5a3d;
-    color: white;
+    color: #000;
 }
 
 .popup-provider.reservecalifornia {
     background-color: #8b4513;
-    color: white;
+    color: #000;
 }
 
 .popup-provider.recreation_gov:hover {
