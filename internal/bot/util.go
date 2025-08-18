@@ -49,32 +49,48 @@ func getUserID(i *discordgo.InteractionCreate) string {
 	return ""
 }
 
-// sanitizeChoiceName trims whitespace and ensures the string is between 1 and 100 characters (runes).
-// If longer than 100, it truncates to 99 and appends an ellipsis so the final length is 100.
-func sanitizeChoiceName(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
+const outputMaxLength = 100
+
+func sanitizeGenericText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
 		return "-"
 	}
-	if utf8.RuneCountInString(s) <= 100 {
-		return s
+	if utf8.RuneCountInString(text) > outputMaxLength {
+		runes := []rune(text)
+		text = string(runes[:outputMaxLength])
 	}
-	runes := []rune(s)
-	if len(runes) > 99 {
-		runes = runes[:99]
+	return text
+}
+
+// sanitizeChoiceName makes the choice name safe for Discord display.
+// It truncates the name to as many characters are left out of 100 after the trailing info is added.
+func sanitizeChoiceName(name, provider string, rating float64) string {
+	trailer := fmt.Sprintf(" [%s] %.3f/5", provider, rating)
+	nameMinusEnding := outputMaxLength - len(trailer)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "-"
 	}
-	return string(runes) + "…"
+	if utf8.RuneCountInString(name) <= nameMinusEnding {
+		return name + trailer
+	}
+	runes := []rune(name)
+	if len(runes) > nameMinusEnding {
+		runes = runes[:nameMinusEnding-3]
+	}
+	return string(runes) + "…" + trailer
 }
 
 // sanitizeChoiceValue ensures the choice value is at most 100 characters (bytes).
 // Discord's API limit is 100 characters for choice values.
 func sanitizeChoiceValue(s string) string {
-	if len(s) <= 100 {
+	if len(s) <= outputMaxLength {
 		return s
 	}
 	// Truncate to 100 bytes - this is safer than counting runes since
 	// Discord's limit is likely in terms of bytes/characters, not Unicode runes
-	return s[:100]
+	return s[:outputMaxLength]
 }
 
 // formatCampgroundWithLink returns a formatted campground name with a link if available.

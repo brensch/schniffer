@@ -1163,7 +1163,7 @@ type Group struct {
 func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
 	// Fuzzy search across campground names with simple ranking.
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
+		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0), rating
 		FROM campgrounds
 		WHERE lower(name) LIKE '%' || lower(?) || '%'
 		ORDER BY
@@ -1183,7 +1183,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	var out []Campground
 	for rows.Next() {
 		var c Campground
-		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
+		err := rows.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon, &c.Rating)
 		if err != nil {
 			return nil, err
 		}

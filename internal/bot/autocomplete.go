@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -17,8 +18,8 @@ func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query stri
 	}
 	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(cgs))
 	for _, c := range cgs {
-		display := c.Name
-		display = sanitizeChoiceName(display)
+		display := sanitizeChoiceName(c.Name, c.Provider, c.Rating)
+		fmt.Println("display", display, len(display))
 		value := strings.Join([]string{c.Provider, c.ID, c.Name}, "||")
 		value = sanitizeChoiceValue(value)
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
@@ -50,7 +51,7 @@ func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo
 			name = cg.Name
 		}
 		label := r.Checkin.Format("2006-01-02") + "→" + r.Checkout.Format("2006-01-02")
-		display := sanitizeChoiceName(label + " • " + name)
+		display := sanitizeGenericText(label + " • " + name)
 		value := sanitizeChoiceValue(strconv.FormatInt(r.ID, 10))
 		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: display, Value: value})
 		if len(choices) >= 25 {
