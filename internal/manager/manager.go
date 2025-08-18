@@ -527,11 +527,6 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 			}
 		}
 
-		fmt.Println("Campsite types:", campsiteTypes)
-		fmt.Println("Equipment:", equipment)
-		fmt.Println("Min price:", minPrice)
-		fmt.Println("Max price:", maxPrice)
-
 		// Update campground with aggregated campsite types and equipment
 		err = m.store.UpdateCampgroundBasedOnCampsites(ctx, providerName, campground.ID, campsiteTypes, equipment, minPrice, maxPrice)
 		if err != nil {

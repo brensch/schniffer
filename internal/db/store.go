@@ -906,71 +906,11 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 	return tx.Commit()
 }
 
-// UpdateCampgroundWithCampsiteData updates a campground with aggregated campsite types and equipment
-func (s *Store) UpdateCampgroundWithCampsiteData(ctx context.Context, provider, campgroundID string) error {
-	// Get unique campsite types for this campground
-	campsiteTypesRows, err := s.DB.QueryContext(ctx, `
-		SELECT DISTINCT campsite_type 
-		FROM campsite_metadata 
-		WHERE provider = ? AND campground_id = ? AND campsite_type IS NOT NULL AND campsite_type != ''
-		ORDER BY campsite_type
-	`, provider, campgroundID)
-	if err != nil {
-		return err
-	}
-	defer campsiteTypesRows.Close()
-
-	var campsiteTypes []string
-	for campsiteTypesRows.Next() {
-		var campsiteType string
-		if err := campsiteTypesRows.Scan(&campsiteType); err != nil {
-			return err
-		}
-		campsiteTypes = append(campsiteTypes, campsiteType)
-	}
-
-	// Get unique equipment types for this campground
-	equipmentRows, err := s.DB.QueryContext(ctx, `
-		SELECT DISTINCT equipment_type 
-		FROM campsite_equipment 
-		WHERE provider = ? AND campground_id = ? AND equipment_type IS NOT NULL AND equipment_type != ''
-		ORDER BY equipment_type
-	`, provider, campgroundID)
-	if err != nil {
-		return err
-	}
-	defer equipmentRows.Close()
-
-	var equipment []string
-	for equipmentRows.Next() {
-		var equipmentType string
-		if err := equipmentRows.Scan(&equipmentType); err != nil {
-			return err
-		}
-		equipment = append(equipment, equipmentType)
-	}
-
-	// Marshal to JSON
-	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
-	equipmentJSON, _ := json.Marshal(equipment)
-
-	// Update the campground with aggregated data
-	_, err = s.DB.ExecContext(ctx, `
-		UPDATE campgrounds 
-		SET campsite_types = ?, equipment = ?, last_updated = ?
-		WHERE provider = ? AND campground_id = ?
-	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), provider, campgroundID)
-
-	return err
-}
-
 // UpdateCampgroundBasedOnCampsites updates a campground with provided campsite types and equipment arrays, plus max and min cost
 func (s *Store) UpdateCampgroundBasedOnCampsites(ctx context.Context, provider, campgroundID string, campsiteTypes, equipment []string, minPrice, maxPrice float64) error {
 	// Marshal to JSON
 	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
 	equipmentJSON, _ := json.Marshal(equipment)
-
-	fmt.Printf("Updating campground %s/%s with types: %s, equipment: %s, min price: %.2f, max price: %.2f\n", provider, campgroundID, string(campsiteTypesJSON), string(equipmentJSON), minPrice, maxPrice)
 
 	// Update the campground with aggregated data
 	_, err := s.DB.ExecContext(ctx, `
@@ -1376,7 +1316,6 @@ func (s *Store) GetCampgroundsByProvider(ctx context.Context, provider string) (
 		if amenitiesJSON != "" {
 			err = json.Unmarshal([]byte(amenitiesJSON), &c.Amenities)
 			if err != nil {
-				fmt.Println(amenitiesJSON)
 				return nil, fmt.Errorf("failed to unmarshal amenities for campground %s: %w", c.ID, err)
 			}
 		}
