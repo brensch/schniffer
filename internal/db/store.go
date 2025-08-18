@@ -247,14 +247,15 @@ type AvailabilityItem struct {
 }
 
 type MetadataSyncLog struct {
-	ID         int64
-	SyncType   string
-	Provider   string
-	StartedAt  time.Time
-	FinishedAt time.Time
-	Success    bool
-	ErrorMsg   string
-	Count      int
+	ID           int64
+	SyncType     string
+	Provider     string
+	CampgroundID *string // NULL for provider-level syncs, specific ID for campground-level syncs
+	StartedAt    time.Time
+	FinishedAt   time.Time
+	Success      bool
+	ErrorMsg     string
+	Count        int
 }
 
 type NotificationData struct {
@@ -1234,18 +1235,36 @@ func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID st
 // Sync helpers
 func (s *Store) RecordMetadataSync(ctx context.Context, l MetadataSyncLog) error {
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO metadata_sync_log(sync_type, provider, started_at, finished_at, success, error_msg, count)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, l.SyncType, l.Provider, l.StartedAt, l.FinishedAt, l.Success, l.ErrorMsg, l.Count)
+		INSERT INTO metadata_sync_log(sync_type, provider, campground_id, started_at, finished_at, success, error_msg, count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, l.SyncType, l.Provider, l.CampgroundID, l.StartedAt, l.FinishedAt, l.Success, l.ErrorMsg, l.Count)
 	return err
 }
 
 func (s *Store) GetLastSuccessfulMetadataSync(ctx context.Context, syncType, provider string) (time.Time, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT finished_at FROM metadata_sync_log
-		WHERE sync_type=? AND provider=? AND success=true
+		WHERE sync_type=? AND provider=? AND success=true AND campground_id IS NULL
 		ORDER BY finished_at DESC LIMIT 1
 	`, syncType, provider)
+	var t time.Time
+	err := row.Scan(&t)
+	switch err {
+	case nil:
+		return t, true, nil
+	case sql.ErrNoRows:
+		return time.Time{}, false, nil
+	default:
+		return time.Time{}, false, err
+	}
+}
+
+func (s *Store) GetLastSuccessfulCampgroundSync(ctx context.Context, syncType, provider, campgroundID string) (time.Time, bool, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT finished_at FROM metadata_sync_log
+		WHERE sync_type=? AND provider=? AND campground_id=? AND success=true
+		ORDER BY finished_at DESC LIMIT 1
+	`, syncType, provider, campgroundID)
 	var t time.Time
 	err := row.Scan(&t)
 	switch err {

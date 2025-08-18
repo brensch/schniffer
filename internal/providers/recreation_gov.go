@@ -342,6 +342,9 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		}
 		campsiteInfos = append(campsiteInfos, campsiteInfo)
 	}
+	// spoof a http 429 error to test
+	slog.Warn("spoofing http 429 error for testing")
+	return nil, fmt.Errorf("spoofed http 429 error for testing")
 
 	slog.Debug("fetched campsite metadata for campground",
 		slog.String("campgroundID", campgroundID),

@@ -183,17 +183,19 @@ CREATE INDEX IF NOT EXISTS idx_notifications_composite ON notifications(provider
 
 -- Metadata sync log (for campground syncing)
 CREATE TABLE IF NOT EXISTS metadata_sync_log (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    sync_type   TEXT NOT NULL,
-    provider    TEXT NOT NULL,
-    started_at  DATETIME NOT NULL,
-    finished_at DATETIME,
-    success     BOOLEAN,
-    error_msg   TEXT,
-    count       INTEGER DEFAULT 0
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_type     TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    campground_id TEXT,  -- NULL for provider-level syncs, specific ID for campground-level syncs
+    started_at    DATETIME NOT NULL,
+    finished_at   DATETIME,
+    success       BOOLEAN,
+    error_msg     TEXT,
+    count         INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_metadata_sync_recent ON metadata_sync_log(sync_type, provider, finished_at);
+CREATE INDEX IF NOT EXISTS idx_metadata_sync_campground ON metadata_sync_log(sync_type, provider, campground_id, finished_at);
 
 -- User groups for saving campground selections
 CREATE TABLE IF NOT EXISTS groups (

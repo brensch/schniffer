@@ -61,8 +61,28 @@ func (b *Bot) ResolveUsernames(userIDs []string) []string {
 
 // Notifier implementation
 
+// resolveChannelID takes a channel ID or guild ID and returns the actual channel ID to send to
+func (b *Bot) resolveChannelID(channelID string) string {
+	// Try to get it as a guild first
+	guild, err := b.s.Guild(channelID)
+	if err == nil {
+		// This is a guild ID, find the first text channel
+		channels, err := b.s.GuildChannels(guild.ID)
+		if err == nil {
+			for _, channel := range channels {
+				if channel.Type == discordgo.ChannelTypeGuildText {
+					return channel.ID
+				}
+			}
+		}
+	}
+	// If not a guild or no text channels found, assume it's already a channel ID
+	return channelID
+}
+
 func (b *Bot) NotifySummary(channelID string, msg string) error {
-	_, err := b.s.ChannelMessageSend(channelID, msg)
+	resolvedChannelID := b.resolveChannelID(channelID)
+	_, err := b.s.ChannelMessageSend(resolvedChannelID, msg)
 	return err
 }
 
@@ -73,23 +93,8 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	// Send startup message to the summary channel
 	summaryChannelID := b.mgr.GetSummaryChannel()
 	if summaryChannelID != "" {
-		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
-		guild, err := s.Guild(summaryChannelID)
-		if err == nil {
-			// This is a guild ID, find the first text channel
-			channels, err := s.GuildChannels(guild.ID)
-			if err == nil {
-				for _, channel := range channels {
-					if channel.Type == discordgo.ChannelTypeGuildText {
-						summaryChannelID = channel.ID
-						b.logger.Info("Using first text channel for startup message", slog.String("channel", channel.Name), slog.String("id", channel.ID))
-						break
-					}
-				}
-			}
-		}
-
-		err = b.NotifySummary(summaryChannelID, "scniffbot online and ready to schniff")
+		resolvedChannelID := b.resolveChannelID(summaryChannelID)
+		err := b.NotifySummary(resolvedChannelID, "scniffbot online and ready to schniff")
 		if err != nil {
 			b.logger.Error("failed to send startup message", slog.Any("err", err))
 		}
@@ -139,20 +144,7 @@ People make plans, those plans change. They cancel their booking. They normally 
 	// Send a brief public notification to the summary channel
 	summaryChannelID := b.mgr.GetSummaryChannel()
 	if summaryChannelID != "" {
-		// If summaryChannelID looks like a guild ID, find the first text channel in that guild
-		guild, err := s.Guild(summaryChannelID)
-		if err == nil {
-			// This is a guild ID, find the first text channel
-			channels, err := s.GuildChannels(guild.ID)
-			if err == nil {
-				for _, channel := range channels {
-					if channel.Type == discordgo.ChannelTypeGuildText {
-						summaryChannelID = channel.ID
-						break
-					}
-				}
-			}
-		}
+		resolvedChannelID := b.resolveChannelID(summaryChannelID)
 
 		// Generate public welcome message
 		welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
@@ -164,7 +156,7 @@ People make plans, those plans change. They cancel their booking. They normally 
 			Color:       0x5865F2, // Discord blurple color
 		}
 
-		_, err = s.ChannelMessageSendEmbed(summaryChannelID, embed)
+		_, err := s.ChannelMessageSendEmbed(resolvedChannelID, embed)
 		if err != nil {
 			b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 		}
