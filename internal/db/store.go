@@ -426,9 +426,9 @@ func (s *Store) GetAvailabilityChangesForNotifications(ctx context.Context, prov
 
 	// Args for last batch query: provider, campground_ids, start, end, provider, campground_ids, start, end
 	lastBatchArgs := []interface{}{providerName}
-	lastBatchArgs = append(lastBatchArgs, args[1:len(args)]...) // campground_ids, start, end
+	lastBatchArgs = append(lastBatchArgs, args[1:]...) // campground_ids, start, end
 	lastBatchArgs = append(lastBatchArgs, providerName)
-	lastBatchArgs = append(lastBatchArgs, args[1:len(args)]...) // campground_ids, start, end again
+	lastBatchArgs = append(lastBatchArgs, args[1:]...) // campground_ids, start, end again
 
 	lastBatchRows, err := s.DB.QueryContext(ctx, lastBatchQuery, lastBatchArgs...)
 	if err != nil {
@@ -894,6 +894,80 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 	}
 
 	return tx.Commit()
+}
+
+// UpdateCampgroundWithCampsiteData updates a campground with aggregated campsite types and equipment
+func (s *Store) UpdateCampgroundWithCampsiteData(ctx context.Context, provider, campgroundID string) error {
+	// Get unique campsite types for this campground
+	campsiteTypesRows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT campsite_type 
+		FROM campsite_metadata 
+		WHERE provider = ? AND campground_id = ? AND campsite_type IS NOT NULL AND campsite_type != ''
+		ORDER BY campsite_type
+	`, provider, campgroundID)
+	if err != nil {
+		return err
+	}
+	defer campsiteTypesRows.Close()
+
+	var campsiteTypes []string
+	for campsiteTypesRows.Next() {
+		var campsiteType string
+		if err := campsiteTypesRows.Scan(&campsiteType); err != nil {
+			return err
+		}
+		campsiteTypes = append(campsiteTypes, campsiteType)
+	}
+
+	// Get unique equipment types for this campground
+	equipmentRows, err := s.DB.QueryContext(ctx, `
+		SELECT DISTINCT equipment_type 
+		FROM campsite_equipment 
+		WHERE provider = ? AND campground_id = ? AND equipment_type IS NOT NULL AND equipment_type != ''
+		ORDER BY equipment_type
+	`, provider, campgroundID)
+	if err != nil {
+		return err
+	}
+	defer equipmentRows.Close()
+
+	var equipment []string
+	for equipmentRows.Next() {
+		var equipmentType string
+		if err := equipmentRows.Scan(&equipmentType); err != nil {
+			return err
+		}
+		equipment = append(equipment, equipmentType)
+	}
+
+	// Marshal to JSON
+	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
+	equipmentJSON, _ := json.Marshal(equipment)
+
+	// Update the campground with aggregated data
+	_, err = s.DB.ExecContext(ctx, `
+		UPDATE campgrounds 
+		SET campsite_types = ?, equipment = ?, last_updated = ?
+		WHERE provider = ? AND campground_id = ?
+	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), provider, campgroundID)
+
+	return err
+}
+
+// UpdateCampgroundWithCampsiteTypes updates a campground with provided campsite types and equipment arrays
+func (s *Store) UpdateCampgroundWithCampsiteTypes(ctx context.Context, provider, campgroundID string, campsiteTypes, equipment []string) error {
+	// Marshal to JSON
+	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
+	equipmentJSON, _ := json.Marshal(equipment)
+
+	// Update the campground with aggregated data
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE campgrounds 
+		SET campsite_types = ?, equipment = ?, last_updated = ?
+		WHERE provider = ? AND campground_id = ?
+	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), provider, campgroundID)
+
+	return err
 }
 
 // GetCampsiteEquipmentTypes returns all unique equipment types available at a campground

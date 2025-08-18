@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     price_max    REAL DEFAULT 0,
     price_unit   TEXT DEFAULT 'night',
     last_updated DATETIME NOT NULL,
+
+    -- adding these for more efficient queries
+    campsite_types TEXT DEFAULT '[]', -- JSON array of campsite types
+    equipment    TEXT DEFAULT '[]', -- JSON array of equipment types
+    
     PRIMARY KEY (provider, campground_id)
 );
 

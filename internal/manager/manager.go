@@ -489,6 +489,42 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 				slog.Any("err", err))
 			continue
 		}
+
+		// Extract unique campsite types and equipment from the fetched data
+		campsiteTypesSet := make(map[string]struct{})
+		equipmentSet := make(map[string]struct{})
+
+		for _, campsite := range campsiteInfos {
+			if campsite.Type != "" {
+				campsiteTypesSet[campsite.Type] = struct{}{}
+			}
+			for _, eq := range campsite.Equipment {
+				if eq != "" {
+					equipmentSet[eq] = struct{}{}
+				}
+			}
+		}
+
+		// Convert sets to slices
+		var campsiteTypes []string
+		for t := range campsiteTypesSet {
+			campsiteTypes = append(campsiteTypes, t)
+		}
+
+		var equipment []string
+		for e := range equipmentSet {
+			equipment = append(equipment, e)
+		}
+
+		// Update campground with aggregated campsite types and equipment
+		err = m.store.UpdateCampgroundWithCampsiteTypes(ctx, providerName, campground.ID, campsiteTypes, equipment)
+		if err != nil {
+			m.logger.Warn("failed to update campground with campsite data",
+				slog.String("provider", providerName),
+				slog.String("campground", campground.ID),
+				slog.Any("err", err))
+			// Don't skip - this is not critical
+		}
 		count++
 	}
 
