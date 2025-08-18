@@ -1,14 +1,9 @@
 package manager
 
 import (
-	"compress/gzip"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,18 +56,182 @@ type RecGovSearchResponse struct {
 	Size    int                  `json:"size"`
 }
 
-// Run polls every 5 seconds for active requests and performs deduped provider lookups.
+// Run polls providers at dynamic intervals based on their rate limit status
 func (m *Manager) Run(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	m.logger.Info("Starting manager")
+
+	// Start a goroutine for each provider
+	for _, providerName := range m.reg.GetProviderNames() {
+		go m.runProviderLoop(ctx, providerName)
+	}
+
+	// Wait for context cancellation
+	<-ctx.Done()
+}
+
+const fastestPoll = 10 * time.Second
+const pollIncrement = 10 * time.Second
+
+func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
+	interval := fastestPoll
+
+	m.logger.Info("Starting provider loop", "provider", providerName, "interval", interval)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			m.PollOnce(ctx)
+		case <-time.After(interval):
+			result := m.PollOnceResultForProvider(ctx, providerName)
+			// Check if any calls had 429 errors
+			has429 := false
+			for _, call := range result.Calls {
+				if strings.Contains(call.Error, "429") {
+					has429 = true
+					break
+				}
+			}
+			if has429 {
+				// Double the interval on 429 errors
+				interval += pollIncrement
+				m.logger.Warn("Rate limited, increasing interval", "provider", providerName, "new_interval", interval)
+
+				// Send Discord notification
+				m.mu.Lock()
+				notifier := m.notifier
+				channelID := m.summaryChannelID
+				m.mu.Unlock()
+				if notifier != nil && channelID != "" {
+					msg := fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval)
+					if err := notifier.NotifySummary(channelID, msg); err != nil {
+						m.logger.Warn("failed to send rate limit notification", slog.Any("err", err))
+					}
+				}
+			} else {
+				interval = fastestPoll // Reset to fastest poll on success
+			}
 		}
 	}
+}
+
+// PollOnceResultForProvider performs one poll cycle for a specific provider and returns a summary
+func (m *Manager) PollOnceResultForProvider(ctx context.Context, targetProvider string) PollResult {
+	// First, deactivate any expired requests
+	expiredCount, err := m.store.DeactivateExpiredRequests(ctx)
+	if err != nil {
+		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
+	} else if expiredCount > 0 {
+		m.logger.Info("deactivated expired requests", slog.Int64("count", expiredCount))
+	}
+
+	requests, err := m.store.ListActiveRequests(ctx)
+	if err != nil {
+		m.logger.Error("list requests failed", slog.Any("err", err))
+		return PollResult{}
+	}
+
+	// Filter requests for the target provider
+	var filteredRequests []db.SchniffRequest
+	for _, req := range requests {
+		if req.Provider == targetProvider {
+			filteredRequests = append(filteredRequests, req)
+		}
+	}
+
+	if len(filteredRequests) == 0 {
+		return PollResult{} // No requests for this provider
+	}
+
+	// dedupe by provider+campground, then provider decides how to bucket dates
+	datesByPC, _ := collectDatesByPC(filteredRequests)
+	var result PollResult
+	for k, datesSet := range datesByPC {
+		if k.prov != targetProvider {
+			continue // Should not happen due to filtering above, but safety check
+		}
+
+		prov, ok := m.reg.Get(k.prov)
+		if !ok {
+			continue
+		}
+		// to sorted slice
+		dates := datesFromSet(datesSet)
+		// provider decides minimal set of requests
+		buckets := prov.PlanBuckets(dates)
+		// collect all states for this provider+campground across buckets to enable bundled notifications
+		collectedStates := make([]providers.CampsiteAvailability, 0, 128)
+		for _, b := range buckets {
+			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
+			call := struct {
+				Provider     string
+				CampgroundID string
+				Start        time.Time
+				End          time.Time
+				Success      bool
+				Error        string
+			}{Provider: k.prov, CampgroundID: k.cg, Start: b.Start, End: b.End, Success: err == nil}
+			if err != nil {
+				call.Error = err.Error()
+				if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: false, ErrorMsg: err.Error(), CampsiteCount: 0}); err2 != nil {
+					m.logger.Warn("record lookup failed", slog.Any("err", err2))
+				}
+				m.logger.Warn("fetch availability failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End), slog.Any("err", err))
+				result.Calls = append(result.Calls, call)
+				continue
+			}
+			if err2 := m.store.RecordLookup(ctx, db.LookupLog{Provider: k.prov, CampgroundID: k.cg, StartDate: b.Start, EndDate: b.End, CheckedAt: time.Now(), Success: true, CampsiteCount: len(states)}); err2 != nil {
+				m.logger.Warn("record lookup failed", slog.Any("err", err2))
+			}
+			result.Calls = append(result.Calls, call)
+			result.States += len(states)
+			if len(states) == 0 {
+				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
+			}
+			// collect for later bundled change detection and notification
+			collectedStates = append(collectedStates, states...)
+		}
+
+		// Process all collected states for this provider+campground at once
+		if len(collectedStates) > 0 {
+			// Convert to db format
+			batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
+			now := time.Now()
+			for _, s := range collectedStates {
+				batch = append(batch, db.CampsiteAvailability{
+					Provider:     k.prov,
+					CampgroundID: k.cg,
+					CampsiteID:   s.ID,
+					Date:         s.Date,
+					Available:    s.Available,
+					LastChecked:  now,
+				})
+			}
+
+			// Upsert states
+			start := time.Now()
+			err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+			if err != nil {
+				m.logger.Error("upsert states failed", slog.Any("err", err))
+			} else {
+				m.logger.Info("persisted campsite states",
+					slog.String("provider", k.prov),
+					slog.String("campground", k.cg),
+					slog.Int("count", len(batch)),
+					slog.Duration("duration_ms", time.Since(start)),
+				)
+			}
+		}
+	}
+
+	// After processing all states, check for notifications
+	if len(filteredRequests) > 0 {
+		err := m.ProcessNotificationsWithBatches(ctx, filteredRequests)
+		if err != nil {
+			m.logger.Warn("process notifications failed", slog.String("provider", targetProvider), slog.Any("err", err))
+		}
+	}
+
+	return result
 }
 
 // PollResult is returned by pollOnce for testing/inspection.
@@ -838,107 +997,5 @@ func (m *Manager) GetSummaryData(ctx context.Context) (SummaryData, error) {
 		NotificationUsernames: notificationUsernames,
 		ActiveUsernames:       activeUsernames,
 		TrackedCampgrounds:    trackedCampgrounds,
-	}, nil
-}
-
-// Helper methods for streaming sync
-
-// fetchRecreationGovPage fetches a single page of campgrounds from recreation.gov API
-func (m *Manager) fetchRecreationGovPage(ctx context.Context, page int, pageSize int) ([]RecGovSearchResult, bool, error) {
-	url := fmt.Sprintf("https://www.recreation.gov/api/search?fq=entity_type%%3Acampground&size=%d&start=%d",
-		pageSize, page*pageSize)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, false, err
-	}
-
-	// Add Chrome headers to avoid 403 errors
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, false, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, false, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	// Handle gzip response
-	var reader io.Reader = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzipReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzipReader.Close()
-		reader = gzipReader
-	}
-
-	var searchResp RecGovSearchResponse
-	if err := json.NewDecoder(reader).Decode(&searchResp); err != nil {
-		return nil, false, err
-	}
-
-	hasMore := len(searchResp.Results) == pageSize
-	return searchResp.Results, hasMore, nil
-} // convertRecGovResult converts a recreation.gov search result to CampgroundInfo
-func (m *Manager) convertRecGovResult(result RecGovSearchResult) (providers.CampgroundInfo, error) {
-	var lat, lon float64
-	if result.Latitude != "" {
-		if v, err := strconv.ParseFloat(result.Latitude, 64); err == nil {
-			lat = v
-		}
-	}
-	if result.Longitude != "" {
-		if v, err := strconv.ParseFloat(result.Longitude, 64); err == nil {
-			lon = v
-		}
-	}
-
-	// Create final name with parent info if available
-	name := result.Name
-	if result.ParentName != "" {
-		name = result.ParentName + ": " + result.Name
-	}
-
-	// Build amenities list from activities and equipment
-	var amenities []string
-	for _, activity := range result.Activities {
-		amenities = append(amenities, activity.ActivityName)
-	}
-	for _, equipment := range result.CampsiteEquipmentName {
-		amenities = append(amenities, "Equipment: "+equipment)
-	}
-
-	return providers.CampgroundInfo{
-		ID:        result.EntityID,
-		Name:      name,
-		Lat:       lat,
-		Lon:       lon,
-		Rating:    result.AverageRating,
-		Amenities: amenities,
-		ImageURL:  result.PreviewImageURL,
-		PriceMin:  result.PriceRange.AmountMin,
-		PriceMax:  result.PriceRange.AmountMax,
-		PriceUnit: result.PriceRange.PerUnit,
-	}, nil
-}
-
-// fetchRecGovCampgroundDetails fetches detailed information for a campground
-// This is now unnecessary since we get all data from the search API
-func (m *Manager) fetchRecGovCampgroundDetails(ctx context.Context, facilityID string) (providers.CampgroundInfo, error) {
-	// This method is no longer needed since the search API provides all the data we need
-	// But we keep it for backward compatibility in case it's called
-	return providers.CampgroundInfo{
-		Rating:    0.0,
-		Amenities: []string{},
 	}, nil
 }

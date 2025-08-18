@@ -28,7 +28,7 @@ func Open(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
 	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
 		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
-			if duration > 10*time.Millisecond {
+			if duration > 500*time.Millisecond {
 				slog.Info("slow query succeeded", slog.Any("args", args), slog.String("query", query), slog.Duration("took", duration))
 			}
 		},
