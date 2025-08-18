@@ -1359,7 +1359,7 @@ func (s *Store) GetTrackedCampgrounds(ctx context.Context) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT DISTINCT c.name
 		FROM campgrounds c
-		JOIN schniff_requests sr ON c.provider = sr.provider AND c.id = sr.campground_id
+		JOIN schniff_requests sr ON c.provider = sr.provider AND c.campground_id = sr.campground_id
 		WHERE sr.active = true
 		ORDER BY c.name
 	`)
