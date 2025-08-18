@@ -374,37 +374,53 @@ function openSaveGroupModal() {
         if (campground.price_min > 0 || campground.price_max > 0) {
             const unit = campground.price_unit || 'night';
             if (campground.price_min === campground.price_max) {
-                priceDisplay = `<span class="campground-price">$${campground.price_min.toFixed(0)}/${unit}</span>`;
+                priceDisplay = `<span class="campground-price">💰 $${campground.price_min.toFixed(0)}/${unit}</span>`;
             } else if (campground.price_min > 0 && campground.price_max > 0) {
-                priceDisplay = `<span class="campground-price">$${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</span>`;
+                priceDisplay = `<span class="campground-price">💰 $${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</span>`;
             } else if (campground.price_max > 0) {
-                priceDisplay = `<span class="campground-price">Up to $${campground.price_max.toFixed(0)}/${unit}</span>`;
+                priceDisplay = `<span class="campground-price">💰 Up to $${campground.price_max.toFixed(0)}/${unit}</span>`;
             }
         }
+
+        // Format campsite types for modal
+        let campsiteTypesDisplay = '';
+        if (campground.campsite_types && campground.campsite_types.length > 0) {
+            const types = campground.campsite_types.slice(0, 3);
+            campsiteTypesDisplay = types.map(type => `<span class="campground-campsite-types">📍 ${type}</span>`).join(' ');
+        }
+
+        // Format equipment for modal
+        let equipmentDisplay = '';
+        if (campground.equipment && campground.equipment.length > 0) {
+            const equipment = campground.equipment.slice(0, 3).join(', ');
+            equipmentDisplay = `<span class="campground-equipment">🛖 ${equipment}</span>`;
+        }
             
-        // Format amenities for modal (show first 3 key amenities)
+        // Format amenities for modal (show amenities with wrapping)
         let amenitiesDisplay = '';
         if (campground.amenities && campground.amenities.length > 0) {
             const topAmenities = campground.amenities
                 .filter(name => !name.startsWith('Equipment:') && !name.includes('Description'))
                 .join(', ');
             if (topAmenities) {
-                amenitiesDisplay = `<div class="campground-amenities">🛝${topAmenities}</div>`;
+                amenitiesDisplay = `<span class="campground-amenities">🛝 ${topAmenities}</span>`;
             }
         }
         
         item.innerHTML = `
             <label>
-                <div style="display: flex; align-items: flex-start; width: 100%; overflow: hidden;">
+                <div style="display: flex; align-items: flex-start; width: 100%;">
                     <input type="checkbox" value="${campground.provider}:${campground.id}" data-name="${campground.name}" onchange="updateSaveModalButton()">
-                    <div style="flex: 1; min-width: 0; overflow: hidden;">
+                    <div style="flex: 1; min-width: 0;">
                         <div class="campground-name">
                             ${campground.name}
                         </div>
-                        <div class="campground-provider-line">
+                        <div class="campground-info-blocks">
                             <span class="campground-provider">${campground.provider.replace('_', ' ')}</span>
                             ${ratingDisplay}
                             ${priceDisplay}
+                            ${campsiteTypesDisplay}
+                            ${equipmentDisplay}
                         </div>
                         ${amenitiesDisplay}
                     </div>
