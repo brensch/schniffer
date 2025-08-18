@@ -157,7 +157,6 @@ func (s *Server) handleViewportAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Determine if we should cluster based on count first with a quick count query
 	shouldCluster := s.shouldClusterViewport(r.Context(), req)
-	fmt.Println("shouldCluster:", shouldCluster)
 
 	// Get campgrounds with appropriate level of detail
 	campgrounds, err := s.getCampgroundsInViewport(r.Context(), req, !shouldCluster)
@@ -195,7 +194,7 @@ func (s *Server) shouldClusterViewport(ctx context.Context, req ViewportRequest)
 		WHERE c.latitude BETWEEN ? AND ?
 		AND c.longitude BETWEEN ? AND ?
 		AND c.latitude != 0 AND c.longitude != 0`
-	
+
 	args = []interface{}{req.South, req.North, req.West, req.East}
 
 	// Add campsite types filter - OR within category, exact JSON matching

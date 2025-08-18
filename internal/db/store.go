@@ -1046,7 +1046,7 @@ type Group struct {
 func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground, error) {
 	// Fuzzy search across campground names with simple ranking.
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
+		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
 		FROM campgrounds
 		WHERE lower(name) LIKE '%' || lower(?) || '%'
 		ORDER BY
@@ -1078,7 +1078,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 // GetAllCampgrounds returns all campgrounds without any limit
 func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
+		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
 		FROM campgrounds
 		ORDER BY name
 	`)
@@ -1100,9 +1100,9 @@ func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
 
 func (s *Store) GetCampgroundByID(ctx context.Context, provider, campgroundID string) (Campground, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT provider, id, name, coalesce(lat, 0.0), coalesce(lon, 0.0)
+		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
 		FROM campgrounds
-		WHERE provider=? AND id=?
+		WHERE provider=? AND campground_id=?
 	`, provider, campgroundID)
 	var c Campground
 	err := row.Scan(&c.Provider, &c.ID, &c.Name, &c.Lat, &c.Lon)
@@ -1474,4 +1474,139 @@ func (s *Store) getCampgroundTypesBatch(ctx context.Context, campgroundKeys []st
 	}
 
 	return result, rows.Err()
+}
+
+// CampsiteDetails holds detailed information about a campsite
+type CampsiteDetails struct {
+	CampsiteID   string
+	Name         string
+	Type         string
+	CostPerNight float64
+	Rating       float64
+	Equipment    []string
+	ImageURL     string
+}
+
+// GetCampsiteDetails retrieves detailed information for a specific campsite
+func (s *Store) GetCampsiteDetails(ctx context.Context, provider, campgroundID, campsiteID string) (CampsiteDetails, error) {
+	// Get campsite metadata
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT campsite_id, coalesce(name, ''), coalesce(campsite_type, ''), 
+		       coalesce(cost_per_night, 0.0), coalesce(rating, 0.0), coalesce(image_url, '')
+		FROM campsite_metadata
+		WHERE provider=? AND campground_id=? AND campsite_id=?
+	`, provider, campgroundID, campsiteID)
+
+	var details CampsiteDetails
+	err := row.Scan(&details.CampsiteID, &details.Name, &details.Type,
+		&details.CostPerNight, &details.Rating, &details.ImageURL)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// If no metadata found, return basic info
+			details.CampsiteID = campsiteID
+			details.Name = ""
+			details.Type = ""
+		} else {
+			// Log error but don't fail notification
+			details.CampsiteID = campsiteID
+		}
+	}
+
+	// Get equipment types for this campsite
+	equipmentRows, err := s.DB.QueryContext(ctx, `
+		SELECT equipment_type
+		FROM campsite_equipment
+		WHERE provider=? AND campground_id=? AND campsite_id=?
+		ORDER BY equipment_type
+	`, provider, campgroundID, campsiteID)
+
+	if err == nil {
+		defer equipmentRows.Close()
+		var equipment []string
+		for equipmentRows.Next() {
+			var equipType string
+			if err := equipmentRows.Scan(&equipType); err == nil {
+				equipment = append(equipment, equipType)
+			}
+		}
+		details.Equipment = equipment
+	}
+
+	return details, nil
+}
+
+// GetCampsiteDetailsBatch retrieves detailed information for multiple campsites efficiently
+func (s *Store) GetCampsiteDetailsBatch(ctx context.Context, provider, campgroundID string, campsiteIDs []string) (map[string]CampsiteDetails, error) {
+	if len(campsiteIDs) == 0 {
+		return make(map[string]CampsiteDetails), nil
+	}
+
+	result := make(map[string]CampsiteDetails)
+
+	// Initialize with basic info for all requested campsites
+	for _, id := range campsiteIDs {
+		result[id] = CampsiteDetails{
+			CampsiteID: id,
+			Equipment:  []string{},
+		}
+	}
+
+	// Build placeholders for IN clause
+	placeholders := make([]string, len(campsiteIDs))
+	args := []interface{}{provider, campgroundID}
+	for i, id := range campsiteIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	// Get metadata for all campsites
+	metadataQuery := fmt.Sprintf(`
+		SELECT campsite_id, coalesce(name, ''), coalesce(campsite_type, ''), 
+		       coalesce(cost_per_night, 0.0), coalesce(rating, 0.0), coalesce(image_url, '')
+		FROM campsite_metadata
+		WHERE provider=? AND campground_id=? AND campsite_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	metadataRows, err := s.DB.QueryContext(ctx, metadataQuery, args...)
+	if err == nil {
+		defer metadataRows.Close()
+		for metadataRows.Next() {
+			var campsiteID, name, campsiteType, imageURL string
+			var costPerNight, rating float64
+			if err := metadataRows.Scan(&campsiteID, &name, &campsiteType, &costPerNight, &rating, &imageURL); err == nil {
+				if details, exists := result[campsiteID]; exists {
+					details.Name = name
+					details.Type = campsiteType
+					details.CostPerNight = costPerNight
+					details.Rating = rating
+					details.ImageURL = imageURL
+					result[campsiteID] = details
+				}
+			}
+		}
+	}
+
+	// Get equipment for all campsites
+	equipmentQuery := fmt.Sprintf(`
+		SELECT campsite_id, equipment_type
+		FROM campsite_equipment
+		WHERE provider=? AND campground_id=? AND campsite_id IN (%s)
+		ORDER BY campsite_id, equipment_type
+	`, strings.Join(placeholders, ","))
+
+	equipmentRows, err := s.DB.QueryContext(ctx, equipmentQuery, args...)
+	if err == nil {
+		defer equipmentRows.Close()
+		for equipmentRows.Next() {
+			var campsiteID, equipType string
+			if err := equipmentRows.Scan(&campsiteID, &equipType); err == nil {
+				if details, exists := result[campsiteID]; exists {
+					details.Equipment = append(details.Equipment, equipType)
+					result[campsiteID] = details
+				}
+			}
+		}
+	}
+
+	return result, nil
 }

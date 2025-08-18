@@ -82,7 +82,11 @@ func sanitizeChoiceValue(s string) string {
 func (b *Bot) formatCampgroundWithLink(ctx context.Context, provider, campgroundID, fallbackName string) string {
 	// Try to get campground info for better name
 	name := fallbackName
-	if cg, ok, _ := b.store.GetCampgroundByID(ctx, provider, campgroundID); ok {
+	cg, ok, err := b.store.GetCampgroundByID(ctx, provider, campgroundID)
+	if err != nil {
+		return name
+	}
+	if ok {
 		name = cg.Name
 	}
 

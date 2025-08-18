@@ -207,14 +207,14 @@ function renderMarkersFromViewport(result) {
             let campsiteTypesDisplay = '';
             if (campground.campsite_types && campground.campsite_types.length > 0) {
                 const types = campground.campsite_types.slice(0, 3).join(', ');
-                campsiteTypesDisplay = `<div class="popup-campsite-types">🛖 ${types}</div>`;
+                campsiteTypesDisplay = `<div class="popup-campsite-types">📍 ${types}</div>`;
             }
             
             // Format equipment display
             let equipmentDisplay = '';
             if (campground.equipment && campground.equipment.length > 0) {
                 const equipment = campground.equipment.slice(0, 3).join(', ');
-                equipmentDisplay = `<div class="popup-equipment">🚐 ${equipment}</div>`;
+                equipmentDisplay = `<div class="popup-equipment">🛖 ${equipment}</div>`;
             }
             
             // Format image display

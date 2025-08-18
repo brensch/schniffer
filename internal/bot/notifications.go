@@ -12,12 +12,13 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// CampsiteStats holds statistics for a campsite's availability
+// CampsiteStats holds statistics for a campsite's availability with enhanced details
 type CampsiteStats struct {
 	CampsiteID    string
 	DaysAvailable int
 	TotalDays     int
 	Dates         []time.Time
+	Details       db.CampsiteDetails // Enhanced details from database
 }
 
 // NotifyAvailabilityEmbed sends a beautifully formatted embed with campsite fields
@@ -30,8 +31,8 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 	// Get campground info (we'll use the helper function in buildNotificationEmbed)
 	// No need to get the name here since the helper function will handle it
 
-	// Group items by campsite and calculate availability stats
-	campsiteStats := b.calculateCampsiteStats(items, req.Checkin, req.Checkout)
+	// Group items by campsite and calculate availability stats with enhanced details
+	campsiteStats := b.calculateCampsiteStats(items, req.Checkin, req.Checkout, provider, campgroundID)
 
 	// Sort campsites by days available (descending)
 	sort.Slice(campsiteStats, func(i, j int) bool {
@@ -50,8 +51,8 @@ func (b *Bot) NotifyAvailabilityEmbed(userID string, provider string, campground
 	return err
 }
 
-// calculateCampsiteStats groups availability items by campsite and calculates stats
-func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, checkout time.Time) []CampsiteStats {
+// calculateCampsiteStats groups availability items by campsite and calculates stats with enhanced details
+func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, checkout time.Time, provider, campgroundID string) []CampsiteStats {
 	// Group by campsite
 	byCampsite := make(map[string][]time.Time)
 	for _, item := range items {
@@ -61,6 +62,25 @@ func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, check
 	// Calculate total days in the requested range
 	totalDays := int(checkout.Sub(checkin).Hours() / 24)
 
+	// Get all campsite IDs for batch lookup
+	var campsiteIDs []string
+	for campsiteID := range byCampsite {
+		campsiteIDs = append(campsiteIDs, campsiteID)
+	}
+
+	// Get enhanced details for all campsites in batch (with error handling)
+	campsiteDetails, err := b.store.GetCampsiteDetailsBatch(context.Background(), provider, campgroundID, campsiteIDs)
+	if err != nil {
+		// Log error but continue with basic info
+		campsiteDetails = make(map[string]db.CampsiteDetails)
+		for _, id := range campsiteIDs {
+			campsiteDetails[id] = db.CampsiteDetails{
+				CampsiteID: id,
+				Equipment:  []string{},
+			}
+		}
+	}
+
 	// Build stats for each campsite
 	var stats []CampsiteStats
 	for campsiteID, dates := range byCampsite {
@@ -69,11 +89,21 @@ func (b *Bot) calculateCampsiteStats(items []db.AvailabilityItem, checkin, check
 			return dates[i].Before(dates[j])
 		})
 
+		// Get details, fallback to basic info if not found
+		details, exists := campsiteDetails[campsiteID]
+		if !exists {
+			details = db.CampsiteDetails{
+				CampsiteID: campsiteID,
+				Equipment:  []string{},
+			}
+		}
+
 		stats = append(stats, CampsiteStats{
 			CampsiteID:    campsiteID,
 			DaysAvailable: len(dates),
 			TotalDays:     totalDays,
 			Dates:         dates,
+			Details:       details,
 		})
 	}
 
@@ -126,6 +156,31 @@ func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string,
 		// Build field content
 		var fieldValue strings.Builder
 
+		// Add campsite details first if available
+		if stats.Details.Name != "" {
+			fieldValue.WriteString(fmt.Sprintf("**%s**\n", stats.Details.Name))
+		}
+		if stats.Details.Type != "" {
+			fieldValue.WriteString(fmt.Sprintf("Type: %s\n", stats.Details.Type))
+		}
+		if stats.Details.CostPerNight > 0 {
+			fieldValue.WriteString(fmt.Sprintf("Cost: $%.2f/night\n", stats.Details.CostPerNight))
+		}
+		if stats.Details.Rating > 0 {
+			fieldValue.WriteString(fmt.Sprintf("Rating: ⭐ %.1f\n", stats.Details.Rating))
+		}
+		if len(stats.Details.Equipment) > 0 {
+			// Limit equipment list to prevent field overflow
+			equipment := stats.Details.Equipment
+			if len(equipment) > 5 {
+				equipment = equipment[:5]
+				fieldValue.WriteString(fmt.Sprintf("Equipment: %s, +%d more\n", strings.Join(equipment, ", "), len(stats.Details.Equipment)-5))
+			} else {
+				fieldValue.WriteString(fmt.Sprintf("Equipment: %s\n", strings.Join(equipment, ", ")))
+			}
+		}
+		fieldValue.WriteString("\n")
+
 		// Make the availability count the clickable link
 		availabilityText := fmt.Sprintf("%d of %d days available", stats.DaysAvailable, stats.TotalDays)
 		if url := b.mgr.CampsiteURL(provider, campgroundID, stats.CampsiteID); url != "" {
@@ -134,7 +189,7 @@ func (b *Bot) buildNotificationEmbed(checkin, checkout time.Time, userID string,
 		fieldValue.WriteString(availabilityText + "\n")
 
 		// List available dates (limit to prevent field size issues)
-		maxDates := 10
+		maxDates := 8 // Reduced from 10 to account for additional info
 		if len(stats.Dates) > maxDates {
 			fieldValue.WriteString(fmt.Sprintf("First %d of %d dates:\n", maxDates, len(stats.Dates)))
 		}
