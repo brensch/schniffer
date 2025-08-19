@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/brensch/schniffer/internal/db"
@@ -55,7 +54,6 @@ func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, err
 
 	// Find the first text channel in the guild
 	for _, channel := range channels {
-		fmt.Println(channel.Type)
 		if channel.Type == discordgo.ChannelTypeGuildText {
 			return channel.ID, nil
 		}
