@@ -703,64 +703,80 @@ func (s *Server) handleCampgroundPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected /campground/{provider}/{campgroundID}", http.StatusBadRequest)
 		return
 	}
-	
+
 	provider := parts[0]
 	campgroundID := parts[1]
-	
-	slog.Info("campground page accessed", 
-		slog.String("provider", provider), 
-		slog.String("campground_id", campgroundID))
-	
-	// Trigger ad-hoc scrape request (with debouncing) in background
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		
-		// Check if we can/should request a scrape (5 minute debouncing)
-		canRequest, err := s.store.CanRequestAdhocScrapeWithTimeout(ctx, provider, campgroundID, 5*time.Minute)
-		if err != nil {
-			slog.Error("failed to check adhoc scrape eligibility", 
-				slog.String("provider", provider), 
-				slog.String("campground_id", campgroundID), 
-				slog.Any("error", err))
-			return
-		}
-		
-		if !canRequest {
-			slog.Debug("skipping adhoc scrape - too recent", 
-				slog.String("provider", provider), 
-				slog.String("campground_id", campgroundID))
-			return
-		}
-		
-		// Create the request record first
-		req, err := s.store.RequestAdhocScrape(ctx, provider, campgroundID, "user")
-		if err != nil {
-			slog.Error("failed to create adhoc scrape request", 
-				slog.String("provider", provider), 
-				slog.String("campground_id", campgroundID), 
-				slog.Any("error", err))
-			return
-		}
-		
-		if req != nil && req.Status == "pending" {
-			slog.Info("executing immediate adhoc scrape", 
-				slog.String("provider", provider), 
-				slog.String("campground_id", campgroundID),
-				slog.Int("request_id", req.ID))
-			
-			// Execute the scrape immediately using the manager
-			err = s.mgr.ProcessAdhocScrapeRequest(ctx, req)
+
+	// Extract user parameter from query string
+	userID := r.URL.Query().Get("user")
+
+	slog.Info("campground page accessed",
+		slog.String("provider", provider),
+		slog.String("campground_id", campgroundID),
+		slog.String("user_id", userID))
+
+	// Only trigger ad-hoc scrape request if user parameter is present
+	if userID != "" {
+		// Trigger ad-hoc scrape request (with debouncing) in background
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			// Check if we can/should request a scrape (5 minute debouncing)
+			canRequest, err := s.store.CanRequestAdhocScrapeWithTimeout(ctx, provider, campgroundID, 5*time.Minute)
 			if err != nil {
-				slog.Error("failed to execute immediate adhoc scrape", 
-					slog.Int("request_id", req.ID),
+				slog.Error("failed to check adhoc scrape eligibility",
 					slog.String("provider", provider),
 					slog.String("campground_id", campgroundID),
+					slog.String("user_id", userID),
 					slog.Any("error", err))
+				return
 			}
-		}
-	}()
-	
+
+			if !canRequest {
+				slog.Debug("skipping adhoc scrape - too recent",
+					slog.String("provider", provider),
+					slog.String("campground_id", campgroundID),
+					slog.String("user_id", userID))
+				return
+			}
+
+			// Create the request record first
+			req, err := s.store.RequestAdhocScrape(ctx, provider, campgroundID, "user", userID)
+			if err != nil {
+				slog.Error("failed to create adhoc scrape request",
+					slog.String("provider", provider),
+					slog.String("campground_id", campgroundID),
+					slog.String("user_id", userID),
+					slog.Any("error", err))
+				return
+			}
+
+			if req != nil && req.Status == "pending" {
+				slog.Info("executing immediate adhoc scrape",
+					slog.String("provider", provider),
+					slog.String("campground_id", campgroundID),
+					slog.String("user_id", userID),
+					slog.Int("request_id", req.ID))
+
+				// Execute the scrape immediately using the manager
+				err = s.mgr.ProcessAdhocScrapeRequest(ctx, req)
+				if err != nil {
+					slog.Error("failed to execute immediate adhoc scrape",
+						slog.Int("request_id", req.ID),
+						slog.String("provider", provider),
+						slog.String("campground_id", campgroundID),
+						slog.String("user_id", userID),
+						slog.Any("error", err))
+				}
+			}
+		}()
+	} else {
+		slog.Debug("skipping adhoc scrape - no user parameter provided",
+			slog.String("provider", provider),
+			slog.String("campground_id", campgroundID))
+	}
+
 	http.ServeFile(w, r, "./static/campground.html")
 }
 
@@ -820,6 +836,18 @@ func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		campgroundName = campgroundID
 	}
+
+	// Check if there's a recent pending ad-hoc scrape request
+	var pendingCount int
+	err = s.store.ReadDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) 
+		FROM adhoc_scrape_requests 
+		WHERE provider = ? AND campground_id = ? 
+		AND status = 'pending'
+		AND requested_at > datetime('now', '-5 minutes')
+	`, provider, campgroundID).Scan(&pendingCount)
+
+	isRefreshing := err == nil && pendingCount > 0
 
 	// Collect all campsite ids for campground
 	rows, err := s.store.DB.QueryContext(ctx, `SELECT campsite_id FROM campsite_metadata WHERE provider=? AND campground_id=? ORDER BY campsite_id`, provider, campgroundID)
@@ -923,6 +951,9 @@ func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Campground-Name", campgroundName)
+	if isRefreshing {
+		w.Header().Set("X-Refresh-In-Progress", "true")
+	}
 	w.Write(b.Bytes())
 }
 

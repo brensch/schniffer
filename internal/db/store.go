@@ -1773,14 +1773,15 @@ func (s *Store) GetCampsiteDetailsBatch(ctx context.Context, provider, campgroun
 
 // AdhocScrapeRequest represents an ad-hoc scrape request
 type AdhocScrapeRequest struct {
-	ID           int       `json:"id"`
-	Provider     string    `json:"provider"`
-	CampgroundID string    `json:"campground_id"`
-	RequestedAt  time.Time `json:"requested_at"`
-	TriggeredBy  string    `json:"triggered_by"`
-	Status       string    `json:"status"`
+	ID           int        `json:"id"`
+	Provider     string     `json:"provider"`
+	CampgroundID string     `json:"campground_id"`
+	UserID       *string    `json:"user_id,omitempty"`
+	RequestedAt  time.Time  `json:"requested_at"`
+	TriggeredBy  string     `json:"triggered_by"`
+	Status       string     `json:"status"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	ErrorMsg     *string   `json:"error_msg,omitempty"`
+	ErrorMsg     *string    `json:"error_msg,omitempty"`
 }
 
 // CanRequestAdhocScrape checks if an ad-hoc scrape can be requested for the given campground
@@ -1794,11 +1795,11 @@ func (s *Store) CanRequestAdhocScrape(ctx context.Context, provider, campgroundI
 		AND requested_at > datetime('now', '-10 minutes')
 		AND status IN ('pending', 'completed')
 	`, provider, campgroundID).Scan(&count)
-	
+
 	if err != nil {
 		return false, fmt.Errorf("failed to check adhoc scrape eligibility: %w", err)
 	}
-	
+
 	return count == 0, nil
 }
 
@@ -1813,39 +1814,39 @@ func (s *Store) CanRequestAdhocScrapeWithTimeout(ctx context.Context, provider, 
 		AND requested_at > datetime('now', '-' || ? || ' minutes')
 		AND status IN ('pending', 'completed')
 	`, provider, campgroundID, timeoutMinutes).Scan(&count)
-	
+
 	if err != nil {
 		return false, fmt.Errorf("failed to check adhoc scrape eligibility: %w", err)
 	}
-	
+
 	return count == 0, nil
 }
 
 // RequestAdhocScrape creates a new ad-hoc scrape request if one doesn't exist recently
-func (s *Store) RequestAdhocScrape(ctx context.Context, provider, campgroundID, triggeredBy string) (*AdhocScrapeRequest, error) {
+func (s *Store) RequestAdhocScrape(ctx context.Context, provider, campgroundID, triggeredBy, userID string) (*AdhocScrapeRequest, error) {
 	// Check if we can request a scrape
 	canRequest, err := s.CanRequestAdhocScrape(ctx, provider, campgroundID)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if !canRequest {
 		// Return the most recent request instead of creating a new one
 		return s.GetMostRecentAdhocScrape(ctx, provider, campgroundID)
 	}
-	
+
 	// Create new request
 	var id int
 	err = s.DB.QueryRowContext(ctx, `
-		INSERT INTO adhoc_scrape_requests (provider, campground_id, triggered_by)
-		VALUES (?, ?, ?)
+		INSERT INTO adhoc_scrape_requests (provider, campground_id, triggered_by, user_id)
+		VALUES (?, ?, ?, ?)
 		RETURNING id
-	`, provider, campgroundID, triggeredBy).Scan(&id)
-	
+	`, provider, campgroundID, triggeredBy, userID).Scan(&id)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adhoc scrape request: %w", err)
 	}
-	
+
 	// Get the created request
 	return s.GetAdhocScrapeRequest(ctx, id)
 }
@@ -1855,25 +1856,25 @@ func (s *Store) GetAdhocScrapeRequest(ctx context.Context, id int) (*AdhocScrape
 	var req AdhocScrapeRequest
 	var completedAt sql.NullTime
 	var errorMsg sql.NullString
-	
+
 	err := s.ReadDB.QueryRowContext(ctx, `
 		SELECT id, provider, campground_id, requested_at, triggered_by, status, completed_at, error_msg
 		FROM adhoc_scrape_requests
 		WHERE id = ?
-	`, id).Scan(&req.ID, &req.Provider, &req.CampgroundID, &req.RequestedAt, 
+	`, id).Scan(&req.ID, &req.Provider, &req.CampgroundID, &req.RequestedAt,
 		&req.TriggeredBy, &req.Status, &completedAt, &errorMsg)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get adhoc scrape request: %w", err)
 	}
-	
+
 	if completedAt.Valid {
 		req.CompletedAt = &completedAt.Time
 	}
 	if errorMsg.Valid {
 		req.ErrorMsg = &errorMsg.String
 	}
-	
+
 	return &req, nil
 }
 
@@ -1882,7 +1883,7 @@ func (s *Store) GetMostRecentAdhocScrape(ctx context.Context, provider, campgrou
 	var req AdhocScrapeRequest
 	var completedAt sql.NullTime
 	var errorMsg sql.NullString
-	
+
 	err := s.ReadDB.QueryRowContext(ctx, `
 		SELECT id, provider, campground_id, requested_at, triggered_by, status, completed_at, error_msg
 		FROM adhoc_scrape_requests
@@ -1891,28 +1892,28 @@ func (s *Store) GetMostRecentAdhocScrape(ctx context.Context, provider, campgrou
 		LIMIT 1
 	`, provider, campgroundID).Scan(&req.ID, &req.Provider, &req.CampgroundID, &req.RequestedAt,
 		&req.TriggeredBy, &req.Status, &completedAt, &errorMsg)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil // No requests found
 		}
 		return nil, fmt.Errorf("failed to get most recent adhoc scrape request: %w", err)
 	}
-	
+
 	if completedAt.Valid {
 		req.CompletedAt = &completedAt.Time
 	}
 	if errorMsg.Valid {
 		req.ErrorMsg = &errorMsg.String
 	}
-	
+
 	return &req, nil
 }
 
 // UpdateAdhocScrapeStatus updates the status of an ad-hoc scrape request
 func (s *Store) UpdateAdhocScrapeStatus(ctx context.Context, id int, status string, errorMsg *string) error {
 	var err error
-	
+
 	if errorMsg != nil {
 		_, err = s.DB.ExecContext(ctx, `
 			UPDATE adhoc_scrape_requests 
@@ -1926,11 +1927,11 @@ func (s *Store) UpdateAdhocScrapeStatus(ctx context.Context, id int, status stri
 			WHERE id = ?
 		`, status, id)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to update adhoc scrape status: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -1946,28 +1947,28 @@ func (s *Store) GetPendingAdhocScrapes(ctx context.Context) ([]*AdhocScrapeReque
 		return nil, fmt.Errorf("failed to get pending adhoc scrapes: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var requests []*AdhocScrapeRequest
 	for rows.Next() {
 		var req AdhocScrapeRequest
 		var completedAt sql.NullTime
 		var errorMsg sql.NullString
-		
+
 		err := rows.Scan(&req.ID, &req.Provider, &req.CampgroundID, &req.RequestedAt,
 			&req.TriggeredBy, &req.Status, &completedAt, &errorMsg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan adhoc scrape request: %w", err)
 		}
-		
+
 		if completedAt.Valid {
 			req.CompletedAt = &completedAt.Time
 		}
 		if errorMsg.Valid {
 			req.ErrorMsg = &errorMsg.String
 		}
-		
+
 		requests = append(requests, &req)
 	}
-	
+
 	return requests, nil
 }

@@ -241,12 +241,13 @@
     <div id="meta">Loading campground availability...</div>
 
     <div id="controls">
+        <button id="back">← Map</button>
         <input type="text" id="daterange" name="daterange" />
         <button id="refresh">Refresh</button>
     </div>
 
     <div id="ascii">Fetching...</div>
-    <small>Compact ASCII view. Use the map to explore visually.</small>
+    <small>🐽 💖</small>
 
     <!-- Lightpick dependencies -->
     <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
@@ -259,20 +260,31 @@
                 document.getElementById( 'ascii' ).textContent = 'Bad path. Expected /campground/{provider}/{id}'
                 return
             }
-            const provider = parts[1]
-            const campgroundID = parts[2]
-            const titleEl = document.getElementById('title')
-            const metaEl = document.getElementById('meta')
-            const asciiEl = document.getElementById('ascii')
-            const refreshBtn = document.getElementById('refresh')
+            const provider = parts[ 1 ]
+            const campgroundID = parts[ 2 ]
+            const titleEl = document.getElementById( 'title' )
+            const metaEl = document.getElementById( 'meta' )
+            const asciiEl = document.getElementById( 'ascii' )
+            const refreshBtn = document.getElementById( 'refresh' )
+            const backBtn = document.getElementById( 'back' )
 
             // Parse URL params or set defaults (today + 3 weeks)
             const urlParams = new URLSearchParams( window.location.search )
+            const userParam = urlParams.get( 'user' ) // Get user parameter for ad-hoc requests
             const today = moment()
             const threeWeeksLater = moment().add( 21, 'days' )
 
             const fromDate = urlParams.get( 'from' ) ? moment( urlParams.get( 'from' ) ) : today
             const toDate = urlParams.get( 'to' ) ? moment( urlParams.get( 'to' ) ) : threeWeeksLater
+
+            // Back button functionality
+            backBtn.onclick = function () {
+                let mapUrl = '/'
+                if ( userParam ) {
+                    mapUrl += '?user=' + encodeURIComponent( userParam )
+                }
+                window.location.href = mapUrl
+            }
 
             // Initialize Lightpick
             const picker = new Lightpick( {
@@ -311,11 +323,26 @@
                     const to = picker.getEndDate() ? moment( picker.getEndDate() ).format( 'YYYY-MM-DD' ) : toDate.format( 'YYYY-MM-DD' )
                     const resp = await fetch( `/api/campground_state/${ provider }/${ campgroundID }?from=${ from }&to=${ to }` )
                     const txt = await resp.text()
-                    const name = resp.headers.get('X-Campground-Name') || campgroundID
-                    titleEl.textContent = `${name} [${provider}/${campgroundID}]`
-                    metaEl.textContent = `Showing availability from ${from} to ${to}`
+                    const name = resp.headers.get( 'X-Campground-Name' ) || campgroundID
+                    const isRefreshing = resp.headers.get( 'X-Refresh-In-Progress' ) === 'true'
+
+                    titleEl.textContent = `${ name } [${ provider }/${ campgroundID }]`
+                    if ( isRefreshing ) {
+                        metaEl.textContent = `Refreshing data from ${ from } to ${ to }... will update shortly`
+                    } else {
+                        metaEl.textContent = `O = available . = unavailable`
+                    }
                     asciiEl.textContent = txt
                     updateUrl()
+
+                    // If refresh is in progress, schedule another load in 1 second
+                    if ( isRefreshing ) {
+                        setTimeout( () => {
+                            if ( !loading ) { // Only retry if not already loading
+                                load()
+                            }
+                        }, 1000 )
+                    }
                 } catch ( e ) {
                     asciiEl.textContent = 'Error: ' + e
                 } finally {

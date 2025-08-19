@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS adhoc_scrape_requests (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     provider      TEXT NOT NULL,
     campground_id TEXT NOT NULL,
+    user_id       TEXT, -- User identifier for tracking who requested the scrape
     requested_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     triggered_by  TEXT DEFAULT 'user', -- user, api, etc.
     status        TEXT DEFAULT 'pending', -- pending, completed, failed

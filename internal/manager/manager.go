@@ -342,7 +342,7 @@ func (m *Manager) CampgroundURL(provider, campgroundID string) string {
 // StartAdhocScrapeProcessor starts a background goroutine to process pending ad-hoc scrape requests
 func (m *Manager) StartAdhocScrapeProcessor(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
-	
+
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -363,22 +363,22 @@ func (m *Manager) processAdhocScrapes(ctx context.Context) {
 		m.logger.Error("failed to get pending adhoc scrapes", slog.Any("error", err))
 		return
 	}
-	
+
 	if len(pending) == 0 {
 		return
 	}
-	
+
 	m.logger.Info("processing adhoc scrape requests", slog.Int("count", len(pending)))
-	
+
 	for _, req := range pending {
 		err := m.processAdhocScrapeRequest(ctx, req)
 		if err != nil {
-			m.logger.Error("failed to process adhoc scrape request", 
+			m.logger.Error("failed to process adhoc scrape request",
 				slog.Int("request_id", req.ID),
 				slog.String("provider", req.Provider),
 				slog.String("campground_id", req.CampgroundID),
 				slog.Any("error", err))
-			
+
 			// Mark as failed
 			errorMsg := err.Error()
 			m.store.UpdateAdhocScrapeStatus(ctx, req.ID, "failed", &errorMsg)
@@ -388,27 +388,27 @@ func (m *Manager) processAdhocScrapes(ctx context.Context) {
 
 // processAdhocScrapeRequest processes a single ad-hoc scrape request
 func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocScrapeRequest) error {
-	m.logger.Info("processing adhoc scrape request", 
+	m.logger.Info("processing adhoc scrape request",
 		slog.Int("request_id", req.ID),
 		slog.String("provider", req.Provider),
 		slog.String("campground_id", req.CampgroundID))
-	
+
 	// Get the provider
 	provider, ok := m.reg.Get(req.Provider)
 	if !ok {
 		return fmt.Errorf("provider %s not found", req.Provider)
 	}
-	
+
 	// Calculate date range (next 60 days from now)
 	startDate := time.Now()
 	endDate := startDate.AddDate(0, 0, 60)
-	
+
 	// Execute the scrape using FetchAvailability
 	results, err := provider.FetchAvailability(ctx, req.CampgroundID, startDate, endDate)
 	if err != nil {
 		return fmt.Errorf("failed to scrape availability: %w", err)
 	}
-	
+
 	// Convert provider results to database format
 	var availabilityStates []db.CampsiteAvailability
 	now := time.Now()
@@ -422,7 +422,7 @@ func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocSc
 			LastChecked:  now,
 		})
 	}
-	
+
 	// Store results in database using the serialized writer
 	if len(availabilityStates) > 0 {
 		err = m.executeDBOperation(func() error {
@@ -432,21 +432,21 @@ func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocSc
 			return fmt.Errorf("failed to store availability results: %w", err)
 		}
 	}
-	
+
 	// Mark request as completed
 	err = m.store.UpdateAdhocScrapeStatus(ctx, req.ID, "completed", nil)
 	if err != nil {
-		m.logger.Error("failed to mark adhoc scrape as completed", 
+		m.logger.Error("failed to mark adhoc scrape as completed",
 			slog.Int("request_id", req.ID),
 			slog.Any("error", err))
 	}
-	
-	m.logger.Info("completed adhoc scrape request", 
+
+	m.logger.Info("completed adhoc scrape request",
 		slog.Int("request_id", req.ID),
 		slog.String("provider", req.Provider),
 		slog.String("campground_id", req.CampgroundID),
 		slog.Int("results_count", len(results)))
-	
+
 	return nil
 }
 
