@@ -152,26 +152,26 @@ func TestBuildNotificationEmbed_Suite(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			fmt.Println("yoooooooooo")
-			embed := manager.BuildNotificationEmbed(
+			embeds := manager.BuildNotificationEmbeds(
 				tc.checkin, tc.checkout, tc.userID,
 				tc.campgroundName, tc.campgroundURL, tc.campgroundID,
 				tc.campsiteStats,
-				tc.newlyAvailable, tc.newlyBooked,
 				tc.provider,
 			)
-			if embed == nil {
-				t.Errorf("embed should not be nil")
-			}
-			if embed.Description == "" {
-				t.Errorf("embed description should not be empty")
-			}
-			if len(embed.Fields) == 0 {
-				t.Logf("embed has no fields (may be expected for no campsites)")
+			for _, embed := range embeds {
+				if embed.Description == "" {
+					t.Errorf("embed description should not be empty")
+				}
+				if len(embed.Fields) == 0 {
+					t.Logf("embed has no fields (may be expected for no campsites)")
+				}
 			}
 
-			_, err = dg.ChannelMessageSendEmbed(channelID, embed)
-			if err != nil {
-				t.Error(err)
+			for _, embed := range embeds {
+				_, err = dg.ChannelMessageSendEmbed(channelID, embed)
+				if err != nil {
+					t.Error(err)
+				}
 			}
 		})
 	}

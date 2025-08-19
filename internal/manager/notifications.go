@@ -58,13 +58,7 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 			slog.Int("changes", len(changes)),
 		)
 
-		// Only compute/send when there's something to notify about
-		newlyAvail, newlyBooked := separateChanges(changes)
-		if len(newlyAvail) == 0 && len(newlyBooked) == 0 {
-			continue
-		}
-
-		err := m.sendStateChangeNotification(ctx, req, newlyAvail, newlyBooked)
+		err := m.sendStateChangeNotification(ctx, req)
 		if err != nil {
 			m.logger.Warn("send state change notification failed",
 				slog.String("userID", req.UserID),
@@ -105,12 +99,10 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 	return nil
 }
 
-// sendStateChangeNotification fetches context data, builds the embed via pure helpers, and sends it.
+// sendStateChangeNotification fetches context data, builds the embed(s) via pure helpers, and sends them.
 func (m *Manager) sendStateChangeNotification(
 	ctx context.Context,
 	req db.SchniffRequest,
-	newlyAvailable []db.AvailabilityItem,
-	newlyBooked []db.AvailabilityItem,
 ) error {
 	// Create DM channel
 	channel, err := m.notifier.UserChannelCreate(req.UserID)
@@ -136,12 +128,8 @@ func (m *Manager) sendStateChangeNotification(
 		detailsMap = map[string]db.CampsiteDetails{} // empty — pure helpers will handle defaults
 	}
 
-	// Build stats (pure)
+	// Build stats (pure). Do NOT cut/sort here — that happens in BuildNotificationEmbeds now.
 	stats := buildCampsiteStats(byCampsite, req.Checkin, req.Checkout, detailsMap)
-	sort.Slice(stats, func(i, j int) bool { return stats[i].DaysAvailable > stats[j].DaysAvailable })
-	if len(stats) > 5 {
-		stats = stats[:5]
-	}
 
 	// Get campground presentation info
 	campground, _, err := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
@@ -150,18 +138,22 @@ func (m *Manager) sendStateChangeNotification(
 	// missing the provider is irrelevant, checked in
 	provider, _ := m.reg.Get(req.Provider)
 
-	// Build embed (pure)
-	embed := BuildNotificationEmbed(
+	// Build embeds (pure). This handles sorting, field chunking, and splitting across embeds.
+	embeds := BuildNotificationEmbeds(
 		req.Checkin, req.Checkout, req.UserID,
 		campground.Name, campgroundURL, campground.ID,
 		stats,
-		newlyAvailable, newlyBooked,
 		provider,
 	)
 
-	// Send
-	_, err = m.notifier.ChannelMessageSendEmbed(channel.ID, embed)
-	return err
+	// Send all embeds
+	var firstErr error
+	for _, e := range embeds {
+		if _, err := m.notifier.ChannelMessageSendEmbed(channel.ID, e); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // ------- Data structures used by pure functions -------
@@ -258,157 +250,193 @@ func buildCampsiteStats(
 	return stats
 }
 
-// BuildNotificationEmbed creates a single embed with fields for each campsite.
+// BuildNotificationEmbeds creates one or more embeds with fields for each campsite.
 // Pure: does not hit DB; accepts all text inputs and precomputed stats.
-func BuildNotificationEmbed(
+// Differences from prior version:
+//   - Removes cost/rating and "top N" summary.
+//   - Removes "new/missed it" markers and change summary.
+//   - Sorts by DaysAvailable (desc) internally.
+//   - Does NOT truncate content; instead splits fields and embeds to respect Discord limits.
+//   - Adds a divider between campsites.
+func BuildNotificationEmbeds(
 	checkin, checkout time.Time,
 	userID string,
 	campgroundName string,
 	campgroundURL string,
 	campgroundID string,
 	campsiteStats []CampsiteStats,
-	newlyAvailable []db.AvailabilityItem,
-	newlyBooked []db.AvailabilityItem,
 	provider providers.Provider,
-) *discordgo.MessageEmbed {
+) []*discordgo.MessageEmbed {
+
+	if len(campsiteStats) == 0 {
+		return nil
+	}
+	// Discord embed constraints we care about
+	const (
+		maxFieldsPerEmbed  = 25
+		maxFieldValueChars = 1024
+		dateFmtDay         = "Monday"
+		dateFmtISO         = "2006-01-02"
+	)
+
+	// Sort by days available (desc), then by campsiteID for stability.
+	sort.Slice(campsiteStats, func(i, j int) bool {
+		if campsiteStats[i].DaysAvailable != campsiteStats[j].DaysAvailable {
+			return campsiteStats[i].DaysAvailable > campsiteStats[j].DaysAvailable
+		}
+		return campsiteStats[i].CampsiteID < campsiteStats[j].CampsiteID
+	})
+
 	// Format campground name (linked if URL provided)
 	campgroundLine := campgroundName
 	if strings.TrimSpace(campgroundURL) != "" {
 		campgroundLine = fmt.Sprintf("[%s](%s)", campgroundName, campgroundURL)
 	}
 
-	// Main description with header info
-	var desc strings.Builder
-	desc.WriteString(campgroundLine + "\n")
-	desc.WriteString(checkin.Format("2006-01-02") + " to " + checkout.Format("2006-01-02") + "\n")
-	desc.WriteString(fmt.Sprintf("<@%s>, I just schniffed some available campsites for you.\n\n", userID))
-
-	// Summary stats
-	switch len(campsiteStats) {
-	case 0:
-		desc.WriteString("No campsites currently available.\n")
-	case 1:
-		desc.WriteString("Showing the top 1 campsite by days available.\n")
-		desc.WriteString("1 total campsite with availabilities.")
-	default:
-		desc.WriteString(fmt.Sprintf("Showing the top %d campsites by days available.\n", len(campsiteStats)))
-		desc.WriteString(fmt.Sprintf("%d total campsites with availabilities.", len(campsiteStats)))
-	}
-
-	// Changes since last notification
-	if len(newlyAvailable) > 0 || len(newlyBooked) > 0 {
-		desc.WriteString("\nChanges since last notification:\n")
-		if len(newlyAvailable) > 0 {
-			desc.WriteString(fmt.Sprintf("%d newly available\n", len(newlyAvailable)))
+	// Helper to start a new embed with shared header
+	newEmbed := func(part int) *discordgo.MessageEmbed {
+		title := nonsense.RandomSillyHeader()
+		if part > 1 {
+			title = fmt.Sprintf("%s (cont. %d)", title, part)
 		}
-		if len(newlyBooked) > 0 {
-			desc.WriteString(fmt.Sprintf("%d newly booked\n", len(newlyBooked)))
+		desc := fmt.Sprintf("%s\n%s to %s",
+			campgroundLine,
+			checkin.Format(dateFmtISO), checkout.Format(dateFmtISO),
+		)
+		return &discordgo.MessageEmbed{
+			Title:       title,
+			Description: desc,
+			Color:       0x00ff00, // green
+			Timestamp:   time.Now().Format(time.RFC3339),
+			Fields:      []*discordgo.MessageEmbedField{},
 		}
 	}
 
-	embed := &discordgo.MessageEmbed{
-		Title:       nonsense.RandomSillyHeader(),
-		Description: desc.String(),
-		Color:       0x00ff00, // green
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Fields:      []*discordgo.MessageEmbedField{},
+	embeds := []*discordgo.MessageEmbed{}
+	current := newEmbed(1)
+	part := 1
+	fieldCount := 0
+
+	// Helper: flush current embed if field capacity reached
+	flushIfFull := func() {
+		if fieldCount >= maxFieldsPerEmbed {
+			embeds = append(embeds, current)
+			part++
+			current = newEmbed(part)
+			fieldCount = 0
+		}
 	}
 
-	// Build quick lookup sets for change markers
-	newAvailSet := make(map[string]struct{}, len(newlyAvailable))
-	for _, a := range newlyAvailable {
-		newAvailSet[a.CampsiteID+"|"+a.Date.Format("2006-01-02")] = struct{}{}
-	}
-	newBookedSet := make(map[string]struct{}, len(newlyBooked))
-	for _, b := range newlyBooked {
-		newBookedSet[b.CampsiteID+"|"+b.Date.Format("2006-01-02")] = struct{}{}
+	// Helper: append a field safely
+	appendField := func(name, value string) {
+		current.Fields = append(current.Fields, &discordgo.MessageEmbedField{
+			Name:   name,
+			Value:  value,
+			Inline: false,
+		})
+		fieldCount++
 	}
 
-	// Add a field for each campsite
-	for _, s := range campsiteStats {
-		var fieldValue strings.Builder
-
-		// Optional enhanced details
-		if s.Details.Name != "" {
-			fieldValue.WriteString(fmt.Sprintf("**%s**\n", s.Details.Name))
+	// Helper: chunk a long block into <= maxFieldValueChars preserving line breaks
+	chunkByLimit := func(s string, limit int) []string {
+		if len(s) <= limit {
+			return []string{s}
 		}
-		if s.Details.Type != "" {
-			fieldValue.WriteString(fmt.Sprintf("Type: %s\n", s.Details.Type))
+		lines := strings.Split(s, "\n")
+		var out []string
+		var b strings.Builder
+		for _, line := range lines {
+			// +1 for newline if needed
+			add := len(line)
+			if b.Len() > 0 {
+				add++ // newline
+			}
+			if b.Len()+add > limit {
+				out = append(out, b.String())
+				b.Reset()
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
 		}
-		if s.Details.CostPerNight > 0 {
-			fieldValue.WriteString(fmt.Sprintf("Cost: $%.2f/night\n", s.Details.CostPerNight))
+		if b.Len() > 0 {
+			out = append(out, b.String())
 		}
-		if s.Details.Rating > 0 {
-			fieldValue.WriteString(fmt.Sprintf("Rating: ⭐ %.1f\n", s.Details.Rating))
-		}
-		if len(s.Details.Equipment) > 0 {
-			eq := s.Details.Equipment
-			if len(eq) > 5 {
-				fieldValue.WriteString(fmt.Sprintf("Equipment: %s, +%d more\n", strings.Join(eq[:5], ", "), len(eq)-5))
-			} else {
-				fieldValue.WriteString(fmt.Sprintf("Equipment: %s\n", strings.Join(eq, ", ")))
+		// Fallback split if any single line > limit
+		var final []string
+		for _, seg := range out {
+			if len(seg) <= limit {
+				final = append(final, seg)
+				continue
+			}
+			// hard split by characters
+			runes := []rune(seg)
+			for i := 0; i < len(runes); i += limit {
+				j := i + limit
+				if j > len(runes) {
+					j = len(runes)
+				}
+				final = append(final, string(runes[i:j]))
 			}
 		}
-		if fieldValue.Len() > 0 {
-			fieldValue.WriteString("\n")
+		return final
+	}
+
+	// Build fields for each campsite
+	for _, s := range campsiteStats {
+		// Build the main value (without cost/rating; keep optional name/type/equipment)
+		var value strings.Builder
+
+		if s.Details.Type != "" {
+			value.WriteString(fmt.Sprintf("Type: %s\n", s.Details.Type))
+		}
+		if len(s.Details.Equipment) > 0 {
+			value.WriteString(fmt.Sprintf("Equipment: %s\n", strings.Join(s.Details.Equipment, ", ")))
 		}
 
 		if provider != nil {
 			url := provider.CampsiteURL(campgroundID, s.CampsiteID)
-			fieldValue.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
+			value.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
 		} else {
-			fieldValue.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
+			value.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
 		}
 
-		// Summary line for availability (not linked here because we don't know URL patterns generically)
+		// Full, untruncated date list, no markers
+		for _, d := range s.Dates {
+			value.WriteString(fmt.Sprintf("%s (%s)\n", d.Format(dateFmtDay), d.Format(dateFmtISO)))
+		}
 
-		// List available dates with change markers
-		maxDates := 8
-		total := len(s.Dates)
-		if total > maxDates {
-			fieldValue.WriteString(fmt.Sprintf("First %d of %d dates:\n", maxDates, total))
+		// Chunk the value into <= 1024 and add as possibly multiple fields.
+		chunks := chunkByLimit(value.String(), maxFieldValueChars)
+		displayName := s.Details.Name
+		if displayName == "" {
+			displayName = fmt.Sprintf("Campsite %s", s.CampsiteID)
 		}
-		show := s.Dates
-		if len(show) > maxDates {
-			show = s.Dates[:maxDates]
-		}
-		for _, d := range show {
-			key := s.CampsiteID + "|" + d.Format("2006-01-02")
-			marker := ""
-			if _, ok := newAvailSet[key]; ok {
-				marker = " (new)"
-			} else if _, ok := newBookedSet[key]; ok {
-				marker = " (missed it!)"
+		for i, chunk := range chunks {
+			flushIfFull()
+			name := fmt.Sprintf("%s", displayName)
+			if len(chunks) > 1 {
+				name = fmt.Sprintf("%s (part %d/%d)", displayName, i+1, len(chunks))
 			}
-			fieldValue.WriteString(fmt.Sprintf("%s (%s)%s\n", d.Format("Monday"), d.Format("2006-01-02"), marker))
+			appendField(name, chunk)
 		}
-		if total > maxDates {
-			fieldValue.WriteString(fmt.Sprintf("... and %d more", total-maxDates))
-		}
-
-		fieldName := fmt.Sprintf("Campsite %s", s.CampsiteID)
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   fieldName,
-			Value:  fieldValue.String(),
-			Inline: false,
-		})
 	}
 
-	// Remember section
-	rememberValue := strings.Join([]string{
-		"• Act fast to get these sites - typically gone within 5 minutes",
-		"• Links take you to booking pages",
-		"• Find the availability and click to book",
-		"• If no availability when you click, you were too slow",
-		"• I don't make mistakes (added 'no mistakes' to chatgpt prompt)",
-		"• Mobile app may open to last page despite link - double check",
-	}, "\n")
+	// Add a short "Remember" helper at the end of the last embed (kept concise to avoid crowding).
+	flushIfFull()
+	appendField("HURRY",
+		strings.Join([]string{
+			"• Links go to booking pages",
+			"• Campsites at Yosemite book out in 2 minutes",
+			"• Opening links in mobile app goes to last open page - double check",
+		}, "\n"),
+	)
 
-	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-		Name:   "Remember",
-		Value:  rememberValue,
-		Inline: false,
-	})
+	// Push the final embed
+	if len(current.Fields) > 0 || current.Description != "" {
+		embeds = append(embeds, current)
+	}
 
-	return embed
+	return embeds
 }
