@@ -106,8 +106,13 @@ func (b *Bot) formatCampgroundWithLink(ctx context.Context, provider, campground
 		name = cg.Name
 	}
 
+	providerInterface, ok := b.registry.Get(cg.Provider)
+	if !ok {
+		return name
+	}
+
 	// Get campground URL
-	if url := b.mgr.CampgroundURL(provider, campgroundID); url != "" {
+	if url := providerInterface.CampgroundURL(cg.ID); url != "" {
 		return fmt.Sprintf("[%s](%s)", name, url)
 	}
 

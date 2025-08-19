@@ -5,69 +5,49 @@ import (
 	"log/slog"
 
 	"github.com/brensch/schniffer/internal/db"
-	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/nonsense"
+	"github.com/brensch/schniffer/internal/providers"
 	"github.com/bwmarrin/discordgo"
 )
 
 type Bot struct {
-	s        *discordgo.Session
-	g        string
-	token    string
+	session          *discordgo.Session
+	broadcastChannel string
+
 	store    *db.Store
-	mgr      *manager.Manager
+	registry *providers.Registry
 	logger   *slog.Logger
 	useGuild bool // use guild commands (default) vs global commands (production)
 }
 
-func New(token, guildID string, store *db.Store, mgr *manager.Manager, useGuild bool) *Bot {
-	return &Bot{g: guildID, store: store, mgr: mgr, token: token, logger: slog.Default(), useGuild: useGuild}
+func New(store *db.Store, discordSession *discordgo.Session, registry *providers.Registry, broadcastChannel string, useGuild bool) *Bot {
+	return &Bot{
+		store:            store,
+		session:          discordSession,
+		broadcastChannel: broadcastChannel,
+		logger:           slog.Default(),
+		registry:         registry,
+		useGuild:         useGuild,
+	}
 }
 
 func (b *Bot) Run(ctx context.Context) error {
-	s, err := discordgo.New("Bot " + b.token)
-	if err != nil {
-		return err
-	}
-	b.s = s
-	b.mgr.SetNotifier(b)
-	s.AddHandler(b.onReady)
-	s.AddHandler(b.onInteraction)
-	s.AddHandler(b.onGuildMemberAdd)
-	s.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
-	err = s.Open()
-	if err != nil {
-		return err
-	}
-	defer s.Close()
+	b.session.AddHandler(b.onReady)
+	b.session.AddHandler(b.onInteraction)
+	b.session.AddHandler(b.onGuildMemberAdd)
+	b.session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
+
 	<-ctx.Done()
 	return nil
 }
 
-// ResolveUsernames converts user IDs to usernames, falling back to user ID if resolution fails
-func (b *Bot) ResolveUsernames(userIDs []string) []string {
-	usernames := make([]string, len(userIDs))
-	for i, userID := range userIDs {
-		user, err := b.s.User(userID)
-		if err == nil {
-			usernames[i] = user.Username
-		} else {
-			// Fallback to user ID if we can't resolve the username
-			usernames[i] = userID
-		}
-	}
-	return usernames
-}
-
-// Notifier implementation
-
 // resolveChannelID takes a channel ID or guild ID and returns the actual channel ID to send to
 func (b *Bot) resolveChannelID(channelID string) string {
 	// Try to get it as a guild first
-	guild, err := b.s.Guild(channelID)
+	guild, err := b.session.Guild(channelID)
 	if err == nil {
 		// This is a guild ID, find the first text channel
-		channels, err := b.s.GuildChannels(guild.ID)
+		channels, err := b.session.GuildChannels(guild.ID)
 		if err == nil {
 			for _, channel := range channels {
 				if channel.Type == discordgo.ChannelTypeGuildText {
@@ -80,9 +60,9 @@ func (b *Bot) resolveChannelID(channelID string) string {
 	return channelID
 }
 
-func (b *Bot) NotifySummary(channelID string, msg string) error {
+func (b *Bot) Notify(channelID string, msg string) error {
 	resolvedChannelID := b.resolveChannelID(channelID)
-	_, err := b.s.ChannelMessageSend(resolvedChannelID, msg)
+	_, err := b.session.ChannelMessageSend(resolvedChannelID, msg)
 	return err
 }
 
@@ -90,11 +70,10 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	b.logger.Info("bot ready", slog.String("user", s.State.User.Username))
 	b.registerCommands()
 
-	// Send startup message to the summary channel
-	summaryChannelID := b.mgr.GetSummaryChannel()
-	if summaryChannelID != "" {
-		resolvedChannelID := b.resolveChannelID(summaryChannelID)
-		err := b.NotifySummary(resolvedChannelID, "scniffbot online and ready to schniff")
+	// Send startup message to the broadcast channel
+	if b.broadcastChannel != "" {
+		resolvedChannelID := b.resolveChannelID(b.broadcastChannel)
+		err := b.Notify(resolvedChannelID, "scniffbot online and ready to schniff")
 		if err != nil {
 			b.logger.Error("failed to send startup message", slog.Any("err", err))
 		}
@@ -108,6 +87,7 @@ func (b *Bot) onGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd
 	dmChannel, err := s.UserChannelCreate(m.User.ID)
 	if err != nil {
 		b.logger.Error("failed to create DM channel", slog.Any("err", err))
+		return
 	} else {
 		// Add detailed instructions on how to use the bot
 		instructions := `
@@ -141,26 +121,28 @@ People make plans, those plans change. They cancel their booking. They normally 
 		}
 	}
 
-	// Send a brief public notification to the summary channel
-	summaryChannelID := b.mgr.GetSummaryChannel()
-	if summaryChannelID != "" {
-		resolvedChannelID := b.resolveChannelID(summaryChannelID)
-
-		// Generate public welcome message
-		welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
-
-		// Create an embed with "Welcome, schniffist" title
-		embed := &discordgo.MessageEmbed{
-			Title:       "Welcome, schniffist",
-			Description: welcomeMessage,
-			Color:       0x5865F2, // Discord blurple color
-		}
-
-		_, err := s.ChannelMessageSendEmbed(resolvedChannelID, embed)
-		if err != nil {
-			b.logger.Error("failed to send public welcome message", slog.Any("err", err))
-		}
+	if b.broadcastChannel == "" {
+		return
 	}
+
+	// Send a brief public notification to the broadcast channel
+	resolvedChannelID := b.resolveChannelID(b.broadcastChannel)
+
+	// Generate public welcome message
+	welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
+
+	// Create an embed with "⚠️ New schniffist alert 🐽" title
+	embed := &discordgo.MessageEmbed{
+		Title:       "⚠️ New schniffist alert 🐽",
+		Description: welcomeMessage,
+		Color:       0x5865F2, // Discord blurple color
+	}
+
+	_, err = s.ChannelMessageSendEmbed(resolvedChannelID, embed)
+	if err != nil {
+		b.logger.Error("failed to send public welcome message", slog.Any("err", err))
+	}
+
 }
 
 func (b *Bot) registerCommands() {
@@ -180,8 +162,8 @@ func (b *Bot) registerCommands() {
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
 				{Name: "creategroup", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open web interface to create a new campground group"},
-				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff", Options: []*discordgo.ApplicationCommandOption{
-					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
+				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff. Blank id removes all.", Options: []*discordgo.ApplicationCommandOption{
+					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: false, Description: "Request ID to remove", Autocomplete: true},
 				}},
 				{Name: "state", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show current state for your schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get detailed schniffer summary"},
@@ -189,16 +171,16 @@ func (b *Bot) registerCommands() {
 			},
 		},
 	}
-	appID := b.s.State.Application.ID
+	appID := b.session.State.Application.ID
 	guildID := ""
 	if b.useGuild {
-		guildID = b.g
-		b.logger.Info("registering commands for guild", slog.String("guild", b.g))
+		guildID = b.broadcastChannel
+		b.logger.Info("registering commands for guild", slog.String("guild", guildID))
 	} else {
 		b.logger.Info("registering commands globally")
 	}
 	for _, c := range cmds {
-		_, err := b.s.ApplicationCommandCreate(appID, guildID, c)
+		_, err := b.session.ApplicationCommandCreate(appID, guildID, c)
 		if err != nil {
 			b.logger.Warn("command registration failed", slog.Any("err", err))
 		}

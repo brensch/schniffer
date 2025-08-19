@@ -984,13 +984,6 @@ func (s *Store) StatsToday(ctx context.Context) (active int64, lookups int64, no
 	return
 }
 
-// CountTotalRequests returns the total number of schniff_requests (active + inactive)
-func (s *Store) CountTotalRequests(ctx context.Context) (int64, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM schniff_requests`)
-	var n int64
-	return n, row.Scan(&n)
-}
-
 func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsiteID string, date time.Time) (bool, bool, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT available FROM campsite_availability

@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 
 	"github.com/bwmarrin/discordgo"
@@ -11,7 +10,8 @@ import (
 func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
 	uid := getUserID(i)
 	opts := optMap(sub.Options)
-	if opt, ok := opts["ids"]; ok && opt != nil {
+	opt, ok := opts["ids"]
+	if ok && opt != nil {
 		id := int64(opt.IntValue())
 		err := b.store.DeactivateRequest(context.Background(), id, uid)
 		if err != nil {
@@ -21,14 +21,34 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 		respond(s, i, "removed")
 		return
 	}
-	// Interactive removal: present select of active schniffs for this user
+
+	// No ID provided, remove all schniffs
 	reqs, err := b.store.ListActiveRequests(context.Background())
 	if err != nil {
-		respond(s, i, "error: "+err.Error())
+		b.logger.Warn("list active reqs failed", "err", err)
+		respond(s, i, "failed to get schniffs to remove")
 		return
 	}
-	options := []discordgo.SelectMenuOption{}
-	count := 0
+
+	for _, r := range reqs {
+		err = b.store.DeactivateRequest(context.Background(), r.ID, r.UserID)
+		if err != nil {
+			respond(s, i, "error: "+err.Error())
+			return
+		}
+		respond(s, i, "removed all schniffs")
+	}
+}
+
+// autocompleteRemoveIDs suggests the caller's active schniffs as choices.
+func (b *Bot) autocompleteRemoveIDs(i *discordgo.InteractionCreate) []*discordgo.ApplicationCommandOptionChoice {
+	uid := getUserID(i)
+	reqs, err := b.store.ListActiveRequests(context.Background())
+	if err != nil {
+		b.logger.Warn("list active reqs failed", "err", err)
+		return nil
+	}
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, 25)
 	for _, r := range reqs {
 		if r.UserID != uid {
 			continue
@@ -37,37 +57,16 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 		if cg, ok, _ := b.store.GetCampgroundByID(context.Background(), r.Provider, r.CampgroundID); ok {
 			name = cg.Name
 		}
-		nights := int(r.Checkout.Sub(r.Checkin).Hours() / 24)
-		label := fmt.Sprintf("%s → %s • %d night(s)", r.Checkin.Format("2006-01-02"), r.Checkout.Format("2006-01-02"), nights)
-		desc := name
-		options = append(options, discordgo.SelectMenuOption{Label: label, Description: desc, Value: strconv.FormatInt(r.ID, 10)})
-		count++
-		if count >= 25 {
+		label := r.Checkin.Format("2006-01-02") + "→" + r.Checkout.Format("2006-01-02")
+		display := sanitizeGenericText(label + " • " + name)
+		value := sanitizeChoiceValue(strconv.FormatInt(r.ID, 10))
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: display, Value: value})
+		if len(choices) >= 25 {
 			break
 		}
 	}
-	if len(options) == 0 {
-		respond(s, i, "no active schniffs")
-		return
+	if len(choices) == 0 {
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: "No active schniffs", Value: "0"})
 	}
-	selectMenu := discordgo.ActionsRow{
-		Components: []discordgo.MessageComponent{
-			discordgo.SelectMenu{
-				CustomID:    "remove_checks",
-				Placeholder: "Select a schniff to remove",
-				Options:     options,
-			},
-		},
-	}
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content:    "Pick a schniff to remove. You'll get a confirmation after selection.",
-			Components: []discordgo.MessageComponent{selectMenu},
-			Flags:      1 << 6,
-		},
-	})
-	if err != nil {
-		b.logger.Warn("remove respond failed", "err", err)
-	}
+	return choices
 }

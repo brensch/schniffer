@@ -61,3 +61,26 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	formattedName := b.formatCampgroundWithLink(context.Background(), campgroundProvider, campgroundID, campgroundName)
 	respond(s, i, fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", formattedName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24))
 }
+
+func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {
+	ctx := context.Background()
+	cgs, err := b.store.ListCampgrounds(ctx, query)
+	if err != nil {
+		b.logger.Warn("list campgrounds failed", "err", err)
+		return nil
+	}
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(cgs))
+	for _, c := range cgs {
+		display := sanitizeChoiceName(c.Name, c.Provider, c.Rating)
+		value := strings.Join([]string{c.Provider, c.ID, c.Name}, "||")
+		value = sanitizeChoiceValue(value)
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+			Name:  display,
+			Value: value,
+		})
+		if len(choices) >= 25 { // Discord limit
+			break
+		}
+	}
+	return choices
+}
