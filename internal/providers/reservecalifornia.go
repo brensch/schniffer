@@ -352,16 +352,15 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	return out, nil
 }
 
+const maxRetries = 100
+
 // FetchCampsites returns detailed campsite metadata for storage in the database
 func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
 	// Extract facility ID from composite ID format "parentID-facilityID"
-	var facilityID, parentID string
+	var facilityID string
 	if parts := strings.Split(campgroundID, "-"); len(parts) == 2 {
-		parentID = parts[0]
 		facilityID = parts[1]
 	}
-
-	fmt.Println(parentID, facilityID)
 
 	// Use current date as start date to get campsite structure
 	start := time.Now()
@@ -384,31 +383,51 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	}
 
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpx.SpoofChromeHeaders(req)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "https://reservecalifornia.com")
-	req.Header.Set("Referer", "https://reservecalifornia.com/")
+	success := false
+	var respBody []byte
+	for i := 0; i < maxRetries; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpx.SpoofChromeHeaders(req)
 
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("campsite metadata grid request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://reservecalifornia.com")
+		req.Header.Set("Referer", "https://reservecalifornia.com/")
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read campsite metadata response: %w", err)
-	}
+		time.Sleep(time.Duration(i) * 100 * time.Millisecond) // Exponential backoff
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("campsite metadata request failed with status %d: %s", resp.StatusCode, clipBody(respBody))
-	}
+		slog.Info("Sending campsite metadata grid request",
+			slog.Int("attempt", i+1))
+		resp, err := r.client.Do(req)
+		if err != nil {
+			slog.Warn("campsite metadata grid request failed", slog.Any("error", err), slog.Int("attempt", i+1))
+			continue
+		}
+		defer resp.Body.Close()
 
-	fmt.Println(string(respBody))
+		respBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			slog.Warn("failed to read campsite metadata response",
+				slog.Any("error", err))
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("campsite metadata request failed with status",
+				slog.Int("status", resp.StatusCode),
+				slog.String("body", clipBody(respBody)))
+			continue
+		}
+		success = true
+		break
+	}
+	if !success {
+		slog.Warn("campsite metadata grid request failed after max retries",
+			slog.String("facilityId", facilityID))
+		return nil, fmt.Errorf("campsite metadata grid request failed after max retries")
+	}
 
 	// Parse using expanded structure to get unit details
 	var gridResp struct {
@@ -437,8 +456,12 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	for _, unit := range gridResp.Facility.Units {
 		// Get detailed campsite information with retries
 		// ids are
-		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/%d/startdate/%s",
+		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/startdate/%s",
 			unit.UnitId, start.Format("2006-01-02"))
+
+		slog.Info("Fetching campsite details",
+			slog.String("unitId", fmt.Sprintf("%d", unit.UnitId)),
+			slog.String("url", detailsURL))
 
 		// Try to get details with exponential backoff
 		var detailsResp struct {
@@ -470,56 +493,44 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			} `json:"Amenities"`
 		}
 
-		maxRetries := 3
-		var detailErr error
+		success := false
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailsURL, nil)
 			if err != nil {
-				detailErr = err
 				break
 			}
 			httpx.SpoofChromeHeaders(detailReq)
 			detailReq.Header.Set("Origin", "https://reservecalifornia.com")
 			detailReq.Header.Set("Referer", "https://reservecalifornia.com/")
 
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
 			detailResp, err := r.client.Do(detailReq)
 			if err != nil {
-				detailErr = err
-				if attempt < maxRetries-1 {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					continue
-				}
-				break
+				slog.Warn("failed to fetch campsite details",
+					slog.Int("unitId", unit.UnitId),
+					slog.String("error", err.Error()))
+				continue
 			}
 
 			detailBody, err := io.ReadAll(detailResp.Body)
 			detailResp.Body.Close()
-
 			if err != nil {
-				detailErr = err
-				if attempt < maxRetries-1 {
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-					continue
-				}
-				break
+				slog.Warn("failed to read campsite details response",
+					slog.Int("unitId", unit.UnitId),
+					slog.String("error", err.Error()))
+				continue
 			}
 
 			if detailResp.StatusCode == http.StatusTooManyRequests || detailResp.StatusCode >= 500 {
-				detailErr = fmt.Errorf("server error %d: %s", detailResp.StatusCode, clipBody(detailBody))
 				slog.Warn("server error for campsite details",
 					slog.Int("unitId", unit.UnitId),
 					slog.Int("status", detailResp.StatusCode),
 					slog.Int("attempt", attempt+1),
 					slog.String("response", clipBody(detailBody)))
-				if attempt < maxRetries-1 {
-					time.Sleep(time.Duration(attempt+1) * 1000 * time.Millisecond)
-					continue
-				}
-				break
+				continue
 			}
 
 			if detailResp.StatusCode != http.StatusOK {
-				detailErr = fmt.Errorf("status %d: %s", detailResp.StatusCode, clipBody(detailBody))
 				slog.Warn("non-200 status for campsite details",
 					slog.Int("unitId", unit.UnitId),
 					slog.Int("status", detailResp.StatusCode),
@@ -528,77 +539,16 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			}
 
 			if err := json.Unmarshal(detailBody, &detailsResp); err != nil {
-				detailErr = err
 				break
 			}
 
 			// Success!
-			detailErr = nil
+			success = true
 			break
 		}
 
-		if detailErr != nil {
-			// If we can't get details, create a basic campsite info from the grid data
-			var equipment []string
-
-			// Determine campsite type from unit name (inline, returning lowercase)
-			unitLower := strings.ToLower(unit.Name)
-			var campsiteType string
-			switch {
-			case strings.Contains(unitLower, "tent"):
-				campsiteType = "tent"
-			case strings.Contains(unitLower, "rv"):
-				campsiteType = "rv"
-			case strings.Contains(unitLower, "cabin"):
-				campsiteType = "cabin"
-			case strings.Contains(unitLower, "group"):
-				campsiteType = "group"
-			case strings.Contains(unitLower, "primitive"):
-				campsiteType = "primitive"
-			case strings.Contains(unitLower, "yurt"):
-				campsiteType = "yurt"
-			case strings.Contains(unitLower, "camp"):
-				campsiteType = "campsite"
-			default:
-				campsiteType = "standard"
-			}
-
-			// Make some educated guesses based on the name and unit type
-			if strings.Contains(strings.ToLower(unit.Name), "tent") {
-				equipment = append(equipment, "tent")
-			}
-			if strings.Contains(strings.ToLower(unit.Name), "rv") || unit.VehicleLength > 0 {
-				equipment = append(equipment, "rv")
-				if unit.VehicleLength > 0 {
-					equipment = append(equipment, fmt.Sprintf("rv up to %d ft", unit.VehicleLength))
-				}
-			}
-			if len(equipment) == 0 {
-				equipment = append(equipment, "standard")
-			}
-
-			// cost per night is rate+fee i think
-			rateFloat, err := strconv.ParseFloat(detailsResp.Rate, 64)
-			if err != nil {
-				rateFloat = 0.0
-			}
-			feeFloat, err := strconv.ParseFloat(detailsResp.Fee, 64)
-			if err != nil {
-				feeFloat = 0.0
-			}
-			costPerNight := rateFloat + feeFloat
-
-			campsiteInfos = append(campsiteInfos, CampsiteInfo{
-				ID:              strconv.Itoa(unit.UnitId),
-				Name:            unit.Name,
-				Type:            campsiteType,
-				CostPerNight:    costPerNight,
-				Rating:          0.0,
-				Equipment:       equipment,
-				Amenities:       []string{}, // No amenities available without details
-				PreviewImageURL: "",
-			})
-			continue
+		if !success {
+			return nil, fmt.Errorf("failed to fetch details for unit %d after %d attempts", unit.UnitId, maxRetries)
 		}
 
 		// Determine equipment types based on site characteristics
