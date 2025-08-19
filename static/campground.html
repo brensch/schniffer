@@ -265,17 +265,17 @@
 
     <script>
         // Function to process markdown-style links [text](url) and make them clickable
-        function processLinksInText(text) {
+        function processLinksInText ( text ) {
             // Escape HTML to prevent XSS
             const escaped = text
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-            
+                .replace( /&/g, '&amp;' )
+                .replace( /</g, '&lt;' )
+                .replace( />/g, '&gt;' )
+                .replace( /"/g, '&quot;' )
+                .replace( /'/g, '&#39;' )
+
             // Replace markdown links [text](url) with HTML links
-            return escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+            return escaped.replace( /\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>' )
         }
 
         document.addEventListener( 'DOMContentLoaded', function () {
@@ -356,9 +356,9 @@
                     } else {
                         metaEl.textContent = `O = available . = unavailable (click campsite names to view details)`
                     }
-                    
+
                     // Parse markdown-style links in the ASCII text and make them clickable
-                    const processedText = processLinksInText(txt)
+                    const processedText = processLinksInText( txt )
                     asciiEl.innerHTML = processedText
                     updateUrl()
 
