@@ -241,6 +241,12 @@ function renderMarkersFromViewport(result) {
                     ${providerName}
                 </div>
                 ${priceRatingDisplay}`;
+
+            // Build campground page URL with user parameter if available
+            let campgroundUrl = `/campground/${campground.provider}/${campground.id}`;
+            if (userToken) {
+                campgroundUrl += `?user=${encodeURIComponent(userToken)}`;
+            }
             
             const marker = L.marker([campground.lat, campground.lon], { icon })
                 .bindPopup(`
@@ -251,6 +257,9 @@ function renderMarkersFromViewport(result) {
                         ${equipmentDisplay}
                         ${amenitiesDisplay}
                         ${linkHtml}
+                        <a href="${campgroundUrl}" class="map-action-btn campground-link-btn">
+                            📅 View Availability
+                        </a>
                         <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
                             🗺️ Directions
                         </button>

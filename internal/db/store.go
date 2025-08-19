@@ -85,7 +85,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("failed to apply optimized pragmas to write DB: %w", err)
 	}
 
-	err = applyOptimizedPragmas(readDB)
+	err = applyReadOnlyPragmas(readDB)
 	if err != nil {
 		writeDB.Close()
 		readDB.Close()
@@ -153,6 +153,40 @@ func applyOptimizedPragmas(db *sql.DB) error {
 
 		// WAL auto-checkpoint at 1000 pages to prevent WAL from growing too large
 		"PRAGMA wal_autocheckpoint = 1000",
+
+		// Busy timeout for lock contention (5 seconds)
+		"PRAGMA busy_timeout = 5000",
+
+		// Analysis limit for query planner
+		"PRAGMA analysis_limit = 1000",
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to execute pragma '%s': %w", pragma, err)
+		}
+	}
+
+	return nil
+}
+
+// applyReadOnlyPragmas applies SQLite pragmas safe for read-only connections
+func applyReadOnlyPragmas(db *sql.DB) error {
+	pragmas := []string{
+		// WAL mode for concurrent reads
+		"PRAGMA journal_mode = WAL",
+
+		// Normal synchronous mode for balance of safety and performance
+		"PRAGMA synchronous = NORMAL",
+
+		// Larger cache size (64MB) for better performance
+		"PRAGMA cache_size = -64000",
+
+		// Store temporary tables in memory
+		"PRAGMA temp_store = memory",
+
+		// Memory-mapped I/O for faster reads (256MB)
+		"PRAGMA mmap_size = 268435456",
 
 		// Busy timeout for lock contention (5 seconds)
 		"PRAGMA busy_timeout = 5000",

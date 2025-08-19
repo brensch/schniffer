@@ -310,6 +310,18 @@ body {
     box-shadow: 4px 4px 0px #000;
 }
 
+.campground-link-btn {
+    background-color: #98d8c8 !important; /* Different color for campground links */
+    text-decoration: none !important; /* Remove link underline */
+    display: inline-block !important; /* Allow proper link behavior */
+    color: #000 !important; /* Ensure text is black */
+}
+
+.campground-link-btn:hover {
+    background-color: #7bc8b5 !important;
+    color: #000 !important; /* Keep text black on hover */
+}
+
 /* Layer control styling to match park theme */
 .leaflet-control-layers {
     border: 3px solid #000 !important;

@@ -66,7 +66,7 @@ func main() {
 
 	// Background campground sync (weekly)
 	syncFrequency := 7 * 24 * time.Hour
-	go mgr.RunCampgroundSync(ctx, "recreation_gov", syncFrequency)
+	// go mgr.RunCampgroundSync(ctx, "recreation_gov", syncFrequency)
 	go mgr.RunCampgroundSync(ctx, "reservecalifornia", syncFrequency)
 
 	// Start web server

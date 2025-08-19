@@ -26,10 +26,10 @@ func NewReserveCalifornia() *ReserveCalifornia { return &ReserveCalifornia{clien
 func (r *ReserveCalifornia) Name() string { return "reservecalifornia" }
 
 // CampsiteURL returns a ReserveCalifornia URL for the campground.
-// campgroundID format: "parentID/facilityID" (e.g., "1260/2181")
+// campgroundID format: "parentID-facilityID" (e.g., "1260-2181")
 func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
-	// Parse composite ID: parentID/facilityID
-	parts := strings.Split(campgroundID, "/")
+	// Parse composite ID: parentID-facilityID
+	parts := strings.Split(campgroundID, "-")
 	if len(parts) != 2 {
 		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
 	}
@@ -39,10 +39,10 @@ func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
 }
 
 // CampgroundURL returns a ReserveCalifornia URL for the campground.
-// campgroundID format: "parentID/facilityID" (e.g., "1260/2181")
+// campgroundID format: "parentID-facilityID" (e.g., "1260-2181")
 func (r *ReserveCalifornia) CampgroundURL(campgroundID string) string {
-	// Parse composite ID: parentID/facilityID
-	parts := strings.Split(campgroundID, "/")
+	// Parse composite ID: parentID-facilityID
+	parts := strings.Split(campgroundID, "-")
 	if len(parts) != 2 {
 		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
 	}
@@ -110,9 +110,9 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		return nil, fmt.Errorf("facility/campground id required")
 	}
 
-	// Extract facility ID from composite ID format "parentID/facilityID"
+	// Extract facility ID from composite ID format "parentID-facilityID"
 	facilityID := campgroundID
-	if parts := strings.Split(campgroundID, "/"); len(parts) == 2 {
+	if parts := strings.Split(campgroundID, "-"); len(parts) == 2 {
 		facilityID = parts[1]
 	}
 
@@ -208,6 +208,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	}
 	err = json.Unmarshal(body, &parks)
 	if err != nil {
+		slog.Error("citypark JSON decode failed", slog.Any("err", err), slog.String("body", string(body)))
 		return nil, fmt.Errorf("citypark JSON decode failed: %w", err)
 	}
 
@@ -237,33 +238,42 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	// modest cap to avoid hammering if something goes wrong
 	checked := 0
 	for _, p := range parks {
+
 		// Skip inactive parks or parks without a PlaceId
 		if !p.IsActive || p.PlaceId == 0 {
 			continue
 		}
 
-		pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
-		pb, _ := json.Marshal(pr)
-		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/place", bytes.NewReader(pb))
-		if err != nil {
-			slog.Warn("build place request failed", slog.Any("err", err))
-			continue
-		}
-		httpx.SpoofChromeHeaders(req2)
-		req2.Header.Set("Content-Type", "application/json")
-		req2.Header.Set("Origin", "https://reservecalifornia.com")
-		req2.Header.Set("Referer", "https://reservecalifornia.com/")
+		var b2 []byte
+		for i := 0; i < 100; i++ {
+			pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
+			pb, _ := json.Marshal(pr)
+			req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/place", bytes.NewReader(pb))
+			if err != nil {
+				slog.Warn("build place request failed", slog.Any("err", err))
+				continue
+			}
+			httpx.SpoofChromeHeaders(req2)
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("Origin", "https://reservecalifornia.com")
+			req2.Header.Set("Referer", "https://reservecalifornia.com/")
 
-		resp2, err := r.client.Do(req2)
-		if err != nil {
-			slog.Warn("place POST failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
-			continue
-		}
-		b2, _ := io.ReadAll(resp2.Body)
-		resp2.Body.Close()
-		if resp2.StatusCode != http.StatusOK {
-			slog.Warn("place status not OK", slog.Int("status", resp2.StatusCode), slog.Int("placeId", p.PlaceId))
-			continue
+			time.Sleep(time.Duration(i) * time.Second)
+
+			slog.Info("checking park", slog.Int("id", p.CityParkId), slog.String("name", p.Name), slog.Int("placeId", p.PlaceId), slog.Int("retry", i))
+			resp2, err := r.client.Do(req2)
+			if err != nil {
+				slog.Warn("place POST failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
+				continue
+			}
+			b2, _ = io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+			if resp2.StatusCode != http.StatusOK {
+				slog.Warn("place status not OK", slog.Int("status", resp2.StatusCode), slog.Int("placeId", p.PlaceId))
+				continue
+			}
+			// exit if we got the value
+			break
 		}
 		var prParsed placeResp
 		err = json.Unmarshal(b2, &prParsed)
@@ -283,7 +293,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			}
 
 			// Create composite ID and name for ReserveCalifornia
-			compositeID := parentID + "/" + strconv.Itoa(f.FacilityId)
+			compositeID := parentID + "-" + strconv.Itoa(f.FacilityId)
 			compositeName := parentName + ": " + f.Name
 
 			// Extract amenities from highlights if available
@@ -337,24 +347,21 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			}
 		}
 		checked++
-		// Soft limit to keep the sync bounded if citypark is huge; remove or raise later
-		if checked >= 2000 {
-			break
-		}
 
-		// Add small delay to be respectful to the API
-		time.Sleep(50 * time.Millisecond)
 	}
 	return out, nil
 }
 
 // FetchCampsites returns detailed campsite metadata for storage in the database
 func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
-	// Extract facility ID from composite ID format "parentID/facilityID"
-	facilityID := campgroundID
-	if parts := strings.Split(campgroundID, "/"); len(parts) == 2 {
+	// Extract facility ID from composite ID format "parentID-facilityID"
+	var facilityID, parentID string
+	if parts := strings.Split(campgroundID, "-"); len(parts) == 2 {
+		parentID = parts[0]
 		facilityID = parts[1]
 	}
+
+	fmt.Println(parentID, facilityID)
 
 	// Use current date as start date to get campsite structure
 	start := time.Now()
@@ -401,6 +408,8 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		return nil, fmt.Errorf("campsite metadata request failed with status %d: %s", resp.StatusCode, clipBody(respBody))
 	}
 
+	fmt.Println(string(respBody))
+
 	// Parse using expanded structure to get unit details
 	var gridResp struct {
 		Facility struct {
@@ -427,7 +436,8 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	var campsiteInfos []CampsiteInfo
 	for _, unit := range gridResp.Facility.Units {
 		// Get detailed campsite information with retries
-		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/startdate/%s",
+		// ids are
+		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/%d/startdate/%s",
 			unit.UnitId, start.Format("2006-01-02"))
 
 		// Try to get details with exponential backoff
