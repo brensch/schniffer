@@ -703,6 +703,64 @@ func (s *Server) handleCampgroundPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected /campground/{provider}/{campgroundID}", http.StatusBadRequest)
 		return
 	}
+	
+	provider := parts[0]
+	campgroundID := parts[1]
+	
+	slog.Info("campground page accessed", 
+		slog.String("provider", provider), 
+		slog.String("campground_id", campgroundID))
+	
+	// Trigger ad-hoc scrape request (with debouncing) in background
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		
+		// Check if we can/should request a scrape (5 minute debouncing)
+		canRequest, err := s.store.CanRequestAdhocScrapeWithTimeout(ctx, provider, campgroundID, 5*time.Minute)
+		if err != nil {
+			slog.Error("failed to check adhoc scrape eligibility", 
+				slog.String("provider", provider), 
+				slog.String("campground_id", campgroundID), 
+				slog.Any("error", err))
+			return
+		}
+		
+		if !canRequest {
+			slog.Debug("skipping adhoc scrape - too recent", 
+				slog.String("provider", provider), 
+				slog.String("campground_id", campgroundID))
+			return
+		}
+		
+		// Create the request record first
+		req, err := s.store.RequestAdhocScrape(ctx, provider, campgroundID, "user")
+		if err != nil {
+			slog.Error("failed to create adhoc scrape request", 
+				slog.String("provider", provider), 
+				slog.String("campground_id", campgroundID), 
+				slog.Any("error", err))
+			return
+		}
+		
+		if req != nil && req.Status == "pending" {
+			slog.Info("executing immediate adhoc scrape", 
+				slog.String("provider", provider), 
+				slog.String("campground_id", campgroundID),
+				slog.Int("request_id", req.ID))
+			
+			// Execute the scrape immediately using the manager
+			err = s.mgr.ProcessAdhocScrapeRequest(ctx, req)
+			if err != nil {
+				slog.Error("failed to execute immediate adhoc scrape", 
+					slog.Int("request_id", req.ID),
+					slog.String("provider", provider),
+					slog.String("campground_id", campgroundID),
+					slog.Any("error", err))
+			}
+		}
+	}()
+	
 	http.ServeFile(w, r, "./static/campground.html")
 }
 

@@ -208,3 +208,20 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 
 CREATE INDEX IF NOT EXISTS idx_groups_user ON groups(user_id);
+
+-- Ad-hoc scrape requests for debouncing user-triggered scrapes
+CREATE TABLE IF NOT EXISTS adhoc_scrape_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider      TEXT NOT NULL,
+    campground_id TEXT NOT NULL,
+    requested_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    triggered_by  TEXT DEFAULT 'user', -- user, api, etc.
+    status        TEXT DEFAULT 'pending', -- pending, completed, failed
+    completed_at  DATETIME,
+    error_msg     TEXT,
+    UNIQUE(provider, campground_id, requested_at) -- Prevent exact duplicates
+);
+
+CREATE INDEX IF NOT EXISTS idx_adhoc_requests_lookup ON adhoc_scrape_requests(provider, campground_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adhoc_requests_status ON adhoc_scrape_requests(status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_adhoc_requests_recent ON adhoc_scrape_requests(provider, campground_id, requested_at DESC) WHERE status IN ('pending', 'completed');

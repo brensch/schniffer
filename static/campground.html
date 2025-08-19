@@ -90,6 +90,149 @@
             margin-top: .5rem;
             display: block;
         }
+
+        /* Lightpick dark mode styling */
+        .lightpick {
+            background: #16161a !important;
+            border: 1px solid #303036 !important;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
+        }
+
+        .lightpick__month {
+            background: #16161a !important;
+            color: #e0e0e0 !important;
+        }
+
+        .lightpick__month-title {
+            color: #e0e0e0 !important;
+            background: #202024 !important;
+            border-bottom: 1px solid #303036 !important;
+        }
+
+        .lightpick__days-of-the-week>div {
+            color: #8a8a92 !important;
+            background: #202024 !important;
+            border-bottom: 1px solid #303036 !important;
+        }
+
+        .lightpick__day {
+            color: #e0e0e0 !important;
+        }
+
+        .lightpick__day:hover {
+            background: #303036 !important;
+            color: #fff !important;
+        }
+
+        .lightpick__day--available:hover {
+            background: #303036 !important;
+            color: #fff !important;
+        }
+
+        .lightpick__day--disabled {
+            color: #6b7280 !important;
+        }
+
+        .lightpick__day--in-range {
+            background: #2d4a63 !important;
+            color: #e0e0e0 !important;
+        }
+
+        .lightpick__day--start-date,
+        .lightpick__day--end-date {
+            background: #3b82f6 !important;
+            color: #fff !important;
+        }
+
+        .lightpick__day--start-date:hover,
+        .lightpick__day--end-date:hover {
+            background: #2563eb !important;
+            color: #fff !important;
+        }
+
+        .lightpick__previous-action,
+        .lightpick__next-action {
+            color: #e0e0e0 !important;
+        }
+
+        .lightpick__previous-action:hover,
+        .lightpick__next-action:hover {
+            color: #3b82f6 !important;
+        }
+
+        .lightpick__tooltip {
+            background: #202024 !important;
+            color: #e0e0e0 !important;
+            border: 1px solid #303036 !important;
+        }
+
+        .lightpick__tooltip:before {
+            border-top-color: #303036 !important;
+        }
+
+        .lightpick__tooltip:after {
+            border-top-color: #202024 !important;
+        }
+
+        /* Year/Month dropdown styling */
+        .lightpick__select {
+            background: #202024 !important;
+            color: #e0e0e0 !important;
+            border: none !important;
+            border-radius: 4px !important;
+            outline: none !important;
+            box-shadow: none !important;
+        }
+
+        .lightpick__select:hover {
+            background: #303036 !important;
+            color: #fff !important;
+            border: none !important;
+            outline: none !important;
+        }
+
+        .lightpick__select:focus {
+            background: #303036 !important;
+            color: #fff !important;
+            border: none !important;
+            outline: none !important;
+            box-shadow: none !important;
+        }
+
+        .lightpick__select option {
+            background: #202024 !important;
+            color: #e0e0e0 !important;
+        }
+
+        /* Navigation buttons (previous/next month) */
+        .lightpick__previous-action,
+        .lightpick__next-action {
+            background: #202024 !important;
+            color: #e0e0e0 !important;
+            border: 1px solid #303036 !important;
+            border-radius: 4px !important;
+        }
+
+        .lightpick__previous-action:hover,
+        .lightpick__next-action:hover {
+            background: #303036 !important;
+            color: #3b82f6 !important;
+        }
+
+        /* Apply/Reset buttons if they exist */
+        .lightpick__apply,
+        .lightpick__reset {
+            background: #3b82f6 !important;
+            color: #fff !important;
+            border: 1px solid #3b82f6 !important;
+            border-radius: 4px !important;
+        }
+
+        .lightpick__apply:hover,
+        .lightpick__reset:hover {
+            background: #2563eb !important;
+            border-color: #2563eb !important;
+        }
     </style>
 </head>
 
@@ -110,29 +253,30 @@
     <script src="https://cdn.jsdelivr.net/npm/lightpick@1.6.2/lightpick.js"></script>
 
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const parts = window.location.pathname.replace(/^\/+/, '').split('/')
-            if (parts.length < 3) {
-                document.getElementById('ascii').textContent = 'Bad path. Expected /campground/{provider}/{id}'
+        document.addEventListener( 'DOMContentLoaded', function () {
+            const parts = window.location.pathname.replace( /^\/+/, '' ).split( '/' )
+            if ( parts.length < 3 ) {
+                document.getElementById( 'ascii' ).textContent = 'Bad path. Expected /campground/{provider}/{id}'
                 return
             }
             const provider = parts[1]
             const campgroundID = parts[2]
             const titleEl = document.getElementById('title')
+            const metaEl = document.getElementById('meta')
             const asciiEl = document.getElementById('ascii')
             const refreshBtn = document.getElementById('refresh')
 
             // Parse URL params or set defaults (today + 3 weeks)
-            const urlParams = new URLSearchParams(window.location.search)
+            const urlParams = new URLSearchParams( window.location.search )
             const today = moment()
-            const threeWeeksLater = moment().add(21, 'days')
+            const threeWeeksLater = moment().add( 21, 'days' )
 
-            const fromDate = urlParams.get('from') ? moment(urlParams.get('from')) : today
-            const toDate = urlParams.get('to') ? moment(urlParams.get('to')) : threeWeeksLater
+            const fromDate = urlParams.get( 'from' ) ? moment( urlParams.get( 'from' ) ) : today
+            const toDate = urlParams.get( 'to' ) ? moment( urlParams.get( 'to' ) ) : threeWeeksLater
 
             // Initialize Lightpick
-            const picker = new Lightpick({
-                field: document.getElementById('daterange'),
+            const picker = new Lightpick( {
+                field: document.getElementById( 'daterange' ),
                 singleDate: false,
                 startDate: fromDate.toDate(),
                 endDate: toDate.toDate(),
@@ -140,40 +284,39 @@
                 separator: ' to ',
                 numberOfMonths: 2,
                 numberOfColumns: 2,
-                onSelect: function(start, end) {
-                    if (start && end) {
+                onSelect: function ( start, end ) {
+                    if ( start && end ) {
                         load()
                     }
                 }
-            })
+            } )
 
-            function updateUrl() {
-                const newUrl = new URL(window.location)
-                if (picker.getStartDate() && picker.getEndDate()) {
-                    newUrl.searchParams.set('from', moment(picker.getStartDate()).format('YYYY-MM-DD'))
-                    newUrl.searchParams.set('to', moment(picker.getEndDate()).format('YYYY-MM-DD'))
-                    history.replaceState(null, '', newUrl)
+            function updateUrl () {
+                const newUrl = new URL( window.location )
+                if ( picker.getStartDate() && picker.getEndDate() ) {
+                    newUrl.searchParams.set( 'from', moment( picker.getStartDate() ).format( 'YYYY-MM-DD' ) )
+                    newUrl.searchParams.set( 'to', moment( picker.getEndDate() ).format( 'YYYY-MM-DD' ) )
+                    history.replaceState( null, '', newUrl )
                 }
             }
 
             let loading = false
-            async function load() {
-                if (loading) return // prevent overlap
+            async function load () {
+                if ( loading ) return // prevent overlap
                 loading = true
                 refreshBtn.disabled = true
-                const prevScroll = asciiEl.scrollLeft
                 asciiEl.textContent = 'Loading...'
                 try {
-                    const from = picker.getStartDate() ? moment(picker.getStartDate()).format('YYYY-MM-DD') : fromDate.format('YYYY-MM-DD')
-                    const to = picker.getEndDate() ? moment(picker.getEndDate()).format('YYYY-MM-DD') : toDate.format('YYYY-MM-DD')
-                    const resp = await fetch(`/api/campground_state/${provider}/${campgroundID}?from=${from}&to=${to}`)
+                    const from = picker.getStartDate() ? moment( picker.getStartDate() ).format( 'YYYY-MM-DD' ) : fromDate.format( 'YYYY-MM-DD' )
+                    const to = picker.getEndDate() ? moment( picker.getEndDate() ).format( 'YYYY-MM-DD' ) : toDate.format( 'YYYY-MM-DD' )
+                    const resp = await fetch( `/api/campground_state/${ provider }/${ campgroundID }?from=${ from }&to=${ to }` )
                     const txt = await resp.text()
                     const name = resp.headers.get('X-Campground-Name') || campgroundID
                     titleEl.textContent = `${name} [${provider}/${campgroundID}]`
+                    metaEl.textContent = `Showing availability from ${from} to ${to}`
                     asciiEl.textContent = txt
-                    asciiEl.scrollLeft = prevScroll // restore horizontal scroll
                     updateUrl()
-                } catch (e) {
+                } catch ( e ) {
                     asciiEl.textContent = 'Error: ' + e
                 } finally {
                     refreshBtn.disabled = false
@@ -183,8 +326,7 @@
 
             refreshBtn.onclick = load
             load()
-            setInterval(load, 5000)
-        });
+        } );
     </script>
 </body>
 

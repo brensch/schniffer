@@ -73,6 +73,9 @@ func (m *Manager) executeDBOperation(operation func() error) error {
 func (m *Manager) Run(ctx context.Context) {
 	m.logger.Info("Starting manager")
 
+	// Start the ad-hoc scrape processor
+	m.StartAdhocScrapeProcessor(ctx)
+
 	// Start a goroutine for each provider
 	for _, providerName := range m.reg.GetProviderNames() {
 		go m.runProviderLoop(ctx, providerName)
@@ -334,4 +337,120 @@ func (m *Manager) CampgroundURL(provider, campgroundID string) string {
 		return ""
 	}
 	return p.CampgroundURL(campgroundID)
+}
+
+// StartAdhocScrapeProcessor starts a background goroutine to process pending ad-hoc scrape requests
+func (m *Manager) StartAdhocScrapeProcessor(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
+	
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.processAdhocScrapes(ctx)
+			}
+		}
+	}()
+}
+
+// processAdhocScrapes processes pending ad-hoc scrape requests
+func (m *Manager) processAdhocScrapes(ctx context.Context) {
+	pending, err := m.store.GetPendingAdhocScrapes(ctx)
+	if err != nil {
+		m.logger.Error("failed to get pending adhoc scrapes", slog.Any("error", err))
+		return
+	}
+	
+	if len(pending) == 0 {
+		return
+	}
+	
+	m.logger.Info("processing adhoc scrape requests", slog.Int("count", len(pending)))
+	
+	for _, req := range pending {
+		err := m.processAdhocScrapeRequest(ctx, req)
+		if err != nil {
+			m.logger.Error("failed to process adhoc scrape request", 
+				slog.Int("request_id", req.ID),
+				slog.String("provider", req.Provider),
+				slog.String("campground_id", req.CampgroundID),
+				slog.Any("error", err))
+			
+			// Mark as failed
+			errorMsg := err.Error()
+			m.store.UpdateAdhocScrapeStatus(ctx, req.ID, "failed", &errorMsg)
+		}
+	}
+}
+
+// processAdhocScrapeRequest processes a single ad-hoc scrape request
+func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocScrapeRequest) error {
+	m.logger.Info("processing adhoc scrape request", 
+		slog.Int("request_id", req.ID),
+		slog.String("provider", req.Provider),
+		slog.String("campground_id", req.CampgroundID))
+	
+	// Get the provider
+	provider, ok := m.reg.Get(req.Provider)
+	if !ok {
+		return fmt.Errorf("provider %s not found", req.Provider)
+	}
+	
+	// Calculate date range (next 60 days from now)
+	startDate := time.Now()
+	endDate := startDate.AddDate(0, 0, 60)
+	
+	// Execute the scrape using FetchAvailability
+	results, err := provider.FetchAvailability(ctx, req.CampgroundID, startDate, endDate)
+	if err != nil {
+		return fmt.Errorf("failed to scrape availability: %w", err)
+	}
+	
+	// Convert provider results to database format
+	var availabilityStates []db.CampsiteAvailability
+	now := time.Now()
+	for _, result := range results {
+		availabilityStates = append(availabilityStates, db.CampsiteAvailability{
+			Provider:     req.Provider,
+			CampgroundID: req.CampgroundID,
+			CampsiteID:   result.ID,
+			Date:         result.Date,
+			Available:    result.Available,
+			LastChecked:  now,
+		})
+	}
+	
+	// Store results in database using the serialized writer
+	if len(availabilityStates) > 0 {
+		err = m.executeDBOperation(func() error {
+			return m.store.UpsertCampsiteAvailabilityBatch(ctx, availabilityStates)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store availability results: %w", err)
+		}
+	}
+	
+	// Mark request as completed
+	err = m.store.UpdateAdhocScrapeStatus(ctx, req.ID, "completed", nil)
+	if err != nil {
+		m.logger.Error("failed to mark adhoc scrape as completed", 
+			slog.Int("request_id", req.ID),
+			slog.Any("error", err))
+	}
+	
+	m.logger.Info("completed adhoc scrape request", 
+		slog.Int("request_id", req.ID),
+		slog.String("provider", req.Provider),
+		slog.String("campground_id", req.CampgroundID),
+		slog.Int("results_count", len(results)))
+	
+	return nil
+}
+
+// ProcessAdhocScrapeRequest exposes the internal method for immediate processing
+func (m *Manager) ProcessAdhocScrapeRequest(ctx context.Context, req *db.AdhocScrapeRequest) error {
+	return m.processAdhocScrapeRequest(ctx, req)
 }
