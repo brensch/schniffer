@@ -1,12 +1,15 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +73,9 @@ func NewServer(store *db.Store, mgr *manager.Manager, addr string) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 
+	// Campground detail ASCII page (must be before catch-all static)
+	mux.HandleFunc("/campground/", s.handleCampgroundPage)
+
 	// Serve static files from the static directory
 	fs := http.FileServer(http.Dir("./static/"))
 	mux.Handle("/", fs)
@@ -85,6 +91,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// API endpoint to get campground details
 	mux.HandleFunc("/api/campground/", s.handleCampgroundDetail)
+
+	// API endpoint to get campground ASCII state (availability grid)
+	mux.HandleFunc("/api/campground_state/", s.handleCampgroundState)
 
 	// Group API endpoints
 	mux.HandleFunc("/api/groups", s.handleGroups)
@@ -684,4 +693,194 @@ func (s *Server) handleFilterOptionsAPI(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(options)
+}
+
+// handleCampgroundPage serves the static campground HTML page for any /campground/{provider}/{campgroundID}
+func (s *Server) handleCampgroundPage(w http.ResponseWriter, r *http.Request) {
+	// Basic validation of path depth
+	// Expect /campground/{provider}/{id}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/campground/"), "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		http.Error(w, "expected /campground/{provider}/{campgroundID}", http.StatusBadRequest)
+		return
+	}
+	http.ServeFile(w, r, "./static/campground.html")
+}
+
+// handleCampgroundState returns a text/plain ASCII table of campsite availability for a campground.
+// Path: /api/campground_state/{provider}/{campgroundID}?days=14
+func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rel := strings.TrimPrefix(r.URL.Path, "/api/campground_state/")
+	parts := strings.Split(rel, "/")
+	if len(parts) < 2 {
+		http.Error(w, "expected /api/campground_state/{provider}/{campgroundID}", http.StatusBadRequest)
+		return
+	}
+	provider := parts[0]
+	campgroundID := parts[1]
+
+	days := 14
+	if d := r.URL.Query().Get("days"); d != "" {
+		if v, err := strconv.Atoi(d); err == nil && v > 0 {
+			if v > 30 { // cap
+				v = 30
+			}
+			days = v
+		}
+	}
+
+	ctx := r.Context()
+
+	// Get campground name (optional)
+	var campgroundName string
+	err := s.store.DB.QueryRowContext(ctx, `SELECT name FROM campgrounds WHERE provider=? AND campground_id=?`, provider, campgroundID).Scan(&campgroundName)
+	if err != nil {
+		campgroundName = campgroundID
+	}
+
+	startDate := normalizeDay(time.Now())
+	endDate := normalizeDay(startDate.AddDate(0, 0, days-1))
+
+	// Collect all campsite ids for campground
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT campsite_id FROM campsite_metadata WHERE provider=? AND campground_id=? ORDER BY campsite_id`, provider, campgroundID)
+	if err != nil {
+		http.Error(w, "failed to load campsites", http.StatusInternalServerError)
+		return
+	}
+	var campsiteIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			campsiteIDs = append(campsiteIDs, id)
+		}
+	}
+	rows.Close()
+	if len(campsiteIDs) == 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "No campsites found for %s/%s\n", provider, campgroundID)
+		return
+	}
+
+	// Map availability: campsiteID -> date(YYYY-MM-DD) -> available bool
+	avail := make(map[string]map[string]bool, len(campsiteIDs))
+	for _, id := range campsiteIDs {
+		avail[id] = make(map[string]bool)
+	}
+
+	// Query all availability rows in range
+	arows, err := s.store.DB.QueryContext(ctx, `SELECT campsite_id, date, available FROM campsite_availability WHERE provider=? AND campground_id=? AND date BETWEEN ? AND ?`, provider, campgroundID, startDate, endDate)
+	if err != nil {
+		http.Error(w, "failed to load availability", http.StatusInternalServerError)
+		return
+	}
+	for arows.Next() {
+		var cid string
+		var d time.Time
+		var available bool
+		if err := arows.Scan(&cid, &d, &available); err == nil {
+			ds := normalizeDay(d).Format("2006-01-02")
+			if m, ok := avail[cid]; ok {
+				m[ds] = available
+			}
+		}
+	}
+	arows.Close()
+
+	// Build ordered list of dates
+	var dates []time.Time
+	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
+		dates = append(dates, d)
+	}
+
+	// ASCII rendering (compact). Attempt emoji symbols; still keep fixed cell width of 4 chars.
+	const cellWidth = 4
+	var b bytes.Buffer
+	// Months row
+	fmt.Fprintf(&b, "%-15s", "Campsite")
+	var lastMonth time.Month
+	for _, d := range dates {
+		if d.Month() != lastMonth {
+			fmt.Fprintf(&b, "%3s", d.Format("Jan"))
+			lastMonth = d.Month()
+		} else {
+			fmt.Fprintf(&b, "%3s", "")
+		}
+	}
+	b.WriteByte('\n')
+	// Date row
+	fmt.Fprintf(&b, "%-15s", "")
+	for _, d := range dates {
+		fmt.Fprintf(&b, "%02d ", d.Day())
+	}
+	b.WriteByte('\n')
+	// Weekday row (two-letter codes)
+	fmt.Fprintf(&b, "%-15s", "")
+	for _, d := range dates {
+		fmt.Fprintf(&b, "%-2s ", weekday2(d.Weekday()))
+	}
+	b.WriteByte('\n')
+	// Divider
+	fmt.Fprintf(&b, "%s\n", strings.Repeat("-", 15+len(dates)*cellWidth))
+
+	sort.Strings(campsiteIDs)
+	for _, cid := range campsiteIDs {
+		fmt.Fprintf(&b, "%-15s", truncate(cid, 15))
+		dm := avail[cid]
+		for _, d := range dates {
+			key := d.Format("2006-01-02")
+			sym := "?" // unknown
+			if v, ok := dm[key]; ok {
+				if v {
+					sym = "O"
+				} else {
+					sym = "."
+				}
+			}
+			fmt.Fprintf(&b, " %s ", sym) // fixed width cell
+		}
+		b.WriteByte('\n')
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Campground-Name", campgroundName)
+	w.Write(b.Bytes())
+}
+
+// normalizeDay returns time at 00:00 UTC for stable comparison (similar logic exists elsewhere).
+func normalizeDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// truncate shortens a string preserving suffix if needed.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func weekday2(w time.Weekday) string {
+	switch w {
+	case time.Monday:
+		return "Mo"
+	case time.Tuesday:
+		return "Tu"
+	case time.Wednesday:
+		return "We"
+	case time.Thursday:
+		return "Th"
+	case time.Friday:
+		return "Fr"
+	case time.Saturday:
+		return "Sa"
+	default:
+		return "Su"
+	}
 }

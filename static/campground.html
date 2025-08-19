@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Schniffground</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0f;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 1rem;
+        }
+
+        #title {
+            font-size: 1.2rem;
+            margin-bottom: .25rem;
+            font-weight: 600;
+        }
+
+        #meta {
+            color: #8a8a92;
+            margin-bottom: 1rem;
+        }
+
+        #ascii {
+            white-space: pre;
+            overflow-x: auto;
+            background: #16161a;
+            padding: 1rem;
+            border: 1px solid #303036;
+            border-radius: 6px;
+            line-height: 1.1;
+            font-family: "Courier New", Courier, monospace, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+            font-size: 14px;
+        }
+
+        #controls {
+            margin-bottom: .5rem;
+            display: flex;
+            gap: .5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        select,
+        input {
+            background: #202024;
+            color: #fff;
+            border: 1px solid #303036;
+            border-radius: 4px;
+            padding: .35rem .6rem;
+        }
+
+        button {
+            background: #3b82f6;
+            color: #fff;
+            border: none;
+            padding: .45rem .9rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        button:disabled {
+            opacity: .4;
+            cursor: not-allowed;
+        }
+
+        small {
+            color: #8a8a92;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="title">Loading campground...</div>
+    <div id="meta">Legend: O=open .=booked ?=unknown</div>
+    <div id="controls">
+        <label>Days: <input type="number" id="days" min="1" max="30" value="14" style="width:4rem" /></label>
+        <button id="refresh">Refresh</button>
+    </div>
+    <div id="ascii">Fetching...</div>
+    <small>Compact ASCII view. Use the map to explore visually.</small>
+    <script>
+        ( function () {
+            const parts = window.location.pathname.replace( /^\/+/, '' ).split( '/' )
+            if ( parts.length < 3 ) {
+                document.getElementById( 'ascii' ).textContent = 'Bad path. Expected /campground/{provider}/{id}'
+                return
+            }
+            const provider = parts[ 1 ]
+            const campgroundID = parts[ 2 ]
+            const titleEl = document.getElementById( 'title' )
+            const asciiEl = document.getElementById( 'ascii' )
+            const daysInput = document.getElementById( 'days' )
+            const refreshBtn = document.getElementById( 'refresh' )
+
+            let loading = false
+            async function load () {
+                if ( loading ) return // prevent overlap
+                loading = true
+                refreshBtn.disabled = true
+                asciiEl.textContent = 'Loading...'
+                try {
+                    const days = Math.min( Math.max( parseInt( daysInput.value ) || 14, 1 ), 30 )
+                    const resp = await fetch( `/api/campground_state/${ provider }/${ campgroundID }?days=${ days }` )
+                    const txt = await resp.text()
+                    const name = resp.headers.get( 'X-Campground-Name' ) || campgroundID
+                    titleEl.textContent = `${ name } [${ provider }/${ campgroundID }]`
+                    asciiEl.textContent = txt
+                } catch ( e ) {
+                    asciiEl.textContent = 'Error: ' + e
+                } finally {
+                    refreshBtn.disabled = false
+                    loading = false
+                }
+            }
+            refreshBtn.onclick = load
+            daysInput.addEventListener( 'change', load )
+            load()
+            setInterval( load, 5000 )
+        } )();
+    </script>
+</body>
+
+</html>
