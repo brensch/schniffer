@@ -285,32 +285,35 @@ map.on('moveend zoomend', loadViewportData);
 
 // Place search
 let placeSearchTimeout;
-document.getElementById('place-search').addEventListener('input', (e) => {
-    clearTimeout(placeSearchTimeout);
-    placeSearchTimeout = setTimeout(() => {
-        if (e.target.value.length > 2) {
-            searchPlace(e.target.value);
-        } else {
-            hideSearchDropdown();
+const placeSearchElement = document.getElementById('place-search');
+if (placeSearchElement) {
+    placeSearchElement.addEventListener('input', (e) => {
+        clearTimeout(placeSearchTimeout);
+        placeSearchTimeout = setTimeout(() => {
+            if (e.target.value.length > 2) {
+                searchPlace(e.target.value);
+            } else {
+                hideSearchDropdown();
+            }
+        }, 500); // Timeout for place search to avoid too many API calls
+    });
+
+    // Also trigger selection of first result on Enter key
+    placeSearchElement.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const firstOption = document.querySelector('.search-dropdown .search-option');
+            if (firstOption) {
+                firstOption.click();
+            }
         }
-    }, 500); // Timeout for place search to avoid too many API calls
-});
+    });
+}
 
 // Hide dropdown when clicking outside
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.search-container')) {
         hideSearchDropdown();
-    }
-});
-
-// Also trigger selection of first result on Enter key
-document.getElementById('place-search').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        const firstOption = document.querySelector('.search-dropdown .search-option');
-        if (firstOption) {
-            firstOption.click();
-        }
     }
 });
 
@@ -857,4 +860,20 @@ function switchMapLayer(layerType) {
 }
 
 // Load filter options on page load
-document.addEventListener('DOMContentLoaded', loadFilterOptions);
+document.addEventListener('DOMContentLoaded', function() {
+    loadFilterOptions();
+    
+    // Check for welcome query parameter and show instructions modal if present
+    const urlParams = new URLSearchParams(window.location.search);
+    console.log('URL search params:', window.location.search);
+    console.log('Has welcome param:', urlParams.has('welcome'));
+    
+    if (urlParams.has('welcome')) {
+        const instructionsModal = document.getElementById('instructions-modal');
+        console.log('Found instructions modal element:', instructionsModal);
+        if (instructionsModal) {
+            instructionsModal.style.display = 'block';
+            console.log('Showing welcome modal');
+        }
+    }
+});

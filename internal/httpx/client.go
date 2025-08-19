@@ -282,14 +282,14 @@ var realBrowserProfiles = []browserProfile{
 func SpoofChromeHeaders(r *http.Request) {
 	// Select a random browser profile
 	profile := realBrowserProfiles[rand.Intn(len(realBrowserProfiles))]
-	
+
 	// Set the headers from the selected profile
 	r.Header.Set("User-Agent", profile.UserAgent)
 	r.Header.Set("Accept", profile.Accept)
 	r.Header.Set("Accept-Language", profile.AcceptLanguage)
 	// Don't set Accept-Encoding - let Go's HTTP client handle compression automatically
 	r.Header.Set("Connection", profile.Connection)
-	
+
 	// Set optional headers if they exist in the profile
 	if profile.UpgradeInsecure != "" {
 		r.Header.Set("Upgrade-Insecure-Requests", profile.UpgradeInsecure)
