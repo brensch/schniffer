@@ -128,7 +128,7 @@ func (m *Manager) sendStateChangeNotification(
 		detailsMap = map[string]db.CampsiteDetails{} // empty — pure helpers will handle defaults
 	}
 
-	// Build stats (pure). Do NOT cut/sort here — that happens in BuildNotificationEmbeds now.
+	// Build stats (pure).
 	stats := buildCampsiteStats(byCampsite, req.Checkin, req.Checkout, detailsMap)
 
 	// Get campground presentation info
@@ -138,7 +138,7 @@ func (m *Manager) sendStateChangeNotification(
 	// missing the provider is irrelevant, checked in
 	provider, _ := m.reg.Get(req.Provider)
 
-	// Build embeds (pure). This handles sorting, field chunking, and splitting across embeds.
+	// Build a single embed showing only the top 3 campsites with up to 20 dates each.
 	embeds := BuildNotificationEmbeds(
 		req.Checkin, req.Checkout, req.UserID,
 		campground.Name, campgroundURL, campground.ID,
@@ -146,7 +146,7 @@ func (m *Manager) sendStateChangeNotification(
 		provider,
 	)
 
-	// Send all embeds
+	// Send the embed (at most 1)
 	var firstErr error
 	for _, e := range embeds {
 		if _, err := m.notifier.ChannelMessageSendEmbed(channel.ID, e); err != nil && firstErr == nil {
@@ -250,14 +250,8 @@ func buildCampsiteStats(
 	return stats
 }
 
-// BuildNotificationEmbeds creates one or more embeds with fields for each campsite.
-// Pure: does not hit DB; accepts all text inputs and precomputed stats.
-// Differences from prior version:
-//   - Removes cost/rating and "top N" summary.
-//   - Removes "new/missed it" markers and change summary.
-//   - Sorts by DaysAvailable (desc) internally.
-//   - Does NOT truncate content; instead splits fields and embeds to respect Discord limits.
-//   - Adds a divider between campsites.
+// BuildNotificationEmbeds creates a single embed that lists ONLY the top 3 campsites by days available.
+// Each campsite shows at most 20 dates. No chunking or secondary embeds.
 func BuildNotificationEmbeds(
 	checkin, checkout time.Time,
 	userID string,
@@ -267,16 +261,11 @@ func BuildNotificationEmbeds(
 	campsiteStats []CampsiteStats,
 	provider providers.Provider,
 ) []*discordgo.MessageEmbed {
-
 	if len(campsiteStats) == 0 {
 		return nil
 	}
-	// Discord embed constraints we care about
-	const (
-		maxFieldsPerEmbed  = 25
-		maxFieldValueChars = 1024
-		dateFmtISO         = "Monday 2006-01-02"
-	)
+
+	const dateFmtISO = "Monday 2006-01-02"
 
 	// Sort by days available (desc), then by campsiteID for stability.
 	sort.Slice(campsiteStats, func(i, j int) bool {
@@ -286,157 +275,82 @@ func BuildNotificationEmbeds(
 		return campsiteStats[i].CampsiteID < campsiteStats[j].CampsiteID
 	})
 
-	// Format campground name (linked if URL provided)
-	campgroundLine := campgroundName
-	if strings.TrimSpace(campgroundURL) != "" {
-		campgroundLine = fmt.Sprintf("[%s](%s)", campgroundName, campgroundURL)
+	// Keep only top 3.
+	if len(campsiteStats) > 3 {
+		campsiteStats = campsiteStats[:3]
 	}
 
-	// Helper to start a new embed with shared header
-	newEmbed := func(part int) *discordgo.MessageEmbed {
-		title := nonsense.RandomSillyHeader()
-		if part > 1 {
-			title = fmt.Sprintf("%s (cont. %d)", title, part)
-		}
-		title = fmt.Sprintf("%s\n%s", title, campgroundName)
-		desc := fmt.Sprintf("%s\n%s ➡️ %s",
-			campgroundLine,
-			checkin.Format(dateFmtISO), checkout.Format(dateFmtISO),
-		)
-		return &discordgo.MessageEmbed{
-			Title:       title,
-			Description: desc,
-			Color:       0x00ff00, // green
-			Fields:      []*discordgo.MessageEmbedField{},
-		}
+	title := nonsense.RandomSillyHeader()
+	title = fmt.Sprintf("%s\n%s", title, campgroundName)
+
+	desc := fmt.Sprintf("[%s ➡️ %s](%s)",
+		checkin.Format(dateFmtISO), checkout.Format(dateFmtISO),
+		campgroundURL,
+	)
+
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
+		Description: desc,
+		Color:       0x00ff00, // green
+		Fields:      []*discordgo.MessageEmbedField{},
 	}
 
-	embeds := []*discordgo.MessageEmbed{}
-	current := newEmbed(1)
-	part := 1
-	fieldCount := 0
-
-	// Helper: flush current embed if field capacity reached
-	flushIfFull := func() {
-		if fieldCount >= maxFieldsPerEmbed {
-			embeds = append(embeds, current)
-			part++
-			current = newEmbed(part)
-			fieldCount = 0
-		}
-	}
-
-	// Helper: append a field safely
-	appendField := func(name, value string) {
-		current.Fields = append(current.Fields, &discordgo.MessageEmbedField{
-			Name:   name,
-			Value:  value,
-			Inline: false,
-		})
-		fieldCount++
-	}
-
-	// Helper: chunk a long block into <= maxFieldValueChars preserving line breaks
-	chunkByLimit := func(s string, limit int) []string {
-		if len(s) <= limit {
-			return []string{s}
-		}
-		lines := strings.Split(s, "\n")
-		var out []string
-		var b strings.Builder
-		for _, line := range lines {
-			// +1 for newline if needed
-			add := len(line)
-			if b.Len() > 0 {
-				add++ // newline
-			}
-			if b.Len()+add > limit {
-				out = append(out, b.String())
-				b.Reset()
-			}
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-		}
-		if b.Len() > 0 {
-			out = append(out, b.String())
-		}
-		// Fallback split if any single line > limit
-		var final []string
-		for _, seg := range out {
-			if len(seg) <= limit {
-				final = append(final, seg)
-				continue
-			}
-			// hard split by characters
-			runes := []rune(seg)
-			for i := 0; i < len(runes); i += limit {
-				j := i + limit
-				if j > len(runes) {
-					j = len(runes)
-				}
-				final = append(final, string(runes[i:j]))
-			}
-		}
-		return final
-	}
-
-	// Build fields for each campsite
 	for _, s := range campsiteStats {
-		// Build the main value (without cost/rating; keep optional name/type/equipment)
-		var value strings.Builder
+		var b strings.Builder
 
+		// Optional meta line.
 		if s.Details.Type != "" {
-			value.WriteString(fmt.Sprintf("📍 %s ", s.Details.Type))
+			b.WriteString(fmt.Sprintf("📍 %s ", s.Details.Type))
 		}
 		if len(s.Details.Equipment) > 0 {
-			value.WriteString(fmt.Sprintf("🛖 %s\n", strings.Join(s.Details.Equipment, ", ")))
+			b.WriteString(fmt.Sprintf("🛖 %s\n", strings.Join(s.Details.Equipment, ", ")))
 		}
 
+		// Availability summary w/ link if provider present.
 		if provider != nil {
 			url := provider.CampsiteURL(campgroundID, s.CampsiteID)
-			value.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
+			b.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
 		} else {
-			value.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
+			b.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
 		}
 
-		// Full, untruncated date list, no markers
-		for _, d := range s.Dates {
-			value.WriteString(fmt.Sprintf("%s\n", d.Format(dateFmtISO)))
+		// Up to 20 dates.
+		maxDates := 20
+		limit := len(s.Dates)
+		if limit > maxDates {
+			limit = maxDates
+		}
+		for i := 0; i < limit; i++ {
+			b.WriteString(s.Dates[i].Format(dateFmtISO))
+			b.WriteByte('\n')
+		}
+		// If there are more dates beyond 20, note it (no extra truncation other than this limit).
+		if len(s.Dates) > maxDates {
+			b.WriteString(fmt.Sprintf("…and %d more\n", len(s.Dates)-maxDates))
 		}
 
-		// Chunk the value into <= 1024 and add as possibly multiple fields.
-		chunks := chunkByLimit(value.String(), maxFieldValueChars)
 		displayName := s.Details.Name
 		if displayName == "" {
 			displayName = fmt.Sprintf("Campsite %s", s.CampsiteID)
 		}
-		for i, chunk := range chunks {
-			flushIfFull()
-			name := fmt.Sprintf("%s", displayName)
-			if len(chunks) > 1 {
-				name = fmt.Sprintf("%s (part %d/%d)", displayName, i+1, len(chunks))
-			}
-			appendField(name, chunk)
-		}
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   displayName,
+			Value:  b.String(),
+			Inline: false,
+		})
 	}
 
-	// Add a short "Remember" helper at the end of the last embed (kept concise to avoid crowding).
-	flushIfFull()
-	appendField("HURRY",
-		strings.Join([]string{
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+		Name: "Important Information",
+		Value: strings.Join([]string{
 			"🔗 Links go to booking pages",
 			"🏃‍♂️ Campsites at Yosemite book out in 2 minutes",
-			"📱 Opening links in mobile app goes to last open page - double check",
-			"\n🐽💖",
+			"⚠️ Opening links in mobile app goes to your last open page",
+			"\nWith 💖 from 🐽",
 		}, "\n"),
-	)
+		Inline: false,
+	})
 
-	// Push the final embed
-	if len(current.Fields) > 0 || current.Description != "" {
-		embeds = append(embeds, current)
-	}
-
-	return embeds
+	return []*discordgo.MessageEmbed{embed}
 }
