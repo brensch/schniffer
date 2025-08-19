@@ -5,6 +5,8 @@
     <meta charset="UTF-8" />
     <title>Schniffground</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- Lightpick CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lightpick@1.6.2/css/lightpick.css">
     <style>
         body {
             font-family: monospace;
@@ -54,75 +56,135 @@
             padding: .35rem .6rem;
         }
 
+        /* Date range picker styling */
+        #daterange {
+            background: #202024;
+            color: #fff;
+            border: 1px solid #303036;
+            border-radius: 4px;
+            padding: .35rem .6rem;
+            cursor: pointer;
+            min-width: 200px;
+        }
+
         button {
             background: #3b82f6;
-            color: #fff;
+            color: white;
             border: none;
-            padding: .45rem .9rem;
             border-radius: 4px;
+            padding: .35rem .8rem;
             cursor: pointer;
-            font-weight: 600;
+        }
+
+        button:hover {
+            background: #2563eb;
         }
 
         button:disabled {
-            opacity: .4;
+            background: #6b7280;
             cursor: not-allowed;
         }
 
         small {
             color: #8a8a92;
+            margin-top: .5rem;
+            display: block;
         }
     </style>
 </head>
 
 <body>
-    <div id="title">Loading campground...</div>
-    <div id="meta">Legend: O=open .=booked ?=unknown</div>
+    <div id="title">Loading...</div>
+    <div id="meta">Loading campground availability...</div>
+
     <div id="controls">
-        <label>Days: <input type="number" id="days" min="1" max="30" value="14" style="width:4rem" /></label>
+        <input type="text" id="daterange" name="daterange" />
         <button id="refresh">Refresh</button>
     </div>
+
     <div id="ascii">Fetching...</div>
     <small>Compact ASCII view. Use the map to explore visually.</small>
+
+    <!-- Lightpick dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lightpick@1.6.2/lightpick.js"></script>
+
     <script>
-        ( function () {
-            const parts = window.location.pathname.replace( /^\/+/, '' ).split( '/' )
-            if ( parts.length < 3 ) {
-                document.getElementById( 'ascii' ).textContent = 'Bad path. Expected /campground/{provider}/{id}'
+        document.addEventListener('DOMContentLoaded', function () {
+            const parts = window.location.pathname.replace(/^\/+/, '').split('/')
+            if (parts.length < 3) {
+                document.getElementById('ascii').textContent = 'Bad path. Expected /campground/{provider}/{id}'
                 return
             }
-            const provider = parts[ 1 ]
-            const campgroundID = parts[ 2 ]
-            const titleEl = document.getElementById( 'title' )
-            const asciiEl = document.getElementById( 'ascii' )
-            const daysInput = document.getElementById( 'days' )
-            const refreshBtn = document.getElementById( 'refresh' )
+            const provider = parts[1]
+            const campgroundID = parts[2]
+            const titleEl = document.getElementById('title')
+            const asciiEl = document.getElementById('ascii')
+            const refreshBtn = document.getElementById('refresh')
+
+            // Parse URL params or set defaults (today + 3 weeks)
+            const urlParams = new URLSearchParams(window.location.search)
+            const today = moment()
+            const threeWeeksLater = moment().add(21, 'days')
+
+            const fromDate = urlParams.get('from') ? moment(urlParams.get('from')) : today
+            const toDate = urlParams.get('to') ? moment(urlParams.get('to')) : threeWeeksLater
+
+            // Initialize Lightpick
+            const picker = new Lightpick({
+                field: document.getElementById('daterange'),
+                singleDate: false,
+                startDate: fromDate.toDate(),
+                endDate: toDate.toDate(),
+                format: 'YYYY-MM-DD',
+                separator: ' to ',
+                numberOfMonths: 2,
+                numberOfColumns: 2,
+                onSelect: function(start, end) {
+                    if (start && end) {
+                        load()
+                    }
+                }
+            })
+
+            function updateUrl() {
+                const newUrl = new URL(window.location)
+                if (picker.getStartDate() && picker.getEndDate()) {
+                    newUrl.searchParams.set('from', moment(picker.getStartDate()).format('YYYY-MM-DD'))
+                    newUrl.searchParams.set('to', moment(picker.getEndDate()).format('YYYY-MM-DD'))
+                    history.replaceState(null, '', newUrl)
+                }
+            }
 
             let loading = false
-            async function load () {
-                if ( loading ) return // prevent overlap
+            async function load() {
+                if (loading) return // prevent overlap
                 loading = true
                 refreshBtn.disabled = true
+                const prevScroll = asciiEl.scrollLeft
                 asciiEl.textContent = 'Loading...'
                 try {
-                    const days = Math.min( Math.max( parseInt( daysInput.value ) || 14, 1 ), 30 )
-                    const resp = await fetch( `/api/campground_state/${ provider }/${ campgroundID }?days=${ days }` )
+                    const from = picker.getStartDate() ? moment(picker.getStartDate()).format('YYYY-MM-DD') : fromDate.format('YYYY-MM-DD')
+                    const to = picker.getEndDate() ? moment(picker.getEndDate()).format('YYYY-MM-DD') : toDate.format('YYYY-MM-DD')
+                    const resp = await fetch(`/api/campground_state/${provider}/${campgroundID}?from=${from}&to=${to}`)
                     const txt = await resp.text()
-                    const name = resp.headers.get( 'X-Campground-Name' ) || campgroundID
-                    titleEl.textContent = `${ name } [${ provider }/${ campgroundID }]`
+                    const name = resp.headers.get('X-Campground-Name') || campgroundID
+                    titleEl.textContent = `${name} [${provider}/${campgroundID}]`
                     asciiEl.textContent = txt
-                } catch ( e ) {
+                    asciiEl.scrollLeft = prevScroll // restore horizontal scroll
+                    updateUrl()
+                } catch (e) {
                     asciiEl.textContent = 'Error: ' + e
                 } finally {
                     refreshBtn.disabled = false
                     loading = false
                 }
             }
+
             refreshBtn.onclick = load
-            daysInput.addEventListener( 'change', load )
             load()
-            setInterval( load, 5000 )
-        } )();
+            setInterval(load, 5000)
+        });
     </script>
 </body>
 

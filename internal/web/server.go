@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -723,14 +722,36 @@ func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
 	provider := parts[0]
 	campgroundID := parts[1]
 
-	days := 14
-	if d := r.URL.Query().Get("days"); d != "" {
-		if v, err := strconv.Atoi(d); err == nil && v > 0 {
-			if v > 30 { // cap
-				v = 30
-			}
-			days = v
+	// Parse date range from query params, default to next 3 weeks
+	var startDate, endDate time.Time
+	now := normalizeDay(time.Now())
+
+	if fromStr := r.URL.Query().Get("from"); fromStr != "" {
+		if parsed, err := time.Parse("2006-01-02", fromStr); err == nil {
+			startDate = normalizeDay(parsed)
+		} else {
+			startDate = now
 		}
+	} else {
+		startDate = now
+	}
+
+	if toStr := r.URL.Query().Get("to"); toStr != "" {
+		if parsed, err := time.Parse("2006-01-02", toStr); err == nil {
+			endDate = normalizeDay(parsed)
+		} else {
+			endDate = normalizeDay(startDate.AddDate(0, 0, 20)) // 3 weeks default
+		}
+	} else {
+		endDate = normalizeDay(startDate.AddDate(0, 0, 20)) // 3 weeks default
+	}
+
+	// Enforce reasonable limits
+	if endDate.Before(startDate) {
+		endDate = startDate.AddDate(0, 0, 1)
+	}
+	if endDate.Sub(startDate) > 60*24*time.Hour { // max 60 days
+		endDate = startDate.AddDate(0, 0, 60)
 	}
 
 	ctx := r.Context()
@@ -741,9 +762,6 @@ func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		campgroundName = campgroundID
 	}
-
-	startDate := normalizeDay(time.Now())
-	endDate := normalizeDay(startDate.AddDate(0, 0, days-1))
 
 	// Collect all campsite ids for campground
 	rows, err := s.store.DB.QueryContext(ctx, `SELECT campsite_id FROM campsite_metadata WHERE provider=? AND campground_id=? ORDER BY campsite_id`, provider, campgroundID)
