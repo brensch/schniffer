@@ -275,8 +275,7 @@ func BuildNotificationEmbeds(
 	const (
 		maxFieldsPerEmbed  = 25
 		maxFieldValueChars = 1024
-		dateFmtDay         = "Monday"
-		dateFmtISO         = "2006-01-02"
+		dateFmtISO         = "Monday 2006-01-02"
 	)
 
 	// Sort by days available (desc), then by campsiteID for stability.
@@ -299,7 +298,8 @@ func BuildNotificationEmbeds(
 		if part > 1 {
 			title = fmt.Sprintf("%s (cont. %d)", title, part)
 		}
-		desc := fmt.Sprintf("%s\n%s to %s",
+		title = fmt.Sprintf("%s\n%s", title, campgroundName)
+		desc := fmt.Sprintf("%s\n%s ➡️ %s",
 			campgroundLine,
 			checkin.Format(dateFmtISO), checkout.Format(dateFmtISO),
 		)
@@ -307,7 +307,6 @@ func BuildNotificationEmbeds(
 			Title:       title,
 			Description: desc,
 			Color:       0x00ff00, // green
-			Timestamp:   time.Now().Format(time.RFC3339),
 			Fields:      []*discordgo.MessageEmbedField{},
 		}
 	}
@@ -389,10 +388,10 @@ func BuildNotificationEmbeds(
 		var value strings.Builder
 
 		if s.Details.Type != "" {
-			value.WriteString(fmt.Sprintf("Type: %s\n", s.Details.Type))
+			value.WriteString(fmt.Sprintf("📍 %s ", s.Details.Type))
 		}
 		if len(s.Details.Equipment) > 0 {
-			value.WriteString(fmt.Sprintf("Equipment: %s\n", strings.Join(s.Details.Equipment, ", ")))
+			value.WriteString(fmt.Sprintf("🛖 %s\n", strings.Join(s.Details.Equipment, ", ")))
 		}
 
 		if provider != nil {
@@ -404,7 +403,7 @@ func BuildNotificationEmbeds(
 
 		// Full, untruncated date list, no markers
 		for _, d := range s.Dates {
-			value.WriteString(fmt.Sprintf("%s (%s)\n", d.Format(dateFmtDay), d.Format(dateFmtISO)))
+			value.WriteString(fmt.Sprintf("%s\n", d.Format(dateFmtISO)))
 		}
 
 		// Chunk the value into <= 1024 and add as possibly multiple fields.
@@ -427,9 +426,10 @@ func BuildNotificationEmbeds(
 	flushIfFull()
 	appendField("HURRY",
 		strings.Join([]string{
-			"• Links go to booking pages",
-			"• Campsites at Yosemite book out in 2 minutes",
-			"• Opening links in mobile app goes to last open page - double check",
+			"🔗 Links go to booking pages",
+			"🏃‍♂️ Campsites at Yosemite book out in 2 minutes",
+			"📱 Opening links in mobile app goes to last open page - double check",
+			"\n🐽💖",
 		}, "\n"),
 	)
 
