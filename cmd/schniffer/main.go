@@ -41,20 +41,26 @@ func main() {
 	provRegistry.Register("recreation_gov", providers.NewRecreationGov())
 	provRegistry.Register("reservecalifornia", providers.NewReserveCalifornia())
 
-	guildID := os.Getenv("GUILD_ID")
-
 	// both manager and bot use this so shared
 	discordSession, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"))
 	if err != nil {
 		panic(err)
 	}
+	// must register intents before opening
+	discordSession.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
 	err = discordSession.Open()
 	if err != nil {
 		panic(err)
 	}
 	defer discordSession.Close()
 
-	mgr := manager.NewManager(store, provRegistry, discordSession, guildID)
+	guildID := os.Getenv("GUILD_ID")
+	broadcastChannel, err := bot.GuildIDToChannelID(discordSession, guildID)
+	if err != nil {
+		panic(err)
+	}
+
+	mgr := manager.NewManager(store, provRegistry, discordSession, broadcastChannel)
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
 
@@ -77,10 +83,14 @@ func main() {
 	}()
 
 	prod := os.Getenv("PROD") == "true"
-	b := bot.New(store, discordSession, provRegistry, guildID, !prod)
+	b, err := bot.New(store, discordSession, provRegistry, guildID, !prod)
+	if err != nil {
+		slog.Error("failed to create bot", slog.Any("err", err))
+		panic(err)
+	}
 	err = b.Run(ctx)
 	if err != nil {
 		slog.Error("bot run failed", slog.Any("err", err))
-		os.Exit(1)
+		panic(err)
 	}
 }

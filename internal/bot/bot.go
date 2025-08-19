@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/brensch/schniffer/internal/db"
@@ -12,6 +13,7 @@ import (
 
 type Bot struct {
 	session          *discordgo.Session
+	guildID          string
 	broadcastChannel string
 
 	store    *db.Store
@@ -20,7 +22,12 @@ type Bot struct {
 	useGuild bool // use guild commands (default) vs global commands (production)
 }
 
-func New(store *db.Store, discordSession *discordgo.Session, registry *providers.Registry, broadcastChannel string, useGuild bool) *Bot {
+func New(store *db.Store, discordSession *discordgo.Session, registry *providers.Registry, guildID string, useGuild bool) (*Bot, error) {
+	broadcastChannel, err := GuildIDToChannelID(discordSession, guildID)
+	if err != nil {
+		slog.Error("failed to resolve broadcast channel", slog.Any("err", err))
+		return nil, err
+	}
 	return &Bot{
 		store:            store,
 		session:          discordSession,
@@ -28,56 +35,38 @@ func New(store *db.Store, discordSession *discordgo.Session, registry *providers
 		logger:           slog.Default(),
 		registry:         registry,
 		useGuild:         useGuild,
-	}
+	}, nil
 }
 
 func (b *Bot) Run(ctx context.Context) error {
 	b.session.AddHandler(b.onReady)
 	b.session.AddHandler(b.onInteraction)
 	b.session.AddHandler(b.onGuildMemberAdd)
-	b.session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
 
 	<-ctx.Done()
 	return nil
 }
 
-// resolveChannelID takes a channel ID or guild ID and returns the actual channel ID to send to
-func (b *Bot) resolveChannelID(channelID string) string {
-	// Try to get it as a guild first
-	guild, err := b.session.Guild(channelID)
-	if err == nil {
-		// This is a guild ID, find the first text channel
-		channels, err := b.session.GuildChannels(guild.ID)
-		if err == nil {
-			for _, channel := range channels {
-				if channel.Type == discordgo.ChannelTypeGuildText {
-					return channel.ID
-				}
-			}
+func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, error) {
+	channels, err := session.GuildChannels(guildID)
+	if err != nil {
+		return "", err
+	}
+
+	// Find the first text channel in the guild
+	for _, channel := range channels {
+		fmt.Println(channel.Type)
+		if channel.Type == discordgo.ChannelTypeGuildText {
+			return channel.ID, nil
 		}
 	}
-	// If not a guild or no text channels found, assume it's already a channel ID
-	return channelID
-}
-
-func (b *Bot) Notify(channelID string, msg string) error {
-	resolvedChannelID := b.resolveChannelID(channelID)
-	_, err := b.session.ChannelMessageSend(resolvedChannelID, msg)
-	return err
+	return "", nil
 }
 
 func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	b.logger.Info("bot ready", slog.String("user", s.State.User.Username))
 	b.registerCommands()
-
-	// Send startup message to the broadcast channel
-	if b.broadcastChannel != "" {
-		resolvedChannelID := b.resolveChannelID(b.broadcastChannel)
-		err := b.Notify(resolvedChannelID, "scniffbot online and ready to schniff")
-		if err != nil {
-			b.logger.Error("failed to send startup message", slog.Any("err", err))
-		}
-	}
+	b.session.ChannelMessageSend(b.broadcastChannel, "Hello. Schniffer here. I was sleeping, now i'm online.")
 }
 
 func (b *Bot) onGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
@@ -125,9 +114,6 @@ People make plans, those plans change. They cancel their booking. They normally 
 		return
 	}
 
-	// Send a brief public notification to the broadcast channel
-	resolvedChannelID := b.resolveChannelID(b.broadcastChannel)
-
 	// Generate public welcome message
 	welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
 
@@ -138,7 +124,7 @@ People make plans, those plans change. They cancel their booking. They normally 
 		Color:       0x5865F2, // Discord blurple color
 	}
 
-	_, err = s.ChannelMessageSendEmbed(resolvedChannelID, embed)
+	_, err = s.ChannelMessageSendEmbed(b.broadcastChannel, embed)
 	if err != nil {
 		b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 	}
@@ -189,9 +175,6 @@ func (b *Bot) registerCommands() {
 
 func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
-	case discordgo.InteractionMessageComponent:
-		b.handleMessageComponent(s, i)
-		return
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		b.handleAutocomplete(s, i)
 		return
@@ -199,15 +182,6 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		b.handleApplicationCommand(s, i)
 		return
 	default:
-		return
-	}
-}
-
-// handleMessageComponent routes UI component interactions (kept flat with early returns)
-func (b *Bot) handleMessageComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.MessageComponentData()
-	if data.CustomID == "remove_checks" {
-		b.handleRemoveChecksComponent(s, i, data)
 		return
 	}
 }

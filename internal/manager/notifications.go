@@ -10,6 +10,7 @@ import (
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/nonsense"
+	"github.com/brensch/schniffer/internal/providers"
 	"github.com/bwmarrin/discordgo"
 	"github.com/google/uuid"
 )
@@ -146,12 +147,16 @@ func (m *Manager) sendStateChangeNotification(
 	campground, _, err := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
 	campgroundURL := m.CampgroundURL(req.Provider, req.CampgroundID)
 
+	// missing the provider is irrelevant, checked in
+	provider, _ := m.reg.Get(req.Provider)
+
 	// Build embed (pure)
-	embed := buildNotificationEmbed(
+	embed := BuildNotificationEmbed(
 		req.Checkin, req.Checkout, req.UserID,
-		campground.Name, campgroundURL,
+		campground.Name, campgroundURL, campground.ID,
 		stats,
 		newlyAvailable, newlyBooked,
+		provider,
 	)
 
 	// Send
@@ -253,16 +258,18 @@ func buildCampsiteStats(
 	return stats
 }
 
-// buildNotificationEmbed creates a single embed with fields for each campsite.
+// BuildNotificationEmbed creates a single embed with fields for each campsite.
 // Pure: does not hit DB; accepts all text inputs and precomputed stats.
-func buildNotificationEmbed(
+func BuildNotificationEmbed(
 	checkin, checkout time.Time,
 	userID string,
 	campgroundName string,
 	campgroundURL string,
+	campgroundID string,
 	campsiteStats []CampsiteStats,
 	newlyAvailable []db.AvailabilityItem,
 	newlyBooked []db.AvailabilityItem,
+	provider providers.Provider,
 ) *discordgo.MessageEmbed {
 	// Format campground name (linked if URL provided)
 	campgroundLine := campgroundName
@@ -346,8 +353,14 @@ func buildNotificationEmbed(
 			fieldValue.WriteString("\n")
 		}
 
+		if provider != nil {
+			url := provider.CampsiteURL(campgroundID, s.CampsiteID)
+			fieldValue.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
+		} else {
+			fieldValue.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
+		}
+
 		// Summary line for availability (not linked here because we don't know URL patterns generically)
-		fieldValue.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
 
 		// List available dates with change markers
 		maxDates := 8
