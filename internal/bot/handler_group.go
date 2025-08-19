@@ -107,9 +107,9 @@ func (b *Bot) handleGroupCommand(s *discordgo.Session, i *discordgo.InteractionC
 func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
 	uid := getUserID(i)
 
-	// Create the URL with the user's token
+	// Create the URL with the user's token and welcome parameter
 	baseURL := "https://schniff.snek2.ddns.net"
-	groupCreationURL := fmt.Sprintf("%s/?user=%s", baseURL, uid)
+	groupCreationURL := fmt.Sprintf("%s/?user=%s&welcome=true", baseURL, uid)
 
 	// Create an embed with the link
 	embed := &discordgo.MessageEmbed{

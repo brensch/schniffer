@@ -132,33 +132,57 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		RestrictADA:       false,
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpx.SpoofChromeHeaders(req)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "https://reservecalifornia.com")
-	req.Header.Set("Referer", "https://reservecalifornia.com/")
 
-	slog.Info("Fetching RC grid", slog.String("facility", campgroundID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("grid POST failed: %w", err)
-	}
-	b, rerr := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if rerr != nil {
-		return nil, fmt.Errorf("grid read body failed: %w", rerr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("reservecalifornia grid status %d; body: %s", resp.StatusCode, clipBody(b))
-	}
+	var intErr error
 	var parsed gridResponse
-	err = json.Unmarshal(b, &parsed)
-	if err != nil {
-		return nil, fmt.Errorf("grid JSON decode failed: %w; body: %s", err, clipBody(b))
+	for i := 0; i < maxRetries; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+
+		httpx.SpoofChromeHeaders(req)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://reservecalifornia.com")
+		req.Header.Set("Referer", "https://reservecalifornia.com/")
+
+		time.Sleep(time.Duration(i) * 100 * time.Millisecond) // Exponential backoff
+
+		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
+		resp, err := r.client.Do(req)
+		if err != nil {
+			slog.Warn("grid POST failed", slog.Any("err", err), slog.String("facility", campgroundID))
+			intErr = err
+			continue
+		}
+		b, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			slog.Warn("grid read body failed", slog.Any("err", rerr), slog.String("facility", campgroundID))
+			intErr = fmt.Errorf("grid read body failed: %w", rerr)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("grid status not OK", slog.Int("status", resp.StatusCode), slog.String("facility", campgroundID), slog.String("body", string(b)))
+			intErr = fmt.Errorf("grid status %d; body: %s", resp.StatusCode, clipBody(b))
+			continue
+		}
+
+		err = json.Unmarshal(b, &parsed)
+		if err != nil {
+			slog.Warn("grid JSON decode failed", slog.Any("err", err), slog.String("body", string(b)))
+			intErr = fmt.Errorf("grid JSON decode failed: %w; body: %s", err, clipBody(b))
+			continue
+		}
+
+		intErr = nil
+		break
 	}
+
+	if intErr != nil {
+		return nil, intErr
+	}
+
 	var out []CampsiteAvailability
 	for _, u := range parsed.Facility.Units {
 		siteID := strconv.Itoa(u.UnitId)
@@ -245,6 +269,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		}
 
 		var b2 []byte
+		success := false
 		for i := 0; i < 100; i++ {
 			pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
 			pb, _ := json.Marshal(pr)
@@ -273,13 +298,18 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 				continue
 			}
 			// exit if we got the value
+			success = true
 			break
+		}
+		if !success {
+			slog.Warn("place request failed after retries", slog.Int("placeId", p.PlaceId))
+			return nil, fmt.Errorf("place request failed after retries for PlaceId %d", p.PlaceId)
 		}
 		var prParsed placeResp
 		err = json.Unmarshal(b2, &prParsed)
 		if err != nil {
 			slog.Warn("place JSON decode failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
-			continue
+			return nil, fmt.Errorf("place JSON decode failed: %w; body: %s", err, clipBody(b2))
 		}
 
 		parentName := prParsed.SelectedPlace.Name
