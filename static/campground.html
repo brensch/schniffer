@@ -39,6 +39,16 @@
             font-size: 14px;
         }
 
+        #ascii a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+
+        #ascii a:hover {
+            color: #60a5fa;
+            text-decoration: underline;
+        }
+
         #controls {
             margin-bottom: .5rem;
             display: flex;
@@ -254,6 +264,20 @@
     <script src="https://cdn.jsdelivr.net/npm/lightpick@1.6.2/lightpick.js"></script>
 
     <script>
+        // Function to process markdown-style links [text](url) and make them clickable
+        function processLinksInText(text) {
+            // Escape HTML to prevent XSS
+            const escaped = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+            
+            // Replace markdown links [text](url) with HTML links
+            return escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        }
+
         document.addEventListener( 'DOMContentLoaded', function () {
             const parts = window.location.pathname.replace( /^\/+/, '' ).split( '/' )
             if ( parts.length < 3 ) {
@@ -330,9 +354,12 @@
                     if ( isRefreshing ) {
                         metaEl.textContent = `Refreshing data from ${ from } to ${ to }... will update shortly`
                     } else {
-                        metaEl.textContent = `O = available . = unavailable`
+                        metaEl.textContent = `O = available . = unavailable (click campsite names to view details)`
                     }
-                    asciiEl.textContent = txt
+                    
+                    // Parse markdown-style links in the ASCII text and make them clickable
+                    const processedText = processLinksInText(txt)
+                    asciiEl.innerHTML = processedText
                     updateUrl()
 
                     // If refresh is in progress, schedule another load in 1 second

@@ -932,7 +932,14 @@ func (s *Server) handleCampgroundState(w http.ResponseWriter, r *http.Request) {
 
 	sort.Strings(campsiteIDs)
 	for _, cid := range campsiteIDs {
-		fmt.Fprintf(&b, "%-15s", truncate(cid, 15))
+		// Get the campsite URL from the manager
+		campsiteURL := s.mgr.CampsiteURL(provider, campgroundID, cid)
+		if campsiteURL != "" {
+			// Format as clickable link: [campsite_name](url)
+			fmt.Fprintf(&b, "[%-13s](%s)", truncate(cid, 13), campsiteURL)
+		} else {
+			fmt.Fprintf(&b, "%-15s", truncate(cid, 15))
+		}
 		dm := avail[cid]
 		for _, d := range dates {
 			key := d.Format("2006-01-02")
