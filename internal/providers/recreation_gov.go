@@ -69,19 +69,23 @@ func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID stri
 		httpx.SpoofChromeHeaders(req)
 		resp, err := r.client.Do(req)
 		if err != nil {
+			slog.Error("availability GET failed", slog.Any("err", err))
 			return nil, fmt.Errorf("availability GET failed: %w", err)
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			slog.Error("availability read body failed", slog.Any("err", err))
 			return nil, fmt.Errorf("availability read body failed: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
+			slog.Error("availability request failed, not ok", slog.Int("status", resp.StatusCode), slog.String("body", clipBody(body)))
 			return nil, fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
 		var parsed recGovResp
 		err = json.Unmarshal(body, &parsed)
 		if err != nil {
+			slog.Error("availability JSON decode failed", slog.Any("err", err), slog.String("body", clipBody(body)))
 			return nil, fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
 		}
 		for siteID, data := range parsed.Campsites {

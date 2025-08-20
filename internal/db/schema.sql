@@ -186,11 +186,9 @@ CREATE TABLE IF NOT EXISTS metadata_sync_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_type     TEXT NOT NULL,
     provider      TEXT NOT NULL,
-    campground_id TEXT,  -- NULL for provider-level syncs, specific ID for campground-level syncs
+    campground_id TEXT,  
     started_at    DATETIME NOT NULL,
     finished_at   DATETIME,
-    success       BOOLEAN,
-    error_msg     TEXT,
     count         INTEGER DEFAULT 0
 );
 

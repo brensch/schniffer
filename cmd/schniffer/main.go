@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/brensch/schniffer/internal/bot"
 	"github.com/brensch/schniffer/internal/db"
@@ -64,10 +63,9 @@ func main() {
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
 
-	// Background campground sync (weekly)
-	syncFrequency := 7 * 24 * time.Hour
-	go mgr.RunCampgroundSync(ctx, "recreation_gov", syncFrequency)
-	go mgr.RunCampgroundSync(ctx, "reservecalifornia", syncFrequency)
+	// Background metadata sync
+	go mgr.RunCampgroundSync(ctx, "recreation_gov")
+	go mgr.RunCampgroundSync(ctx, "reservecalifornia")
 
 	// Start web server
 	webAddr := os.Getenv("WEB_ADDR")

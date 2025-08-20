@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/robfig/cron/v3"
 	"golang.org/x/time/rate"
 )
 
@@ -16,42 +17,39 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	if !ok {
 		return 0, fmt.Errorf("unknown provider: %s", providerName)
 	}
-	// Check last successful sync within 24h
-	if last, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, "campgrounds", providerName); err == nil && ok {
-		if time.Since(last) < 24*time.Hour {
-			m.logger.Info("skip campground sync; recently synced", slog.String("provider", providerName), slog.Time("last", last))
-			return 0, nil
-		}
-	} else if err != nil {
-		m.logger.Warn("get last sync failed", slog.Any("err", err))
-	}
+
 	started := time.Now()
 
 	// Use the provider's FetchAllCampgrounds method directly - it now handles all the amenities extraction
 	all, err := prov.FetchAllCampgrounds(ctx)
 	if err != nil {
-		// store failed sync
-		if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, CampgroundID: nil, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: 0}); err2 != nil {
-			m.logger.Warn("record sync failed", slog.Any("err", err2))
-		}
 		return 0, err
 	}
 	count := 0
 	for _, cg := range all {
 		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.ImageURL, cg.PriceMin, cg.PriceMax, cg.PriceUnit)
 		if err != nil {
-			// store failed sync
-			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, CampgroundID: nil, StartedAt: started, FinishedAt: time.Now(), Success: false, ErrorMsg: err.Error(), Count: count}); err2 != nil {
-				m.logger.Warn("record sync failed", slog.Any("err", err2))
-			}
 			return count, err
 		}
 		count++
 	}
-	err = m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{SyncType: "campgrounds", Provider: providerName, CampgroundID: nil, StartedAt: started, FinishedAt: time.Now(), Success: true, Count: count})
+	err = m.store.RecordMetadataSync(ctx,
+		db.MetadataSyncLog{
+			SyncType:     db.MetadataSyncTypeAllCampgrounds,
+			Provider:     providerName,
+			CampgroundID: nil,
+			StartedAt:    started,
+			FinishedAt:   time.Now(),
+			Count:        count,
+		})
 	if err != nil {
 		m.logger.Warn("record sync failed", slog.Any("err", err))
 	}
+	m.logger.Info("campground sync completed",
+		slog.String("provider", providerName),
+		slog.Int("total_campgrounds", count),
+		slog.Duration("duration", time.Since(started)),
+	)
 	return count, nil
 }
 
@@ -60,16 +58,6 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 	prov, ok := m.reg.Get(providerName)
 	if !ok {
 		return 0, fmt.Errorf("unknown provider: %s", providerName)
-	}
-
-	// Check last successful sync within 24h
-	if last, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, "campsites", providerName); err == nil && ok {
-		if time.Since(last) < 24*time.Hour {
-			m.logger.Info("skip campsite sync; recently synced", slog.String("provider", providerName), slog.Time("last", last))
-			return 0, nil
-		}
-	} else if err != nil {
-		m.logger.Warn("get last campsite sync failed", slog.Any("err", err))
 	}
 
 	started := time.Now()
@@ -99,27 +87,18 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		slog.Int("total_campgrounds", totalCampgrounds),
 		slog.String("estimated_duration", fmt.Sprintf("~%.1f hours", float64(totalCampgrounds)*2.1/3600))) // 2s rate limit + 0.1s delay
 
-	for i, campground := range campgrounds {
+	for _, campground := range campgrounds {
 		if ctx.Err() != nil {
 			m.logger.Warn("context canceled", slog.String("provider", providerName), slog.String("campground", campground.ID))
 			return processed, ctx.Err()
 		}
 		processed++
 
-		// Log progress every 100 campgrounds
-		if processed%100 == 0 {
-			m.logger.Info("campsite sync progress",
-				slog.String("provider", providerName),
-				slog.Int("processed", processed),
-				slog.Int("total", totalCampgrounds),
-				slog.Int("successful", count),
-				slog.Int("skipped", skipped),
-				slog.Float64("percent", float64(processed)/float64(totalCampgrounds)*100))
-		}
-
-		// Check if this specific campground was recently synced (within 1 hour)
-		if last, ok, err := m.store.GetLastSuccessfulCampgroundSync(ctx, "campsites", providerName, campground.ID); err == nil && ok {
-			if time.Since(last) < 1*time.Hour {
+		// Check if this specific campground was recently synced
+		// we allow iterating through them all in case a full campsite sync got halfway through
+		last, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, db.MetadataSyncTypeCampgroundMetadata, providerName, &campground.ID)
+		if err == nil && ok {
+			if time.Since(last) < 24*time.Hour {
 				skipped++
 				continue
 			}
@@ -128,18 +107,10 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		}
 
 		// Rate limit the request
-		if err := rateLimiter.Wait(ctx); err != nil {
+		err = rateLimiter.Wait(ctx)
+		if err != nil {
 			m.logger.Warn("rate limiter context canceled", slog.Any("err", err))
 			return processed, err
-		}
-
-		// Add a small delay between requests to be extra respectful to the API
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return processed, ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
 		}
 
 		// Fetch campsite metadata for this campground
@@ -165,28 +136,14 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		}
 
 		// Store each campsite metadata
-		err = m.store.UpsertCampsiteMetadataBatch(ctx, providerName, campground.ID, campsiteInfos)
+		campgroundID := campground.ID
+		err = m.store.UpsertCampsiteMetadataBatch(ctx, providerName, campgroundID, campsiteInfos)
 		if err != nil {
 			m.logger.Warn("failed to store campsite metadata",
 				slog.String("provider", providerName),
 				slog.String("campground", campground.ID),
 				slog.Any("err", err))
-
-			// Record failed sync for this campground
-			campgroundIDPtr := &campground.ID
-			if err2 := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
-				SyncType:     "campsites",
-				Provider:     providerName,
-				CampgroundID: campgroundIDPtr,
-				StartedAt:    time.Now(),
-				FinishedAt:   time.Now(),
-				Success:      false,
-				ErrorMsg:     err.Error(),
-				Count:        0,
-			}); err2 != nil {
-				m.logger.Warn("record campground sync failed", slog.Any("err", err2))
-			}
-			continue
+			return processed, fmt.Errorf("failed to store campsite metadata: %w", err)
 		}
 
 		// Extract unique campsite types and equipment from the fetched data
@@ -237,14 +194,12 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 		}
 
 		// Record successful sync for this campground
-		campgroundIDPtr := &campground.ID
 		if err := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
-			SyncType:     "campsites",
+			SyncType:     db.MetadataSyncTypeCampgroundMetadata,
 			Provider:     providerName,
-			CampgroundID: campgroundIDPtr,
+			CampgroundID: &campgroundID,
 			StartedAt:    time.Now(),
 			FinishedAt:   time.Now(),
-			Success:      true,
 			Count:        len(campsiteInfos),
 		}); err != nil {
 			m.logger.Warn("record campground sync failed", slog.Any("err", err))
@@ -255,12 +210,11 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 
 	// Record overall sync completion
 	err = m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
-		SyncType:     "campsites",
+		SyncType:     db.MetadataSyncTypeAllCampsites,
 		Provider:     providerName,
 		CampgroundID: nil, // NULL for provider-level sync
 		StartedAt:    started,
 		FinishedAt:   time.Now(),
-		Success:      true,
 		Count:        count,
 	})
 	if err != nil {
@@ -275,37 +229,65 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 	return count, nil
 }
 
-// RunCampgroundSync runs periodic campground syncs in the background.
-func (m *Manager) RunCampgroundSync(ctx context.Context, provider string, interval time.Duration) {
-	doSync := func() {
-		// First sync campgrounds
-		n, err := m.SyncCampgrounds(ctx, provider)
-		if err != nil {
-			m.logger.Error("campground sync failed", slog.String("provider", provider), slog.Any("err", err))
-			return
-		}
-		m.logger.Info("campground sync completed", slog.String("provider", provider), slog.Int("count", n))
+const (
+	metadataSyncCron = "0 4 1 * *" // 4am on 1st of the month
+)
 
-		// Then sync campsites
+// RunCampgroundSync runs periodic campground syncs in the background using robfig/cron.
+func (m *Manager) RunCampgroundSync(ctx context.Context, provider string) {
+
+	// if the metadata sync hasn't ever been run, run it once now.
+	_, ok, err := m.store.GetLastSuccessfulMetadataSync(ctx, db.MetadataSyncTypeAllCampgrounds, provider, nil)
+	if err != nil {
+		m.logger.Error("failed to get last successful metadata sync", slog.String("provider", provider), slog.Any("err", err))
+		return
+	}
+	if !ok {
+		// If no successful sync exists, run a full sync
+		m.logger.Info("no successful campground metadata sync found, running full sync", slog.String("provider", provider))
+		campgroundCount, err := m.SyncCampgrounds(ctx, provider)
+		if err != nil {
+			m.notifier.ChannelMessageSend(m.GetSummaryChannel(), fmt.Sprintf("⚠️ %s campground sync failed: %s", provider, err))
+			// don't return because we should still attempt
+		}
+
+		slog.Error("retrieved first ever metadata for campground", slog.String("provider", provider), slog.Int("campgrounds", campgroundCount))
+	}
+
+	// if the campsite sync hasn't ever been run, run it now.
+	_, ok, err = m.store.GetLastSuccessfulMetadataSync(ctx, db.MetadataSyncTypeAllCampsites, provider, nil)
+	if err != nil {
+		m.logger.Error("failed to get last successful metadata sync", slog.String("provider", provider), slog.Any("err", err))
+		return
+	}
+	if !ok {
+		// If no successful sync exists, run a full sync
+		m.logger.Info("no successful campsite metadata sync found, running full sync", slog.String("provider", provider))
 		campsiteCount, err := m.SyncCampsites(ctx, provider)
 		if err != nil {
-			m.logger.Error("campsite sync failed", slog.String("provider", provider), slog.Any("err", err))
-			return
+			m.notifier.ChannelMessageSend(m.GetSummaryChannel(), fmt.Sprintf("⚠️ %s campsite sync failed: %s", provider, err))
+			// don't return because we should still attempt
 		}
-		m.logger.Info("campsite sync completed", slog.String("provider", provider), slog.Int("count", campsiteCount))
+
+		slog.Error("retrieved first ever metadata for campsites", slog.String("provider", provider), slog.Int("campsites", campsiteCount))
 	}
-	doSync()
-	if interval <= 0 {
-		interval = 24 * time.Hour
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			doSync()
+
+	// now that the first ever sync has been run, start up the cronjob
+	cronRunner := cron.New()
+	_, err = cronRunner.AddFunc(metadataSyncCron, func() {
+		m.logger.Info("running scheduled metadata sync", slog.String("provider", provider))
+		_, err := m.SyncCampgrounds(ctx, provider)
+		if err != nil {
+			m.logger.Error("scheduled metadata sync failed", slog.String("provider", provider), slog.Any("err", err))
 		}
+		_, err = m.SyncCampsites(ctx, provider)
+		if err != nil {
+			m.logger.Error("scheduled metadata sync failed", slog.String("provider", provider), slog.Any("err", err))
+		}
+		m.logger.Info("scheduled metadata sync completed", slog.String("provider", provider))
+	})
+	if err != nil {
+		m.logger.Error("failed to add metadata sync cron job", slog.String("provider", provider), slog.Any("err", err))
 	}
+
 }
