@@ -449,11 +449,12 @@ func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]Sc
 }
 
 // DeactivateExpiredRequests deactivates all active requests where the checkout date is before the current date
+// or the checkin date is before the current date
 func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE schniff_requests 
 		SET active=false 
-		WHERE active=true AND checkout < date('now')
+		WHERE active=true AND (checkout < date('now') OR checkin < date('now'))
 	`)
 	if err != nil {
 		return 0, err
@@ -499,8 +500,6 @@ func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []Ca
 	}
 	defer tx.Rollback()
 
-	// THIS IS THE FIX: Generate a unique name using a UUID.
-	// We remove hyphens for a cleaner table name.
 	id := uuid.NewString()
 	cleanID := strings.ReplaceAll(id, "-", "")
 	tableName := fmt.Sprintf("temp_new_states_%s", cleanID)
