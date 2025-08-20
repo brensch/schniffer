@@ -50,14 +50,14 @@ func TestDeactivateExpiredRequests_EdgeCases(t *testing.T) {
 	}
 
 	// Call the function
-	deactivatedCount, err := store.DeactivateExpiredRequests(ctx)
+	deactivatedRequests, err := store.DeactivateExpiredRequests(ctx)
 	if err != nil {
 		t.Fatalf("DeactivateExpiredRequests failed: %v", err)
 	}
 
 	// Today's checkin should NOT be deactivated (since it's not before today)
-	if deactivatedCount != 0 {
-		t.Errorf("Expected 0 deactivated requests for today's checkin, got %d", deactivatedCount)
+	if len(deactivatedRequests) != 0 {
+		t.Errorf("Expected 0 deactivated requests for today's checkin, got %d", len(deactivatedRequests))
 	}
 
 	// Verify the request is still active

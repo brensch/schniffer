@@ -448,18 +448,55 @@ func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]Sc
 	return out, rows.Err()
 }
 
-// DeactivateExpiredRequests deactivates all active requests where the checkout date is before the current date
-// or the checkin date is before the current date
-func (s *Store) DeactivateExpiredRequests(ctx context.Context) (int64, error) {
-	res, err := s.DB.ExecContext(ctx, `
+// DeactivateExpiredRequests atomically deactivates all active requests where the checkout date is before the current date
+// or the checkin date is before the current date and returns the deactivated requests
+func (s *Store) DeactivateExpiredRequests(ctx context.Context) ([]SchniffRequest, error) {
+	// Use a transaction to make this atomic
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// First, fetch and immediately deactivate the requests in a single atomic operation
+	// Use UPDATE ... RETURNING to get the deactivated records atomically
+	rows, err := tx.QueryContext(ctx, `
 		UPDATE schniff_requests 
 		SET active=false 
 		WHERE active=true AND (checkout < date('now') OR checkin < date('now'))
+		RETURNING id, user_id, provider, campground_id, checkin, checkout, created_at, active
 	`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected()
+	defer rows.Close()
+
+	var deactivatedRequests []SchniffRequest
+	for rows.Next() {
+		var req SchniffRequest
+		err := rows.Scan(&req.ID, &req.UserID, &req.Provider, &req.CampgroundID,
+			&req.Checkin, &req.Checkout, &req.CreatedAt, &req.Active)
+		if err != nil {
+			return nil, err
+		}
+		deactivatedRequests = append(deactivatedRequests, req)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Commit the transaction
+	err = tx.Commit()
+	if err != nil {
+		return nil, err
+	}
+
+	return deactivatedRequests, nil
 }
 
 // UpsertCampsiteAvailabilityBatch updates availability and detects state changes

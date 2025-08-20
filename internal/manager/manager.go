@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,12 +120,17 @@ func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 
 // PollProvider performs one poll cycle for a specific provider and returns a summary
 func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error {
-	// First, deactivate any expired requests
-	expiredCount, err := m.store.DeactivateExpiredRequests(ctx)
+	deactivatedRequests, err := m.store.DeactivateExpiredRequests(ctx)
 	if err != nil {
 		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
-	} else if expiredCount > 0 {
-		m.logger.Info("deactivated expired requests", slog.Int64("count", expiredCount))
+		return err
+	}
+
+	if len(deactivatedRequests) > 0 {
+		m.logger.Info("deactivated expired requests", slog.Int("count", len(deactivatedRequests)))
+
+		// Send notification to each user about their deactivated requests
+		m.notifyUsersOfDeactivatedRequests(ctx, deactivatedRequests)
 	}
 
 	requests, err := m.store.ListActiveRequests(ctx)
@@ -332,6 +338,9 @@ func (m *Manager) CampsiteURL(provider, campgroundID, campsiteID string) string 
 
 // CampgroundURL exposes provider-specific campground URLs for the bot to build embeds.
 func (m *Manager) CampgroundURL(provider, campgroundID string) string {
+	if m.reg == nil {
+		return ""
+	}
 	p, ok := m.reg.Get(provider)
 	if !ok || p == nil {
 		return ""
@@ -453,4 +462,91 @@ func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocSc
 // ProcessAdhocScrapeRequest exposes the internal method for immediate processing
 func (m *Manager) ProcessAdhocScrapeRequest(ctx context.Context, req *db.AdhocScrapeRequest) error {
 	return m.processAdhocScrapeRequest(ctx, req)
+}
+
+// notifyUsersOfDeactivatedRequests sends private messages to users about their deactivated requests
+func (m *Manager) notifyUsersOfDeactivatedRequests(ctx context.Context, deactivatedRequests []db.SchniffRequest) {
+	// Group requests by user to minimize messages
+	requestsByUser := make(map[string][]db.SchniffRequest)
+	for _, req := range deactivatedRequests {
+		requestsByUser[req.UserID] = append(requestsByUser[req.UserID], req)
+	}
+
+	for userID, requests := range requestsByUser {
+		// Create a private channel or send DM
+		channel, err := m.notifier.UserChannelCreate(userID)
+		if err != nil {
+			m.logger.Warn("failed to create DM channel for user",
+				slog.String("user_id", userID),
+				slog.Any("err", err))
+			continue
+		}
+
+		// Build embed content
+		embed := m.buildDeactivationEmbed(ctx, requests)
+
+		// Send the embed
+		_, err = m.notifier.ChannelMessageSendEmbed(channel.ID, embed)
+		if err != nil {
+			m.logger.Warn("failed to send deactivation notification",
+				slog.String("user_id", userID),
+				slog.Any("err", err))
+		} else {
+			m.logger.Info("sent deactivation notification",
+				slog.String("user_id", userID),
+				slog.Int("requests_count", len(requests)))
+		}
+	}
+} // buildDeactivationEmbed creates a Discord embed about deactivated requests
+func (m *Manager) buildDeactivationEmbed(ctx context.Context, requests []db.SchniffRequest) *discordgo.MessageEmbed {
+	var title string
+	var description strings.Builder
+
+	if len(requests) == 1 {
+		title = "🛑 Schniff Request Deactivated"
+		description.WriteString("Your camping request has been automatically deactivated because its start date has passed.")
+	} else {
+		title = fmt.Sprintf("🛑 %d Schniff Requests Deactivated", len(requests))
+		description.WriteString("The following camping requests have been automatically deactivated because their start dates have passed.")
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
+		Description: description.String(),
+		Color:       0xFF6B6B, // Red color for warnings
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+
+	// Add fields for each deactivated request
+	for i, req := range requests {
+		// Get campground name
+		campgroundName := req.CampgroundID // fallback to ID
+		if m.store != nil {
+			if campground, found, err := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID); err == nil && found {
+				campgroundName = campground.Name
+			}
+		}
+
+		checkinDate := req.Checkin.Format("Jan 2, 2006")
+		checkoutDate := req.Checkout.Format("Jan 2, 2006")
+
+		fieldName := fmt.Sprintf("%d. %s", i+1, campgroundName)
+
+		var fieldValue strings.Builder
+		fieldValue.WriteString(fmt.Sprintf("📅 **Dates:** %s - %s\n", checkinDate, checkoutDate))
+		fieldValue.WriteString(fmt.Sprintf("🏕️ **Provider:** %s\n", req.Provider))
+
+		// Add campground URL if available
+		if campgroundURL := m.CampgroundURL(req.Provider, req.CampgroundID); campgroundURL != "" {
+			fieldValue.WriteString(fmt.Sprintf("🔗 [View Campground](%s)", campgroundURL))
+		}
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   fieldName,
+			Value:  fieldValue.String(),
+			Inline: false,
+		})
+	}
+
+	return embed
 }

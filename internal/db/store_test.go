@@ -66,7 +66,7 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 	}
 
 	// Call the function
-	deactivatedCount, err := store.DeactivateExpiredRequests(ctx)
+	deactivatedRequests, err := store.DeactivateExpiredRequests(ctx)
 	if err != nil {
 		t.Fatalf("DeactivateExpiredRequests failed: %v", err)
 	}
@@ -79,8 +79,8 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 		}
 	}
 
-	if deactivatedCount != int64(expectedDeactivated) {
-		t.Errorf("Expected %d deactivated requests, got %d", expectedDeactivated, deactivatedCount)
+	if len(deactivatedRequests) != expectedDeactivated {
+		t.Errorf("Expected %d deactivated requests, got %d", expectedDeactivated, len(deactivatedRequests))
 	}
 
 	// Verify the correct requests were deactivated
