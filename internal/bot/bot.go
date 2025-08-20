@@ -44,12 +44,6 @@ func (b *Bot) MountHandlers() error {
 	return nil
 }
 
-// ClearAllCommands deletes all existing application commands for the bot
-// This is a public method that can be called externally if needed
-func (b *Bot) ClearAllCommands() {
-	b.clearAllCommands()
-}
-
 func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, error) {
 	channels, err := session.GuildChannels(guildID)
 	if err != nil {
