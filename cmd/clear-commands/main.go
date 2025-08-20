@@ -42,12 +42,13 @@ func main() {
 			log.Printf("Error fetching guild commands: %v\n", err)
 		} else {
 			for _, cmd := range commands {
-				err := session.ApplicationCommandDelete(app.ID, guildID, cmd.ID)
-				if err != nil {
-					log.Printf("Error deleting guild command %s: %v\n", cmd.Name, err)
-				} else {
-					fmt.Printf("Deleted guild command: %s\n", cmd.Name)
-				}
+				fmt.Println("guild command:", cmd.Name, cmd.ID)
+				// err := session.ApplicationCommandDelete(app.ID, guildID, cmd.ID)
+				// if err != nil {
+				// 	log.Printf("Error deleting guild command %s: %v\n", cmd.Name, err)
+				// } else {
+				// 	fmt.Printf("Deleted guild command: %s\n", cmd.Name)
+				// }
 			}
 		}
 	}
@@ -59,12 +60,19 @@ func main() {
 		log.Printf("Error fetching global commands: %v\n", err)
 	} else {
 		for _, cmd := range commands {
-			err := session.ApplicationCommandDelete(app.ID, "", cmd.ID)
-			if err != nil {
-				log.Printf("Error deleting global command %s: %v\n", cmd.Name, err)
-			} else {
-				fmt.Printf("Deleted global command: %s\n", cmd.Name)
+			fmt.Println("global command:", cmd.Options, cmd.Name, cmd.ID, cmd.NSFW, cmd.ApplicationID, cmd.GuildID)
+			for _, opt := range cmd.Options {
+				fmt.Println("  option:", opt.Name, opt.Autocomplete, opt.Type, opt.Description)
+				for _, choice := range opt.Choices {
+					fmt.Println("    choice:", choice.Name, choice.Value)
+				}
 			}
+			// err := session.ApplicationCommandDelete(app.ID, "", cmd.ID)
+			// if err != nil {
+			// 	log.Printf("Error deleting global command %s: %v\n", cmd.Name, err)
+			// } else {
+			// 	fmt.Printf("Deleted global command: %s\n", cmd.Name)
+			// }
 		}
 	}
 
