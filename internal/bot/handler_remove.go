@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 
 	"github.com/bwmarrin/discordgo"
@@ -36,8 +37,9 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 			respond(s, i, "error: "+err.Error())
 			return
 		}
-		respond(s, i, "removed all schniffs")
+		slog.Info("Removed schniff for user", "id", r.ID, "user_id", r.UserID)
 	}
+	respond(s, i, "removed all schniffs")
 }
 
 // autocompleteRemoveIDs suggests the caller's active schniffs as choices.

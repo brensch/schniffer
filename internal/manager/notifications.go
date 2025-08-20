@@ -65,6 +65,8 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 				slog.Any("err", err))
 		}
 
+		m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
+
 		// Record outgoing notifications for each change
 		for _, c := range changes {
 			state := "available"
@@ -146,14 +148,10 @@ func (m *Manager) sendStateChangeNotification(
 		provider,
 	)
 
-	// Send the embed (at most 1)
-	var firstErr error
 	for _, e := range embeds {
-		if _, err := m.notifier.ChannelMessageSendEmbed(channel.ID, e); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		_, err = m.notifier.ChannelMessageSendEmbed(channel.ID, e)
 	}
-	return firstErr
+	return err
 }
 
 // ------- Data structures used by pure functions -------

@@ -10,11 +10,16 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-func (b *Bot) handleGroupCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
+func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
 	opts := optMap(sub.Options)
 	groupResponse, ok := opts["group"]
 	if !ok || groupResponse == nil {
 		respond(s, i, "group selection is required")
+		return
+	}
+
+	if groupResponse.StringValue() == noGroupsFound {
+		respond(s, i, "bro you're not meant to click that option.")
 		return
 	}
 
@@ -104,53 +109,7 @@ func (b *Bot) handleGroupCommand(s *discordgo.Session, i *discordgo.InteractionC
 	respond(s, i, responseMsg)
 }
 
-func (b *Bot) handleCreateGroupCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
-	uid := getUserID(i)
-
-	// Create the URL with the user's token and welcome parameter
-	baseURL := "https://schniff.snek2.ddns.net"
-	groupCreationURL := fmt.Sprintf("%s/?user=%s&welcome=true", baseURL, uid)
-
-	// Create an embed with the link
-	embed := &discordgo.MessageEmbed{
-		Title:       "🐽🐽🐽 Create Schniff Group",
-		Description: "A schniffgroup allows you to schniff a group. Click the link below to create a group of campgrounds to monitor at once.",
-		Color:       0xc47331, // Orange color matching the theme
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: "This link is personalized for your account",
-		},
-	}
-
-	// Create a button component with the URL
-	components := []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label: "Open Schniffgroupomatic9000",
-					Style: discordgo.LinkButton,
-					URL:   groupCreationURL,
-					Emoji: discordgo.ComponentEmoji{
-						Name: "🗺️",
-					},
-				},
-			},
-		},
-	}
-
-	// Send the response with embed and button
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds:     []*discordgo.MessageEmbed{embed},
-			Components: components,
-			Flags:      discordgo.MessageFlagsEphemeral, // Only visible to the user who ran the command
-		},
-	})
-
-	if err != nil {
-		b.logger.Warn("failed to respond to creategroup command", "error", err)
-	}
-}
+const noGroupsFound = "__no_groups__"
 
 func (b *Bot) autocompleteGroups(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {
 	uid := getUserID(i)
@@ -183,6 +142,13 @@ func (b *Bot) autocompleteGroups(i *discordgo.InteractionCreate, query string) [
 		if len(choices) >= 25 {
 			break
 		}
+	}
+
+	if len(choices) == 0 {
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+			Name:  "No groups found. Run `/schniff map` to create a group.",
+			Value: noGroupsFound,
+		})
 	}
 
 	return choices

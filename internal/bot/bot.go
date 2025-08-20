@@ -44,6 +44,12 @@ func (b *Bot) MountHandlers() error {
 	return nil
 }
 
+// ClearAllCommands deletes all existing application commands for the bot
+// This is a public method that can be called externally if needed
+func (b *Bot) ClearAllCommands() {
+	b.clearAllCommands()
+}
+
 func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, error) {
 	channels, err := session.GuildChannels(guildID)
 	if err != nil {
@@ -61,8 +67,10 @@ func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, err
 
 func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	b.logger.Info("bot ready", slog.String("user", s.State.User.Username))
+	// Uncomment the next line if you want to clear all commands before registering new ones
+	// b.clearAllCommands()
 	b.registerCommands()
-	b.session.ChannelMessageSend(b.broadcastChannel, "Hello. Schniffer here. I was sleeping, now i'm online.")
+	b.session.ChannelMessageSend(b.broadcastChannel, nonsense.RandomLaunchMessage())
 }
 
 func (b *Bot) onGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
@@ -138,18 +146,18 @@ func (b *Bot) registerCommands() {
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
-				{Name: "group", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff for all campgrounds in a group", Options: []*discordgo.ApplicationCommandOption{
+				{Name: "add-bulk", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff for all campgrounds in a group. Use `/schniff map` to make groups.", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "group", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select group", Autocomplete: true},
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
-				{Name: "creategroup", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open web interface to create a new campground group"},
+				{Name: "map", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open map to create groups or quickly see availability at a site."},
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff. Blank id removes all.", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: false, Description: "Request ID to remove", Autocomplete: true},
 				}},
-				{Name: "state", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show current state for your schniffs"},
-				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get detailed schniffer summary"},
-				{Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
+				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
+				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
+				// {Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
 			},
 		},
 	}
@@ -229,14 +237,14 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 	switch sub.Name {
 	case "add":
 		b.handleAddCommand(s, i, sub)
-	case "group":
-		b.handleGroupCommand(s, i, sub)
-	case "creategroup":
-		b.handleCreateGroupCommand(s, i, sub)
+	case "add-bulk":
+		b.handleAddBulkCommand(s, i, sub)
+	case "map":
+		b.handleLinkMapCommand(s, i, sub)
 	case "remove":
 		b.handleRemoveCommand(s, i, sub)
-	case "state":
-		b.handleStateCommand(s, i, sub)
+	case "list":
+		b.handleListCommand(s, i, sub)
 	case "summary":
 		b.handleSummaryCommand(s, i, sub)
 	case "nonsense":

@@ -10,11 +10,11 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// handleStateCommand prints, for each active schniff owned by the user:
+// handleListCommand prints, for each active schniff owned by the user:
 // - number of checks in the last 24 hours (for that campground)
 // - number of notifications in the last 24 hours (for that request)
 // - latest per-date availability counts within the schniff date range
-func (b *Bot) handleStateCommand(s *discordgo.Session, i *discordgo.InteractionCreate, _ *discordgo.ApplicationCommandInteractionDataOption) {
+func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCreate, _ *discordgo.ApplicationCommandInteractionDataOption) {
 	uid := getUserID(i)
 	reqs, err := b.store.ListUserActiveRequests(context.Background(), uid)
 	if err != nil {

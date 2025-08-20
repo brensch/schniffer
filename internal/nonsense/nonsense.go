@@ -87,3 +87,17 @@ func RandomSillyBroadcast(userID string) string {
 	return fmt.Sprintf(template, userID)
 
 }
+
+func RandomLaunchMessage() string {
+	src := rand.NewSource(time.Now().UnixNano())
+	r := rand.New(src)
+
+	messages := []string{
+		"It's me, the schniffer. I'm back online.",
+		"Schniffer online and ready for nonsense",
+		"Let's get schniffing. Because I'm back online.",
+	}
+
+	// Choose a random launch message
+	return messages[r.Intn(len(messages))]
+}
