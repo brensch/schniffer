@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/brensch/schniffer/internal/db"
@@ -30,6 +29,7 @@ func New(store *db.Store, discordSession *discordgo.Session, registry *providers
 	return &Bot{
 		store:            store,
 		session:          discordSession,
+		guildID:          guildID,
 		broadcastChannel: broadcastChannel,
 		logger:           slog.Default(),
 		registry:         registry,
@@ -37,12 +37,10 @@ func New(store *db.Store, discordSession *discordgo.Session, registry *providers
 	}, nil
 }
 
-func (b *Bot) Run(ctx context.Context) error {
+func (b *Bot) MountHandlers() error {
 	b.session.AddHandler(b.onReady)
 	b.session.AddHandler(b.onInteraction)
 	b.session.AddHandler(b.onGuildMemberAdd)
-
-	<-ctx.Done()
 	return nil
 }
 
@@ -158,7 +156,7 @@ func (b *Bot) registerCommands() {
 	appID := b.session.State.Application.ID
 	guildID := ""
 	if b.useGuild {
-		guildID = b.broadcastChannel
+		guildID = b.guildID
 		b.logger.Info("registering commands for guild", slog.String("guild", guildID))
 	} else {
 		b.logger.Info("registering commands globally")

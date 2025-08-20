@@ -46,18 +46,35 @@ func main() {
 		panic(err)
 	}
 	// must register intents before opening
-	discordSession.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentDirectMessages | discordgo.IntentsGuildMembers
-	err = discordSession.Open()
-	if err != nil {
-		panic(err)
-	}
-	defer discordSession.Close()
+	discordSession.Identify.Intents =
+		discordgo.IntentsGuilds |
+			discordgo.IntentsGuildMessages |
+			discordgo.IntentDirectMessages |
+			discordgo.IntentsGuildMembers
 
+	prod := os.Getenv("PROD") == "true"
 	guildID := os.Getenv("GUILD_ID")
 	broadcastChannel, err := bot.GuildIDToChannelID(discordSession, guildID)
 	if err != nil {
 		panic(err)
 	}
+
+	b, err := bot.New(store, discordSession, provRegistry, guildID, !prod)
+	if err != nil {
+		slog.Error("failed to create bot", slog.Any("err", err))
+		panic(err)
+	}
+	err = b.MountHandlers()
+	if err != nil {
+		slog.Error("bot mount handlers failed", slog.Any("err", err))
+		panic(err)
+	}
+
+	err = discordSession.Open()
+	if err != nil {
+		panic(err)
+	}
+	defer discordSession.Close()
 
 	mgr := manager.NewManager(store, provRegistry, discordSession, broadcastChannel)
 	go mgr.Run(ctx)
@@ -80,15 +97,6 @@ func main() {
 		}
 	}()
 
-	prod := os.Getenv("PROD") == "true"
-	b, err := bot.New(store, discordSession, provRegistry, guildID, !prod)
-	if err != nil {
-		slog.Error("failed to create bot", slog.Any("err", err))
-		panic(err)
-	}
-	err = b.Run(ctx)
-	if err != nil {
-		slog.Error("bot run failed", slog.Any("err", err))
-		panic(err)
-	}
+	<-ctx.Done()
+	slog.Info("night night")
 }
