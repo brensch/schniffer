@@ -62,6 +62,7 @@ map.on('popupclose', function(e) {
 
 let markers = [];
 let currentData = null;
+let markersMap = new Map(); // Track markers by unique ID
 
 // Custom icons for different providers - 🐽 emoji for all sites
 const recreationIcon = L.divIcon({
@@ -152,152 +153,192 @@ async function loadViewportData() {
 map.on('moveend zoomend', loadViewportData);
 
 function renderMarkersFromViewport(result) {
-    // Clear existing markers
-    markers.forEach(marker => map.removeLayer(marker));
-    markers = [];
-    
     // Handle empty results gracefully
     if (!result || !result.data || result.data.length === 0) {
         console.log('No campgrounds found in current viewport');
+        // Remove all existing markers
+        markers.forEach(marker => map.removeLayer(marker));
+        markers = [];
+        markersMap.clear();
         return;
     }
     
+    // Create a set of current item IDs for efficient lookup
+    const currentItemIds = new Set();
+    const currentItems = new Map(); // Map ID to item data
+    
     if (result.type === 'clusters') {
-        // Render clusters
+        // For clusters, create unique IDs based on lat/lon
         result.data.forEach(cluster => {
-            const marker = L.marker([cluster.lat, cluster.lon], { 
-                icon: createClusterIcon(cluster.count) 
-            }).bindPopup(`
-                <div class="custom-popup">
-                    <div class="popup-title">${cluster.count} Schniffgrounds</div>
-                    <div class="popup-details">
-                        <div class="popup-aggregate-message">🔍 Zoom in to explore individual schniffgrounds</div>
-                    </div>
-                </div>
-            `, {
-                closeButton: true,
-                maxWidth: 300,
-                className: 'narrow-popup',
-                autoPan: false,
-                autoClose: false,
-                closeOnEscapeKey: false,
-                closeOnClick: false
-            }).addTo(map);
-            
-            markers.push(marker);
+            const id = `cluster_${cluster.lat}_${cluster.lon}`;
+            currentItemIds.add(id);
+            currentItems.set(id, cluster);
         });
     } else {
-        // Show all campgrounds (filtering now done on server)
+        // For campgrounds, use provider and ID
         result.data.forEach(campground => {
-            const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
-            
-            // Create enhanced popup with park-relevant information
-            const providerName = campground.provider === 'recreation_gov' ? 'Recreation.gov' : 'Reserve California';
-            const providerEmoji = campground.provider === 'recreation_gov' ? '🏞️' : '🌲';
-            
-            // Format rating display with outlined stars and bordered style
-            const ratingDisplay = campground.rating > 0 
-                ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
-                : '';
-            
-            // Format price display
-            let priceDisplay = '';
-            if (campground.price_min > 0 || campground.price_max > 0) {
-                const unit = campground.price_unit || 'night';
-                if (campground.price_min === campground.price_max) {
-                    priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}/${unit}</div>`;
-                } else if (campground.price_min > 0 && campground.price_max > 0) {
-                    priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</div>`;
-                } else if (campground.price_max > 0) {
-                    priceDisplay = `<div class="popup-price">💰 Up to $${campground.price_max.toFixed(0)}/${unit}</div>`;
-                } else {
-                    priceDisplay = `<div class="popup-price">💰 From $${campground.price_min.toFixed(0)}/${unit}</div>`;
-                }
+            const id = `${campground.provider}_${campground.id}`;
+            currentItemIds.add(id);
+            currentItems.set(id, campground);
+        });
+    }
+    
+    // Remove markers that are no longer in the viewport
+    const markersToRemove = [];
+    markersMap.forEach((marker, id) => {
+        if (!currentItemIds.has(id)) {
+            map.removeLayer(marker);
+            markersToRemove.push(id);
+            // Remove from markers array
+            const index = markers.indexOf(marker);
+            if (index !== -1) {
+                markers.splice(index, 1);
             }
+        }
+    });
+    markersToRemove.forEach(id => {
+        markersMap.delete(id);
+    });
+    
+    // Add new markers that weren't previously rendered
+    currentItems.forEach((item, id) => {
+        if (!markersMap.has(id)) {
+            let marker;
             
-            // Display price and rating on separate lines
-            let priceRatingDisplay = '';
-            if (ratingDisplay || priceDisplay) {
-                priceRatingDisplay = `${ratingDisplay}${priceDisplay}`;
-            }
-            
-            // Format campsite types display
-            let campsiteTypesDisplay = '';
-            if (campground.campsite_types && campground.campsite_types.length > 0) {
-                const types = campground.campsite_types.slice(0, 3).join(', ');
-                campsiteTypesDisplay = `<div class="popup-campsite-types">📍 ${types}</div>`;
-            }
-            
-            // Format equipment display
-            let equipmentDisplay = '';
-            if (campground.equipment && campground.equipment.length > 0) {
-                const equipment = campground.equipment.slice(0, 3).join(', ');
-                equipmentDisplay = `<div class="popup-equipment">🛖 ${equipment}</div>`;
-            }
-            
-            // Format image display
-            let imageDisplay = '';
-            if (campground.image_url) {
-                imageDisplay = `<div class="popup-image">
-                    <img src="${campground.image_url}" alt="${campground.name}" loading="lazy" />
-                </div>`;
-            }
-            
-            // Format amenities display (show all amenities)
-            let amenitiesDisplay = '';
-            if (campground.amenities && campground.amenities.length > 0) {
-                const amenityList = campground.amenities.join(', ');
-                amenitiesDisplay = `<div class="popup-amenities">
-                    🛝 ${amenityList}
-                </div>`;
-            }
-            
-            const linkHtml = campground.url ? 
-                `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
-                    🔗 ${providerName}
-                </a>
-                ${priceRatingDisplay}` : 
-                `<div class="popup-provider ${campground.provider}">
-                    ${providerName}
-                </div>
-                ${priceRatingDisplay}`;
-
-            // Build campground page URL with user parameter if available
-            let campgroundUrl = `/campground/${campground.provider}/${campground.id}`;
-            if (userToken) {
-                campgroundUrl += `?user=${encodeURIComponent(userToken)}`;
-            }
-            
-            const marker = L.marker([campground.lat, campground.lon], { icon })
-                .bindPopup(`
+            if (result.type === 'clusters') {
+                // Create cluster marker
+                marker = L.marker([item.lat, item.lon], { 
+                    icon: createClusterIcon(item.count) 
+                }).bindPopup(`
                     <div class="custom-popup">
-                        ${imageDisplay}
-                        <div class="popup-title">${campground.name}</div>
-                        ${campsiteTypesDisplay}
-                        ${equipmentDisplay}
-                        ${amenitiesDisplay}
-                        ${linkHtml}
-                        <a href="${campgroundUrl}" class="map-action-btn campground-link-btn">
-                            📅 View Availability
-                        </a>
-                        <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
-                            🗺️ Directions
-                        </button>
+                        <div class="popup-title">${item.count} Schniffgrounds</div>
+                        <div class="popup-details">
+                            <div class="popup-aggregate-message">🔍 Zoom in to explore individual schniffgrounds</div>
+                        </div>
                     </div>
                 `, {
                     closeButton: true,
-                    maxWidth: 350,
+                    maxWidth: 300,
                     className: 'narrow-popup',
                     autoPan: false,
                     autoClose: false,
                     closeOnEscapeKey: false,
                     closeOnClick: false
-                })
-                .addTo(map);
+                }).addTo(map);
+            } else {
+                // Create campground marker
+                const campground = item;
+                const icon = campground.provider === 'recreation_gov' ? recreationIcon : californiaIcon;
+                
+                // Create enhanced popup with park-relevant information
+                const providerName = campground.provider === 'recreation_gov' ? 'Recreation.gov' : 'Reserve California';
+                const providerEmoji = campground.provider === 'recreation_gov' ? '🏞️' : '🌲';
+                
+                // Format rating display with outlined stars and bordered style
+                const ratingDisplay = campground.rating > 0 
+                    ? `<div class="popup-rating">⭐ ${campground.rating.toFixed(1)}/5.0</div>`
+                    : '';
+                
+                // Format price display
+                let priceDisplay = '';
+                if (campground.price_min > 0 || campground.price_max > 0) {
+                    const unit = campground.price_unit || 'night';
+                    if (campground.price_min === campground.price_max) {
+                        priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}/${unit}</div>`;
+                    } else if (campground.price_min > 0 && campground.price_max > 0) {
+                        priceDisplay = `<div class="popup-price">💰 $${campground.price_min.toFixed(0)}-$${campground.price_max.toFixed(0)}/${unit}</div>`;
+                    } else if (campground.price_max > 0) {
+                        priceDisplay = `<div class="popup-price">💰 Up to $${campground.price_max.toFixed(0)}/${unit}</div>`;
+                    } else {
+                        priceDisplay = `<div class="popup-price">💰 From $${campground.price_min.toFixed(0)}/${unit}</div>`;
+                    }
+                }
+                
+                // Display price and rating on separate lines
+                let priceRatingDisplay = '';
+                if (ratingDisplay || priceDisplay) {
+                    priceRatingDisplay = `${ratingDisplay}${priceDisplay}`;
+                }
+                
+                // Format campsite types display
+                let campsiteTypesDisplay = '';
+                if (campground.campsite_types && campground.campsite_types.length > 0) {
+                    const types = campground.campsite_types.slice(0, 3).join(', ');
+                    campsiteTypesDisplay = `<div class="popup-campsite-types">📍 ${types}</div>`;
+                }
+                
+                // Format equipment display
+                let equipmentDisplay = '';
+                if (campground.equipment && campground.equipment.length > 0) {
+                    const equipment = campground.equipment.slice(0, 3).join(', ');
+                    equipmentDisplay = `<div class="popup-equipment">🛖 ${equipment}</div>`;
+                }
+                
+                // Format image display
+                let imageDisplay = '';
+                if (campground.image_url) {
+                    imageDisplay = `<div class="popup-image">
+                        <img src="${campground.image_url}" alt="${campground.name}" loading="lazy" />
+                    </div>`;
+                }
+                
+                // Format amenities display (show all amenities)
+                let amenitiesDisplay = '';
+                if (campground.amenities && campground.amenities.length > 0) {
+                    const amenityList = campground.amenities.join(', ');
+                    amenitiesDisplay = `<div class="popup-amenities">
+                        🛝 ${amenityList}
+                    </div>`;
+                }
+                
+                const linkHtml = campground.url ? 
+                    `<a href="${campground.url}" target="_blank" rel="noopener noreferrer" class="popup-provider ${campground.provider}">
+                        🔗 ${providerName}
+                    </a>
+                    ${priceRatingDisplay}` : 
+                    `<div class="popup-provider ${campground.provider}">
+                        ${providerName}
+                    </div>
+                    ${priceRatingDisplay}`;
+
+                // Build campground page URL with user parameter if available
+                let campgroundUrl = `/campground/${campground.provider}/${campground.id}`;
+                if (userToken) {
+                    campgroundUrl += `?user=${encodeURIComponent(userToken)}`;
+                }
+                
+                marker = L.marker([campground.lat, campground.lon], { icon })
+                    .bindPopup(`
+                        <div class="custom-popup">
+                            ${imageDisplay}
+                            <div class="popup-title">${campground.name}</div>
+                            ${campsiteTypesDisplay}
+                            ${equipmentDisplay}
+                            ${amenitiesDisplay}
+                            ${linkHtml}
+                            <a href="${campgroundUrl}" class="map-action-btn campground-link-btn">
+                                📅 View Availability
+                            </a>
+                            <button onclick="getDirections(event, ${campground.lat}, ${campground.lon})" class="map-action-btn">
+                                🗺️ Directions
+                            </button>
+                        </div>
+                    `, {
+                        closeButton: true,
+                        maxWidth: 350,
+                        className: 'narrow-popup',
+                        autoPan: false,
+                        autoClose: false,
+                        closeOnEscapeKey: false,
+                        closeOnClick: false
+                    })
+                    .addTo(map);
+            }
             
             markers.push(marker);
-        });
-    }
+            markersMap.set(id, marker);
+        }
+    });
 }
 
 // Load initial data
@@ -306,42 +347,11 @@ loadViewportData();
 // Event listeners
 map.on('moveend zoomend', loadViewportData);
 
-// Place search
-let placeSearchTimeout;
-const placeSearchElement = document.getElementById('place-search');
-if (placeSearchElement) {
-    placeSearchElement.addEventListener('input', (e) => {
-        clearTimeout(placeSearchTimeout);
-        placeSearchTimeout = setTimeout(() => {
-            if (e.target.value.length > 2) {
-                searchPlace(e.target.value);
-            } else {
-                hideSearchDropdown();
-            }
-        }, 500); // Timeout for place search to avoid too many API calls
-    });
-
-    // Also trigger selection of first result on Enter key
-    placeSearchElement.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const firstOption = document.querySelector('.search-dropdown .search-option');
-            if (firstOption) {
-                firstOption.click();
-            }
-        }
-    });
-}
-
-// Hide dropdown when clicking outside
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.search-container')) {
-        hideSearchDropdown();
-    }
-});
-
 // Load initial data
 loadViewportData();
+
+// Event listeners
+map.on('moveend zoomend', loadViewportData);
 
 // Save group functionality
 function updateSaveGroupButton() {
@@ -817,6 +827,12 @@ function clearAllFilters() {
 function applyFilters() {
     updateFiltersFromCheckboxes();
     closeFilterModal();
+    
+    // Clear marker cache when filters change since data will be different
+    markers.forEach(marker => map.removeLayer(marker));
+    markers = [];
+    markersMap.clear();
+    
     loadViewportData(); // Reload data with filters
 }
 
