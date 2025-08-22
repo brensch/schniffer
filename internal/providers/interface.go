@@ -11,15 +11,22 @@ type CampsiteAvailability struct {
 	Available bool
 }
 
+type Features struct {
+	Name         string
+	ValueText    *string
+	ValueNumeric *float64
+	ValueBoolean *bool
+}
+
 type CampsiteInfo struct {
 	ID              string
 	Name            string
-	Type            string   // Base campsite type (e.g., "STANDARD NONELECTRIC")
-	CostPerNight    float64  // Cost per night in USD, 0 if unknown
-	Rating          float64  // Campsite rating (0-5), 0 if unknown
-	Equipment       []string // Equipment types supported at this campsite
-	Amenities       []string // Individual campsite amenities
-	PreviewImageURL string   // Preview image URL
+	Type            string // Base campsite type (e.g., "STANDARD NONELECTRIC")
+	PriceMax        float64
+	PriceMin        float64
+	Rating          float64 // Campsite rating (0-5), 0 if unknown
+	Features        []Features
+	PreviewImageURL string // Preview image URL
 }
 
 // type CampsiteMetadataProvider interface {
@@ -80,7 +87,7 @@ type CampgroundInfo struct {
 	Rating    float64  // Campground rating (0-5), 0 if unknown
 	Amenities []string // Campground amenities (activity names)
 	ImageURL  string   // Preview image URL
-	PriceMin  float64  // Minimum price per unit
-	PriceMax  float64  // Maximum price per unit
-	PriceUnit string   // Price unit (e.g., "night")
+	// PriceMin  float64  // Minimum price per unit
+	// PriceMax  float64  // Maximum price per unit
+	// PriceUnit string   // Price unit (e.g., "night")
 }

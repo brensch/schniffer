@@ -378,6 +378,36 @@ type DetailedSummaryStats struct {
 	RequestsPerHour  float64
 }
 
+type CampsiteFeature struct {
+	Name         string
+	ValueText    *string
+	ValueNumeric *float64
+	ValueBoolean *bool
+}
+
+// this is only for campgrounds, so doesn't contain the campsite
+// (it will be the aggregate of all features at the campground)
+type CampgroundFeature struct {
+	Name         string
+	ValueText    *string
+	ValueNumeric *float64
+	ValueBoolean *bool
+}
+
+type CampgroundRow struct {
+	Provider string
+	ID       string
+	Name     string
+	Lat      float64
+	Lon      float64
+	Rating   float64
+	ImageURL string
+	Price    sql.NullFloat64
+
+	Features  []CampgroundFeature
+	Amenities []string
+}
+
 // CRUD
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
@@ -1079,12 +1109,12 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 // Metadata
 
-func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, imageURL string, priceMin, priceMax float64, priceUnit string) error {
+func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, imageURL string) error {
 	amenitiesJSON, _ := json.Marshal(amenities)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), imageURL, priceMin, priceMax, priceUnit, time.Now())
+		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, image_url, last_updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), imageURL, time.Now())
 	return err
 }
 
@@ -1097,16 +1127,16 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 	// Process in smaller chunks to reduce lock time
 	chunkSize := 200 // Smaller chunks for metadata operations
 
-	// Clear existing equipment entries for this campground first
-	if len(metadata) > 0 {
-		_, err := s.DB.ExecContext(ctx, `
-			DELETE FROM campsite_equipment
-			WHERE provider = ? AND campground_id = ?
-		`, provider, campgroundID)
-		if err != nil {
-			return fmt.Errorf("failed to clear existing equipment: %w", err)
-		}
-	}
+	// // Clear existing equipment entries for this campground first
+	// if len(metadata) > 0 {
+	// 	_, err := s.DB.ExecContext(ctx, `
+	// 		DELETE FROM campsite_equipment
+	// 		WHERE provider = ? AND campground_id = ?
+	// 	`, provider, campgroundID)
+	// 	if err != nil {
+	// 		return fmt.Errorf("failed to clear existing equipment: %w", err)
+	// 	}
+	// }
 
 	for i := 0; i < len(metadata); i += chunkSize {
 		end := i + chunkSize
@@ -1137,7 +1167,7 @@ func (s *Store) upsertCampsiteMetadataChunk(ctx context.Context, provider string
 
 	// Prepare statements for efficiency
 	metadataStmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, campsite_type, cost_per_night, rating, last_updated, image_url)
+		INSERT OR REPLACE INTO campsite_metadata(provider, campground_id, campsite_id, name, price_max, price_min, rating, last_updated, image_url)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -1145,25 +1175,25 @@ func (s *Store) upsertCampsiteMetadataChunk(ctx context.Context, provider string
 	}
 	defer metadataStmt.Close()
 
-	equipmentStmt, err := tx.PrepareContext(ctx, `
-		INSERT OR IGNORE INTO campsite_equipment(provider, campground_id, campsite_id, equipment_type, created_at)
-		VALUES (?, ?, ?, ?, ?)
+	featureStmt, err := tx.PrepareContext(ctx, `
+		INSERT OR IGNORE INTO campsite_features(provider, campground_id, campsite_id, feature, value_text, value_numeric, value_boolean, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
 	}
-	defer equipmentStmt.Close()
+	defer featureStmt.Close()
 
 	// Process all metadata in batch
 	for _, m := range metadata {
-		_, err := metadataStmt.ExecContext(ctx, provider, campgroundID, m.ID, m.Name, m.Type, m.CostPerNight, m.Rating, now, m.PreviewImageURL)
+		_, err := metadataStmt.ExecContext(ctx, provider, campgroundID, m.ID, m.Name, m.PriceMax, m.PriceMin, m.Rating, now, m.PreviewImageURL)
 		if err != nil {
 			return err
 		}
 
-		// Insert equipment types for this campsite
-		for _, equipmentType := range m.Equipment {
-			_, err = equipmentStmt.ExecContext(ctx, provider, campgroundID, m.ID, equipmentType, now)
+		// Insert feature types for this campsite
+		for _, feature := range m.Features {
+			_, err = featureStmt.ExecContext(ctx, provider, campgroundID, m.ID, feature.Name, feature.ValueText, feature.ValueNumeric, feature.ValueBoolean, now)
 			if err != nil {
 				return err
 			}
@@ -1189,29 +1219,29 @@ func (s *Store) UpdateCampgroundBasedOnCampsites(ctx context.Context, provider, 
 	return err
 }
 
-// GetCampsiteEquipmentTypes returns all unique equipment types available at a campground
-func (s *Store) GetCampsiteEquipmentTypes(ctx context.Context, provider, campgroundID string) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT DISTINCT equipment_type 
-		FROM campsite_equipment 
-		WHERE provider = ? AND campground_id = ?
-		ORDER BY equipment_type
-	`, provider, campgroundID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// // GetCampsiteEquipmentTypes returns all unique equipment types available at a campground
+// func (s *Store) GetCampsiteEquipmentTypes(ctx context.Context, provider, campgroundID string) ([]string, error) {
+// 	rows, err := s.DB.QueryContext(ctx, `
+// 		SELECT DISTINCT equipment_type
+// 		FROM campsite_equipment
+// 		WHERE provider = ? AND campground_id = ?
+// 		ORDER BY equipment_type
+// 	`, provider, campgroundID)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer rows.Close()
 
-	var equipmentTypes []string
-	for rows.Next() {
-		var equipmentType string
-		if err := rows.Scan(&equipmentType); err != nil {
-			return nil, err
-		}
-		equipmentTypes = append(equipmentTypes, equipmentType)
-	}
-	return equipmentTypes, rows.Err()
-}
+// 	var equipmentTypes []string
+// 	for rows.Next() {
+// 		var equipmentType string
+// 		if err := rows.Scan(&equipmentType); err != nil {
+// 			return nil, err
+// 		}
+// 		equipmentTypes = append(equipmentTypes, equipmentType)
+// 	}
+// 	return equipmentTypes, rows.Err()
+// }
 
 // GetCampsiteTypes returns all unique campsite types available at a campground
 func (s *Store) GetCampsiteTypes(ctx context.Context, provider, campgroundID string) ([]string, error) {
@@ -1720,53 +1750,53 @@ type CampsiteDetails struct {
 	ImageURL     string
 }
 
-// GetCampsiteDetails retrieves detailed information for a specific campsite
-func (s *Store) GetCampsiteDetails(ctx context.Context, provider, campgroundID, campsiteID string) (CampsiteDetails, error) {
-	// Get campsite metadata
-	row := s.DB.QueryRowContext(ctx, `
-		SELECT campsite_id, coalesce(name, ''), coalesce(campsite_type, ''), 
-		       coalesce(cost_per_night, 0.0), coalesce(rating, 0.0), coalesce(image_url, '')
-		FROM campsite_metadata
-		WHERE provider=? AND campground_id=? AND campsite_id=?
-	`, provider, campgroundID, campsiteID)
+// // GetCampsiteDetails retrieves detailed information for a specific campsite
+// func (s *Store) GetCampsiteDetails(ctx context.Context, provider, campgroundID, campsiteID string) (CampsiteDetails, error) {
+// 	// Get campsite metadata
+// 	row := s.DB.QueryRowContext(ctx, `
+// 		SELECT campsite_id, coalesce(name, ''), coalesce(campsite_type, ''),
+// 		       coalesce(cost_per_night, 0.0), coalesce(rating, 0.0), coalesce(image_url, '')
+// 		FROM campsite_metadata
+// 		WHERE provider=? AND campground_id=? AND campsite_id=?
+// 	`, provider, campgroundID, campsiteID)
 
-	var details CampsiteDetails
-	err := row.Scan(&details.CampsiteID, &details.Name, &details.Type,
-		&details.CostPerNight, &details.Rating, &details.ImageURL)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// If no metadata found, return basic info
-			details.CampsiteID = campsiteID
-			details.Name = ""
-			details.Type = ""
-		} else {
-			// Log error but don't fail notification
-			details.CampsiteID = campsiteID
-		}
-	}
+// 	var details CampsiteDetails
+// 	err := row.Scan(&details.CampsiteID, &details.Name, &details.Type,
+// 		&details.CostPerNight, &details.Rating, &details.ImageURL)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			// If no metadata found, return basic info
+// 			details.CampsiteID = campsiteID
+// 			details.Name = ""
+// 			details.Type = ""
+// 		} else {
+// 			// Log error but don't fail notification
+// 			details.CampsiteID = campsiteID
+// 		}
+// 	}
 
-	// Get equipment types for this campsite
-	equipmentRows, err := s.DB.QueryContext(ctx, `
-		SELECT equipment_type
-		FROM campsite_equipment
-		WHERE provider=? AND campground_id=? AND campsite_id=?
-		ORDER BY equipment_type
-	`, provider, campgroundID, campsiteID)
+// 	// Get equipment types for this campsite
+// 	equipmentRows, err := s.DB.QueryContext(ctx, `
+// 		SELECT equipment_type
+// 		FROM campsite_equipment
+// 		WHERE provider=? AND campground_id=? AND campsite_id=?
+// 		ORDER BY equipment_type
+// 	`, provider, campgroundID, campsiteID)
 
-	if err == nil {
-		defer equipmentRows.Close()
-		var equipment []string
-		for equipmentRows.Next() {
-			var equipType string
-			if err := equipmentRows.Scan(&equipType); err == nil {
-				equipment = append(equipment, equipType)
-			}
-		}
-		details.Equipment = equipment
-	}
+// 	if err == nil {
+// 		defer equipmentRows.Close()
+// 		var equipment []string
+// 		for equipmentRows.Next() {
+// 			var equipType string
+// 			if err := equipmentRows.Scan(&equipType); err == nil {
+// 				equipment = append(equipment, equipType)
+// 			}
+// 		}
+// 		details.Equipment = equipment
+// 	}
 
-	return details, nil
-}
+// 	return details, nil
+// }
 
 // GetCampsiteDetailsBatch retrieves detailed information for multiple campsites efficiently
 func (s *Store) GetCampsiteDetailsBatch(ctx context.Context, provider, campgroundID string, campsiteIDs []string) (map[string]CampsiteDetails, error) {

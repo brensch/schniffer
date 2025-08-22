@@ -357,9 +357,9 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 					Rating:    0.0, // ReserveCalifornia doesn't provide ratings in their API
 					Amenities: amenities,
 					ImageURL:  imageURL,
-					PriceMin:  0.0, // Would need separate API call to get pricing
-					PriceMax:  0.0,
-					PriceUnit: "night",
+					// PriceMin:  0.0, // Would need separate API call to get pricing
+					// PriceMax:  0.0,
+					// PriceUnit: "night",
 				})
 			} else {
 				out = append(out, CampgroundInfo{
@@ -370,9 +370,9 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 					Rating:    0.0,
 					Amenities: amenities,
 					ImageURL:  imageURL,
-					PriceMin:  0.0,
-					PriceMax:  0.0,
-					PriceUnit: "night",
+					// PriceMin:  0.0,
+					// PriceMax:  0.0,
+					// PriceUnit: "night",
 				})
 			}
 		}
@@ -640,13 +640,15 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		}
 
 		campsiteInfos = append(campsiteInfos, CampsiteInfo{
-			ID:              strconv.Itoa(detailsResp.Unit.UnitId),
-			Name:            detailsResp.Unit.Name,
-			Type:            campsiteType,
-			CostPerNight:    costPerNight,
-			Rating:          0.0, // ReserveCalifornia doesn't provide ratings
-			Equipment:       equipment,
-			Amenities:       amenities,
+			ID:       strconv.Itoa(detailsResp.Unit.UnitId),
+			Name:     detailsResp.Unit.Name,
+			Type:     campsiteType,
+			PriceMax: costPerNight,
+			PriceMin: costPerNight,
+			Rating:   0.0, // ReserveCalifornia doesn't provide ratings
+			// TODO: fix
+			// Equipment:       equipment,
+			// Amenities:       amenities,
 			PreviewImageURL: detailsResp.UnitImage,
 		})
 

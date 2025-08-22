@@ -81,7 +81,7 @@ func main() {
 	go mgr.RunDailySummary(ctx)
 
 	// // Background metadata sync
-	// go mgr.RunCampgroundSync(ctx, "recreation_gov")
+	go mgr.RunCampgroundSync(ctx, "recreation_gov")
 	// go mgr.RunCampgroundSync(ctx, "reservecalifornia")
 
 	// Start web server
