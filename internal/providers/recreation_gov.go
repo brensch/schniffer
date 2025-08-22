@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/brensch/schniffer/internal/httpx"
 )
@@ -233,9 +234,9 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 				Rating:    result.AverageRating,
 				Amenities: amenities,
 				ImageURL:  result.PreviewImageURL,
-				PriceMin:  result.PriceRange.AmountMin,
-				PriceMax:  result.PriceRange.AmountMax,
-				PriceUnit: result.PriceRange.PerUnit,
+				// PriceMin:  result.PriceRange.AmountMin,
+				// PriceMax:  result.PriceRange.AmountMax,
+				// PriceUnit: result.PriceRange.PerUnit,
 			}
 
 			all = append(all, campground)
@@ -274,7 +275,7 @@ func clipBody(b []byte) string {
 	return string(b)
 }
 
-// FetchCampsiteMetadata fetches campsite metadata for storage in the database
+// FetchCampsites fetches campsite metadata for storage in the database
 func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
 	endpoint := fmt.Sprintf("https://www.recreation.gov/api/search/campsites?fq=asset_id%%3A%s&size=1000", campgroundID)
 
@@ -301,16 +302,24 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 
 	var response struct {
 		Campsites []struct {
-			CampsiteID         string  `json:"campsite_id"`
-			Name               string  `json:"name"`
-			Type               string  `json:"type"`
-			AverageRating      float64 `json:"average_rating"`
-			PermittedEquipment []struct {
+			CampsiteID          string  `json:"campsite_id"`
+			Name                string  `json:"name"`
+			Type                string  `json:"type"`
+			AverageRating       float64 `json:"average_rating"`
+			PreviewImageURL     string  `json:"preview_image_url"`
+			Reservable          bool    `json:"reservable"`
+			CampsiteReserveType string  `json:"campsite_reserve_type"`
+			CampsiteStatus      string  `json:"campsite_status"`
+			TypeOfUse           string  `json:"type_of_use"`
+			PermittedEquipment  []struct {
 				EquipmentName string `json:"equipment_name"`
 				MaxLength     int    `json:"max_length"`
 			} `json:"permitted_equipment"`
-			PreviewImageURL string `json:"preview_image_url"`
-			Reservable      bool   `json:"reservable"`
+			Attributes []struct {
+				AttributeName  string `json:"attribute_name"`
+				AttributeValue string `json:"attribute_value"`
+			} `json:"attributes"`
+			FeeTemplates map[string]string `json:"fee_templates"`
 		} `json:"campsites"`
 	}
 
@@ -318,30 +327,67 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		return nil, fmt.Errorf("failed to parse campsite metadata response: %w", err)
 	}
 
+	// --- Load rates once for the campground ---
+	rateLookup, err := r.fetchCampgroundRatesLookup(ctx, campgroundID)
+	if err != nil {
+		slog.Warn("fetch campground rates failed", slog.String("campgroundID", campgroundID), slog.Any("err", err))
+	}
+
 	var campsiteInfos []CampsiteInfo
 	for _, site := range response.Campsites {
 		if !site.Reservable {
 			continue
 		}
-		// Extract unique equipment types
-		equipmentTypes := make(map[string]bool)
-		for _, eq := range site.PermittedEquipment {
-			equipmentTypes[eq.EquipmentName] = true
+
+		// Build Features
+		// From attributes (keep API-provided human names as-is)
+		var features []Features
+		for _, attr := range site.Attributes {
+			features = append(features, parseFeature(attr.AttributeName, attr.AttributeValue))
 		}
 
-		var equipment []string
-		for equipType := range equipmentTypes {
-			equipment = append(equipment, strings.ToLower(equipType))
+		// Extra fields with friendly names
+		features = append(features,
+			parseFeature(friendlyName("campsite_reserve_type"), site.CampsiteReserveType),
+			parseFeature(friendlyName("campsite_status"), site.CampsiteStatus),
+			parseFeature(friendlyName("type"), site.Type),
+			parseFeature(friendlyName("type_of_use"), site.TypeOfUse),
+		)
+
+		// Permitted equipment (friendly constant name)
+		for _, eq := range site.PermittedEquipment {
+			features = append(features, parseFeature("Permitted Equipment", eq.EquipmentName))
+		}
+
+		// Collect prices for this campsite
+		var prices []float64
+		for _, templateID := range site.FeeTemplates {
+			if p, ok := rateLookup[templateID]; ok {
+				prices = append(prices, p)
+			}
+		}
+
+		var priceMin, priceMax float64
+		if len(prices) > 0 {
+			priceMin, priceMax = prices[0], prices[0]
+			for _, p := range prices[1:] {
+				if p < priceMin {
+					priceMin = p
+				}
+				if p > priceMax {
+					priceMax = p
+				}
+			}
 		}
 
 		campsiteInfo := CampsiteInfo{
 			ID:              site.CampsiteID,
 			Name:            site.Name,
 			Type:            strings.ToLower(site.Type),
-			CostPerNight:    0.0, // We don't have cost info in this endpoint
+			PriceMin:        priceMin,
+			PriceMax:        priceMax,
 			Rating:          site.AverageRating,
-			Equipment:       equipment,
-			Amenities:       []string{}, // No campsite-level amenities available in rec.gov API
+			Features:        features,
 			PreviewImageURL: site.PreviewImageURL,
 		}
 		campsiteInfos = append(campsiteInfos, campsiteInfo)
@@ -352,4 +398,107 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		slog.Int("campsite_count", len(campsiteInfos)))
 
 	return campsiteInfos, nil
+}
+
+// friendlyName converts keys like "campsite_reserve_type" -> "Campsite Reserve Type".
+func friendlyName(s string) string {
+	s = strings.ReplaceAll(s, "_", " ")
+	// Title-case each word using unicode
+	var b strings.Builder
+	space := true
+	for _, r := range s {
+		if space && unicode.IsLetter(r) {
+			b.WriteRune(unicode.ToTitle(r))
+			space = false
+			continue
+		}
+		if r == ' ' {
+			space = true
+		} else {
+			space = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// parseFeature converts a raw string into a typed Features value.
+// Order: bool (stdlib) -> bool (yes/no) -> number -> text.
+func parseFeature(name, raw string) Features {
+	trim := strings.TrimSpace(raw)
+	// 1) stdlib bool parse (true/false, 1/0, t/f with case variants)
+	if bv, err := strconv.ParseBool(trim); err == nil {
+		return Features{Name: name, ValueBoolean: &bv}
+	}
+	// 2) yes/no handling (case-insensitive, anywhere in the string)
+	lower := strings.ToLower(trim)
+	if strings.Contains(lower, "yes") {
+		v := true
+		return Features{Name: name, ValueBoolean: &v}
+	}
+	if strings.Contains(lower, "no") {
+		v := false
+		return Features{Name: name, ValueBoolean: &v}
+	}
+	// 3) numeric
+	if num, err := strconv.ParseFloat(trim, 64); err == nil {
+		return Features{Name: name, ValueNumeric: &num}
+	}
+	// 4) text fallback
+	return Features{Name: name, ValueText: &trim}
+}
+
+// fetchCampgroundRatesLookup returns template_id -> max nightly price seen across all seasons
+func (r *RecreationGov) fetchCampgroundRatesLookup(ctx context.Context, campgroundID string) (map[string]float64, error) {
+	endpoint := fmt.Sprintf("https://www.recreation.gov/api/camps/campgrounds/%s/rates", campgroundID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rates request: %w", err)
+	}
+	httpx.SpoofChromeHeaders(req)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch campground rates: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rates request failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rates response: %w", err)
+	}
+
+	var rates struct {
+		RatesList []struct {
+			PriceMap map[string]float64 `json:"price_map"`
+			RateMap  map[string]struct {
+				PerNight float64 `json:"per_night"`
+			} `json:"rate_map"`
+		} `json:"rates_list"`
+	}
+
+	if err := json.Unmarshal(body, &rates); err != nil {
+		return nil, fmt.Errorf("failed to parse rates response: %w", err)
+	}
+
+	lookup := make(map[string]float64) // template_id -> max price
+	for _, season := range rates.RatesList {
+		for templateID, rm := range season.RateMap {
+			if rm.PerNight > lookup[templateID] {
+				lookup[templateID] = rm.PerNight
+			}
+		}
+		for templateID, price := range season.PriceMap {
+			if price > lookup[templateID] {
+				lookup[templateID] = price
+			}
+		}
+	}
+
+	return lookup, nil
 }

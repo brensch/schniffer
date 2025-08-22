@@ -27,7 +27,7 @@ func (m *Manager) SyncCampgrounds(ctx context.Context, providerName string) (int
 	}
 	count := 0
 	for _, cg := range all {
-		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.ImageURL, cg.PriceMin, cg.PriceMax, cg.PriceUnit)
+		err := m.store.UpsertCampground(ctx, providerName, cg.ID, cg.Name, cg.Lat, cg.Lon, cg.Rating, cg.Amenities, cg.ImageURL)
 		if err != nil {
 			return count, err
 		}
@@ -146,52 +146,27 @@ func (m *Manager) SyncCampsites(ctx context.Context, providerName string) (int, 
 			return processed, fmt.Errorf("failed to store campsite metadata: %w", err)
 		}
 
-		// Extract unique campsite types and equipment from the fetched data
-		campsiteTypesSet := make(map[string]struct{})
-		equipmentSet := make(map[string]struct{})
+		// // get max min price from campsites
+		// var minPrice, maxPrice float64
+		// for _, campsite := range campsiteInfos {
+		// 	if campsite.CostPerNight < minPrice || minPrice == 0 {
+		// 		minPrice = campsite.CostPerNight
+		// 	}
+		// 	if campsite.CostPerNight > maxPrice {
+		// 		maxPrice = campsite.CostPerNight
+		// 	}
+		// }
 
-		for _, campsite := range campsiteInfos {
-			if campsite.Type != "" {
-				campsiteTypesSet[campsite.Type] = struct{}{}
-			}
-			for _, eq := range campsite.Equipment {
-				if eq != "" {
-					equipmentSet[eq] = struct{}{}
-				}
-			}
-		}
-
-		// Convert sets to slices
-		var campsiteTypes []string
-		for t := range campsiteTypesSet {
-			campsiteTypes = append(campsiteTypes, t)
-		}
-
-		var equipment []string
-		for e := range equipmentSet {
-			equipment = append(equipment, e)
-		}
-
-		// get max min price from campsites
-		var minPrice, maxPrice float64
-		for _, campsite := range campsiteInfos {
-			if campsite.CostPerNight < minPrice || minPrice == 0 {
-				minPrice = campsite.CostPerNight
-			}
-			if campsite.CostPerNight > maxPrice {
-				maxPrice = campsite.CostPerNight
-			}
-		}
-
-		// Update campground with aggregated campsite types and equipment
-		err = m.store.UpdateCampgroundBasedOnCampsites(ctx, providerName, campground.ID, campsiteTypes, equipment, minPrice, maxPrice)
-		if err != nil {
-			m.logger.Warn("failed to update campground with campsite data",
-				slog.String("provider", providerName),
-				slog.String("campground", campground.ID),
-				slog.Any("err", err))
-			// Don't skip - this is not critical
-		}
+		// note not doing this because relation databases rule
+		// // Update campground with aggregated campsite types and equipment
+		// err = m.store.UpdateCampgroundBasedOnCampsites(ctx, providerName, campground.ID, campsiteTypes, equipment, minPrice, maxPrice)
+		// if err != nil {
+		// 	m.logger.Warn("failed to update campground with campsite data",
+		// 		slog.String("provider", providerName),
+		// 		slog.String("campground", campground.ID),
+		// 		slog.Any("err", err))
+		// 	// Don't skip - this is not critical
+		// }
 
 		// Record successful sync for this campground
 		if err := m.store.RecordMetadataSync(ctx, db.MetadataSyncLog{
