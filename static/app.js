@@ -40,8 +40,25 @@ const mapLayers = {
     topographic: topoLayer
 };
 
-// Configure popup options globally to remove close button but allow closing on map click
-map.options.closePopupOnClick = true;
+// Track currently open popup
+let currentOpenPopup = null;
+
+// Configure popup options globally to prevent closing on map click
+map.options.closePopupOnClick = false;
+
+// Track popup events
+map.on('popupopen', function(e) {
+    currentOpenPopup = {
+        marker: e.popup._source,
+        lat: e.popup.getLatLng().lat,
+        lng: e.popup.getLatLng().lng,
+        content: e.popup.getContent()
+    };
+});
+
+map.on('popupclose', function(e) {
+    currentOpenPopup = null;
+});
 
 let markers = [];
 let currentData = null;
@@ -158,10 +175,13 @@ function renderMarkersFromViewport(result) {
                     </div>
                 </div>
             `, {
-                closeButton: false,
+                closeButton: true,
                 maxWidth: 300,
                 className: 'narrow-popup',
-                autoPan: false
+                autoPan: false,
+                autoClose: false,
+                closeOnEscapeKey: false,
+                closeOnClick: false
             }).addTo(map);
             
             markers.push(marker);
@@ -265,10 +285,13 @@ function renderMarkersFromViewport(result) {
                         </button>
                     </div>
                 `, {
-                    closeButton: false,
+                    closeButton: true,
                     maxWidth: 350,
                     className: 'narrow-popup',
-                    autoPan: false
+                    autoPan: false,
+                    autoClose: false,
+                    closeOnEscapeKey: false,
+                    closeOnClick: false
                 })
                 .addTo(map);
             

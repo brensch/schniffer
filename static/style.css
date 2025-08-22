@@ -57,20 +57,38 @@ body {
     border-right: none !important;
 }
 
-/* Hide close button completely */
+/* Show close button and style it 8-bit */
 .leaflet-popup-close-button {
-    display: none !important;
+    display: block !important;
+    color: #e4e4e7 !important;
+    font-size: 18px !important;
+    font-weight: bold !important;
+    background: #374151 !important;
+    border: 1px solid #0f3460 !important;
+    border-radius: 0 !important;
+    width: 24px !important;
+    height: 24px !important;
+    text-align: center !important;
+    line-height: 20px !important;
+    font-family: 'VT323', monospace !important;
+    top: 8px !important;
+    right: 8px !important;
+}
+
+.leaflet-popup-close-button:hover {
+    background: #4b5563 !important;
+    color: #fbbf24 !important;
 }
 
 /* Enhanced popup content for park focus */
 .popup-title {
     font-size: 1.2rem;
     font-weight: 400;
-    color: #fbbf24;
+    color: #ffffff;
     margin-bottom: 0.6rem;
     line-height: 1.2;
     word-wrap: break-word;
-    font-family: 'Press Start 2P', monospace;
+    font-family: 'VT323', monospace;
 }
 
 .popup-details {
@@ -275,21 +293,21 @@ body {
 }
 
 .popup-provider.recreation_gov {
-    background-color: #065f46;
-    color: #d1fae5;
+    background-color: #00ff00;
+    color: #000;
 }
 
 .popup-provider.reservecalifornia {
-    background-color: #92400e;
-    color: #fef3c7;
+    background-color: #ff4757;
+    color: #000;
 }
 
 .popup-provider.recreation_gov:hover {
-    background-color: #047857;
+    background-color: #00cc00;
 }
 
 .popup-provider.reservecalifornia:hover {
-    background-color: #b45309;
+    background-color: #e63946;
 }
 
 .map-action-btn {
@@ -351,12 +369,12 @@ body {
 }
 
 .popup-title {
-    font-weight: 700;
+    font-weight: 400;
     font-size: 1.2rem;
-    color: #000;
+    color: #ffffff;
     margin-bottom: 0.5rem;
     letter-spacing: 0.5px;
-    font-family: 'Syne', sans-serif;
+    font-family: 'VT323', monospace;
 }
 
 .popup-provider {
@@ -365,9 +383,9 @@ body {
     color: #000;
     text-decoration: none;
     display: block;
-    font-weight: 500;
-    font-size: 0.8rem;
-    font-family: 'Epilogue', sans-serif;
+    font-weight: 400;
+    font-size: 1rem;
+    font-family: 'VT323', monospace;
     border: 2px solid #000;
     border-radius: 0;
     transition: all 0.2s ease;
@@ -394,12 +412,12 @@ body {
 }
 
 .popup-provider.recreation-gov { 
-    background-color: #00ff88; 
+    background-color: #00ff00; 
     color: #000 !important;
 }
 
 .popup-provider.recreation-gov:hover { 
-    background-color: #00ff88;
+    background-color: #00cc00;
     color: #000 !important;
 }
 
