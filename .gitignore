@@ -42,3 +42,4 @@ auto.duckdb
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+*.bak

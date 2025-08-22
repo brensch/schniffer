@@ -83,12 +83,12 @@ const californiaIcon = L.divIcon({
 function createClusterIcon(count) {
     const size = Math.min(Math.max(25 + Math.log10(count) * 15, 30), 70);
     const fontSize = Math.min(size/1.3, 40);
-    const numberSize = Math.min(size/4, 12);
+    const numberSize = Math.min(size/3, 16);
     return L.divIcon({
         className: 'custom-div-icon',
-        html: `<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'Epilogue', sans-serif;">
+        html: `<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'VT323', monospace;">
                 <div style="font-size: ${fontSize}px;">🐽</div>
-                <div style="font-size: ${numberSize}px; font-weight: 700; color: #000; margin-top: -3px; font-family: 'Syne', sans-serif; letter-spacing: -0.5px;">${count}</div>
+                <div style="font-size: ${numberSize}px; font-weight: 400; color: #000; margin-top: -3px; font-family: 'VT323', monospace; letter-spacing: -0.5px;">${count}</div>
                </div>`,
         iconSize: [size, size + 10],
         iconAnchor: [size/2, (size + 10)/2]

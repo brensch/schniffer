@@ -22,9 +22,12 @@ body {
 @media (max-width: 768px) {
     #save-group-btn {
         bottom: 15px;
-        padding: 1rem 1.5rem;
-        font-size: 0.9rem;
+        padding: 0.3rem 0.7rem;
+        font-size: 0.7rem;
         min-width: 180px;
+    }
+    #save-group-btn:disabled {
+        font-size: 0.7rem;
     }
 }
 
@@ -446,13 +449,13 @@ body {
     left: 50%;
     transform: translateX(-50%);
     z-index: 1000;
-    padding: 1rem 2rem;
+    padding: 0.5rem 1rem;
     background-color: #fbbf24;
     color: #1f2937;
     border: 2px solid #92400e;
     border-radius: 0px;
     cursor: pointer;
-    font-size: 1.2rem;
+    font-size: 0.9rem;
     font-weight: 400;
     font-family: 'Press Start 2P', monospace;
     transition: all 0.1s ease;
@@ -489,7 +492,7 @@ body {
     border: 2px solid #1d4ed8;
     border-radius: 0px;
     cursor: pointer;
-    font-size: 1rem;
+    font-size: 1.3rem;
     font-weight: 400;
     font-family: 'VT323', monospace;
     transition: all 0.1s ease;
@@ -509,7 +512,7 @@ body {
         top: 15px;
         right: 15px;
         padding: 0.7rem 1.2rem;
-        font-size: 0.8rem;
+        font-size: 1.1rem;
     }
 }
 
