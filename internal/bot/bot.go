@@ -64,7 +64,7 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	// Uncomment the next line if you want to clear all commands before registering new ones
 	// b.clearAllCommands()
 	b.registerCommands()
-	b.session.ChannelMessageSend(b.broadcastChannel, nonsense.RandomLaunchMessage())
+	// b.session.ChannelMessageSend(b.broadcastChannel, nonsense.RandomLaunchMessage())
 }
 
 func (b *Bot) onGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
