@@ -80,9 +80,9 @@ func main() {
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
 
-	// Background metadata sync
-	go mgr.RunCampgroundSync(ctx, "recreation_gov")
-	go mgr.RunCampgroundSync(ctx, "reservecalifornia")
+	// // Background metadata sync
+	// go mgr.RunCampgroundSync(ctx, "recreation_gov")
+	// go mgr.RunCampgroundSync(ctx, "reservecalifornia")
 
 	// Start web server
 	webAddr := os.Getenv("WEB_ADDR")
