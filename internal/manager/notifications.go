@@ -58,16 +58,20 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 			slog.Int("changes", len(changes)),
 		)
 
-		err := m.sendStateChangeNotification(ctx, req)
-		if err != nil {
+		// Use the changes we already have. Only send if there is at least ONE newly-available change.
+		sent, sendErr := m.sendStateChangeNotification(ctx, req, changes)
+		if sendErr != nil {
 			m.logger.Warn("send state change notification failed",
 				slog.String("userID", req.UserID),
-				slog.Any("err", err))
+				slog.Any("err", sendErr))
 		}
 
-		m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
+		// Post a fun summary broadcast only when we actually sent a DM about availability.
+		if sent {
+			_, _ = m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
+		}
 
-		// Record outgoing notifications for each change
+		// Record outgoing notifications for each change (both available and unavailable).
 		for _, c := range changes {
 			state := "available"
 			if !c.NewAvailable {
@@ -102,20 +106,33 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 }
 
 // sendStateChangeNotification fetches context data, builds the embed(s) via pure helpers, and sends them.
+// It returns 'sent = true' iff a DM was sent (i.e., there was at least one newly-available change).
 func (m *Manager) sendStateChangeNotification(
 	ctx context.Context,
 	req db.SchniffRequest,
-) error {
-	// Create DM channel
-	channel, err := m.notifier.UserChannelCreate(req.UserID)
-	if err != nil {
-		return err
+	changes []db.StateChangeForRequest,
+) (sent bool, err error) {
+	// Decide based on the provided changes (avoid any redundant lookups).
+	newlyAvail, _ := separateChanges(changes)
+	if len(newlyAvail) == 0 {
+		m.logger.Info("no newly-available changes; skipping DM",
+			slog.Int64("requestID", req.ID),
+			slog.String("userID", req.UserID),
+			slog.String("campgroundID", req.CampgroundID))
+		return false, nil
 	}
 
-	// Currently available items for the user's window
-	allAvailable, err := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
+	// Create DM channel only if we plan to send something.
+	channel, err := m.notifier.UserChannelCreate(req.UserID)
 	if err != nil {
-		m.logger.Warn("get currently available campsites failed", slog.Any("err", err))
+		return false, err
+	}
+
+	// Build the current availability context for the requested date range.
+	// This gives users a "what can I book right now" snapshot, not just the changed dates.
+	allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
+	if qerr != nil {
+		m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
 		// We can still continue with only the change lists, but the experience is better with context.
 	}
 
@@ -134,7 +151,10 @@ func (m *Manager) sendStateChangeNotification(
 	stats := buildCampsiteStats(byCampsite, req.Checkin, req.Checkout, detailsMap)
 
 	// Get campground presentation info
-	campground, _, err := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
+	campground, _, gerr := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
+	if gerr != nil {
+		m.logger.Warn("GetCampgroundByID failed; proceeding with minimal info", slog.Any("err", gerr))
+	}
 	campgroundURL := m.CampgroundURL(req.Provider, req.CampgroundID)
 
 	// missing the provider is irrelevant, checked in
@@ -148,13 +168,20 @@ func (m *Manager) sendStateChangeNotification(
 		provider,
 	)
 
+	actuallySent := false
 	for _, e := range embeds {
-		_, err = m.notifier.ChannelMessageSendEmbed(channel.ID, e)
-		if err != nil {
-			m.logger.Error("failed to send notification embed", slog.Any("err", err), slog.String("userID", req.UserID))
+		if e == nil {
+			continue
+		}
+		if _, sendErr := m.notifier.ChannelMessageSendEmbed(channel.ID, e); sendErr != nil {
+			m.logger.Error("failed to send notification embed", slog.Any("err", sendErr), slog.String("userID", req.UserID))
+			err = sendErr // track the last error
+		} else {
+			actuallySent = true
 		}
 	}
-	return err
+
+	return actuallySent, err
 }
 
 // ------- Data structures used by pure functions -------
@@ -326,7 +353,7 @@ func BuildNotificationEmbeds(
 			b.WriteString(s.Dates[i].Format(dateFmtISO))
 			b.WriteByte('\n')
 		}
-		// If there are more dates beyond 20, note it (no extra truncation other than this limit).
+		// If there are more dates beyond 20, note it.
 		if len(s.Dates) > maxDates {
 			b.WriteString(fmt.Sprintf("…and %d more\n", len(s.Dates)-maxDates))
 		}

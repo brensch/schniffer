@@ -953,7 +953,9 @@ func (s *Store) GetUnnotifiedStateChanges(ctx context.Context, requests []Schnif
 	}
 
 	return allResults, nil
-} // GetCurrentlyAvailableCampsites gets all currently available campsites in a date range
+}
+
+// GetCurrentlyAvailableCampsites gets all currently available campsites in a date range
 func (s *Store) GetCurrentlyAvailableCampsites(ctx context.Context, provider, campgroundID string, startDate, endDate time.Time) ([]AvailabilityItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT campsite_id, date
