@@ -104,6 +104,8 @@ type gridResponse struct {
 	} `json:"Facility"`
 }
 
+const maxRetriesAvailability = 5
+
 // FetchAvailability calls the search/grid endpoint for the given FacilityId (campgroundID) and range.
 func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error) {
 	if campgroundID == "" {
@@ -135,7 +137,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 
 	var intErr error
 	var parsed gridResponse
-	for i := 0; i < maxRetries; i++ {
+	for i := 0; i < maxRetriesAvailability; i++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -146,7 +148,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		req.Header.Set("Origin", "https://reservecalifornia.com")
 		req.Header.Set("Referer", "https://reservecalifornia.com/")
 
-		time.Sleep(time.Duration(i) * 100 * time.Millisecond) // Exponential backoff
+		time.Sleep(time.Duration(i) * 5000 * time.Millisecond) // Exponential backoff
 
 		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
 		resp, err := r.client.Do(req)
@@ -382,7 +384,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	return out, nil
 }
 
-const maxRetries = 100
+const maxRetriesCampsiteMetadata = 100
 
 // FetchCampsites returns detailed campsite metadata for storage in the database
 func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
@@ -415,7 +417,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	body, _ := json.Marshal(payload)
 	success := false
 	var respBody []byte
-	for i := 0; i < maxRetries; i++ {
+	for i := 0; i < maxRetriesCampsiteMetadata; i++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -426,7 +428,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		req.Header.Set("Origin", "https://reservecalifornia.com")
 		req.Header.Set("Referer", "https://reservecalifornia.com/")
 
-		time.Sleep(time.Duration(i) * 100 * time.Millisecond) // Exponential backoff
+		time.Sleep(time.Duration(i) * 1000 * time.Millisecond) // Exponential backoff
 
 		slog.Info("Sending campsite metadata grid request",
 			slog.Int("attempt", i+1))
@@ -524,7 +526,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		}
 
 		success := false
-		for attempt := 0; attempt < maxRetries; attempt++ {
+		for attempt := 0; attempt < maxRetriesCampsiteMetadata; attempt++ {
 			detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailsURL, nil)
 			if err != nil {
 				break
@@ -578,7 +580,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		}
 
 		if !success {
-			return nil, fmt.Errorf("failed to fetch details for unit %d after %d attempts", unit.UnitId, maxRetries)
+			return nil, fmt.Errorf("failed to fetch details for unit %d after %d attempts", unit.UnitId, maxRetriesCampsiteMetadata)
 		}
 
 		// Determine equipment types based on site characteristics

@@ -104,11 +104,12 @@ func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 				// Double the interval on errors
 				interval += pollIncrement
 				m.logger.Warn("Rate limited, increasing interval", "provider", providerName, "new_interval", interval)
-
-				msg := fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval)
-				_, err = m.notifier.ChannelMessageSend(m.summaryChannelID, msg)
-				if err != nil {
-					m.logger.Warn("failed to send rate limit notification", slog.Any("err", err))
+				if interval > 60*time.Second {
+					msg := fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval)
+					_, err = m.notifier.ChannelMessageSend(m.summaryChannelID, msg)
+					if err != nil {
+						m.logger.Warn("failed to send rate limit notification", slog.Any("err", err))
+					}
 				}
 
 			} else {
