@@ -150,6 +150,9 @@ func (m *Manager) sendStateChangeNotification(
 
 	for _, e := range embeds {
 		_, err = m.notifier.ChannelMessageSendEmbed(channel.ID, e)
+		if err != nil {
+			m.logger.Error("failed to send notification embed", slog.Any("err", err), slog.String("userID", req.UserID))
+		}
 	}
 	return err
 }
@@ -260,6 +263,7 @@ func BuildNotificationEmbeds(
 	provider providers.Provider,
 ) []*discordgo.MessageEmbed {
 	if len(campsiteStats) == 0 {
+		slog.Warn("no campsite stats available for notification", "req", userID, "campground", campgroundID)
 		return nil
 	}
 
