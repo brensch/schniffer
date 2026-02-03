@@ -1,0 +1,16 @@
+curl ^"https://california-rdr.prod.cali.rd12.recreation-management.tylerapp.com/rdr/search/grid^" ^
+  -H ^"accept: application/json, text/plain, */*^" ^
+  -H ^"accept-language: en-US,en-AU;q=0.9,en;q=0.8^" ^
+  -H ^"content-type: application/json^" ^
+  -H ^"origin: https://www.reservecalifornia.com^" ^
+  -H ^"priority: u=1, i^" ^
+  -H ^"referer: https://www.reservecalifornia.com/^" ^
+  -H ^"sec-ch-ua: ^\^"Google Chrome^\^";v=^\^"143^\^", ^\^"Chromium^\^";v=^\^"143^\^", ^\^"Not A(Brand^\^";v=^\^"24^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-fetch-dest: empty^" ^
+  -H ^"sec-fetch-mode: cors^" ^
+  -H ^"sec-fetch-site: cross-site^" ^
+  -H ^"tenantid: cali^" ^
+  -H ^"user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36^" ^
+  --data-raw ^"^{^\^"FacilityId^\^":^\^"357^\^",^\^"UnitSort^\^":^\^"availability^\^",^\^"StartDate^\^":^\^"2026-02-03^\^",^\^"EndDate^\^":^\^"2026-02-09^\^",^\^"InSeasonOnly^\^":true,^\^"WebOnly^\^":true,^\^"MaxDate^\^":^\^"2026-08-02T00:00:00^\^",^\^"MinDate^\^":^\^"2026-02-02T00:00:00^\^",^\^"IsADA^\^":false,^\^"RestrictADA^\^":false,^\^"UnitCategoryId^\^":1,^\^"SleepingUnitId^\^":0,^\^"MinVehicleLength^\^":0,^\^"UnitTypesGroupIds^\^":^[^],^\^"AmenityIds^\^":^[^],^\^"CustomerId^\^":0,^\^"customerClassificationId^\^":0^}^"

@@ -106,6 +106,9 @@ type gridResponse struct {
 
 const maxRetriesAvailability = 5
 
+// Base URL for the ReserveCalifornia API (Tyler Technologies platform)
+const reserveCaliforniaBaseURL = "https://california-rdr.prod.cali.rd12.recreation-management.tylerapp.com"
+
 // FetchAvailability calls the search/grid endpoint for the given FacilityId (campgroundID) and range.
 func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error) {
 	if campgroundID == "" {
@@ -138,15 +141,16 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 	var intErr error
 	var parsed gridResponse
 	for i := 0; i < maxRetriesAvailability; i++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/grid", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
 
 		httpx.SpoofChromeHeaders(req)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "https://reservecalifornia.com")
-		req.Header.Set("Referer", "https://reservecalifornia.com/")
+		req.Header.Set("Origin", "https://www.reservecalifornia.com")
+		req.Header.Set("Referer", "https://www.reservecalifornia.com/")
+		req.Header.Set("tenantid", "cali")
 
 		time.Sleep(time.Duration(i) * 5000 * time.Millisecond) // Exponential backoff
 
@@ -207,11 +211,12 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 // FetchAllCampgrounds enumerates city parks, then places and facilities to build a list of campgrounds keyed by FacilityId.
 func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]CampgroundInfo, error) {
 	// 1) Fetch all city parks
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://calirdr.usedirect.com/RDR/rdr/fd/citypark", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reserveCaliforniaBaseURL+"/rdr/fd/citypark", nil)
 	if err != nil {
 		return nil, err
 	}
 	httpx.SpoofChromeHeaders(req)
+	req.Header.Set("tenantid", "cali")
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("citypark GET failed: %w", err)
@@ -275,15 +280,16 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		for i := 0; i < 100; i++ {
 			pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
 			pb, _ := json.Marshal(pr)
-			req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/place", bytes.NewReader(pb))
+			req2, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/place", bytes.NewReader(pb))
 			if err != nil {
 				slog.Warn("build place request failed", slog.Any("err", err))
 				continue
 			}
 			httpx.SpoofChromeHeaders(req2)
 			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("Origin", "https://reservecalifornia.com")
-			req2.Header.Set("Referer", "https://reservecalifornia.com/")
+			req2.Header.Set("Origin", "https://www.reservecalifornia.com")
+			req2.Header.Set("Referer", "https://www.reservecalifornia.com/")
+			req2.Header.Set("tenantid", "cali")
 
 			time.Sleep(time.Duration(i) * time.Second)
 
@@ -418,15 +424,16 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	success := false
 	var respBody []byte
 	for i := 0; i < maxRetriesCampsiteMetadata; i++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://calirdr.usedirect.com/RDR/rdr/search/grid", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/grid", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
 		httpx.SpoofChromeHeaders(req)
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "https://reservecalifornia.com")
-		req.Header.Set("Referer", "https://reservecalifornia.com/")
+		req.Header.Set("Origin", "https://www.reservecalifornia.com")
+		req.Header.Set("Referer", "https://www.reservecalifornia.com/")
+		req.Header.Set("tenantid", "cali")
 
 		time.Sleep(time.Duration(i) * 1000 * time.Millisecond) // Exponential backoff
 
@@ -487,9 +494,8 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	var campsiteInfos []CampsiteInfo
 	for _, unit := range gridResp.Facility.Units {
 		// Get detailed campsite information with retries
-		// ids are
-		detailsURL := fmt.Sprintf("https://calirdr.usedirect.com/RDR/rdr/search/details/%d/startdate/%s",
-			unit.UnitId, start.Format("2006-01-02"))
+		detailsURL := fmt.Sprintf("%s/rdr/search/details/%d/startdate/%s",
+			reserveCaliforniaBaseURL, unit.UnitId, start.Format("2006-01-02"))
 
 		slog.Info("Fetching campsite details",
 			slog.String("unitId", fmt.Sprintf("%d", unit.UnitId)),
@@ -532,8 +538,9 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 				break
 			}
 			httpx.SpoofChromeHeaders(detailReq)
-			detailReq.Header.Set("Origin", "https://reservecalifornia.com")
-			detailReq.Header.Set("Referer", "https://reservecalifornia.com/")
+			detailReq.Header.Set("Origin", "https://www.reservecalifornia.com")
+			detailReq.Header.Set("Referer", "https://www.reservecalifornia.com/")
+			detailReq.Header.Set("tenantid", "cali")
 
 			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
 			detailResp, err := r.client.Do(detailReq)
