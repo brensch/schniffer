@@ -1,7 +1,7 @@
 {
   "_meta": {
     "purpose": "Round-robin proxy endpoints used by schniffer to fan out outbound HTTP requests across many egress IPs, to avoid per-IP rate limiting from upstream APIs (recreation.gov, reservecalifornia, etc).",
-    "request_contract": "Each endpoint MUST accept POST /fetch with header 'Authorization: Bearer <PROXY_SECRET>' and JSON body {\"requests\":[{\"url\":\"...\",\"method\":\"GET|POST|...\",\"headers\":{\"K\":\"V\"},\"body\":\"...\"}]}. It MUST respond 200 with {\"responses\":[{\"status\":200,\"headers\":{...},\"body\":\"...\",\"error\":\"\",\"elapsed_ms\":123}],\"region\":\"...\"} — same length as requests, same order. See proxy/main.go for the reference implementation.",
+    "request_contract": "Each endpoint MUST accept POST /fetch with header 'Authorization: Bearer <PROXY_SECRET>' and JSON body {\"requests\":[{\"url\":\"...\",\"method\":\"GET|POST|...\",\"headers\":{\"K\":\"V\"},\"body\":\"...\"}]}. It MUST respond 200 with {\"responses\":[{\"status\":200,\"headers\":{...},\"body\":\"...\",\"error\":\"\",\"elapsed_ms\":123}],\"region\":\"...\"} \u2014 same length as requests, same order. See proxy/main.go for the reference implementation.",
     "auth_secret": "All endpoints share one PROXY_SECRET, sourced from Secret Manager (or equivalent) at deploy time and baked in as an env var; never committed to this repo.",
     "deployment": {
       "gcp": {
@@ -10,25 +10,45 @@
         "image_source": "proxy/Dockerfile (Go service in proxy/main.go)",
         "deploy_command": "bash proxy/deploy.sh    (or: .github/workflows/deploy-proxy.yml on push to main)",
         "region_quota": "Cloud Run MaxRegionsPerProject quota gates how many regions can be initialized. Default for new projects is 5; request a bump via the Cloud Quotas console.",
-        "url_pattern": "https://proxyrequest-<projectHash>-<regionShort>.a.run.app — projectHash is stable per (project, service); regionShort is opaque per region. Discover via 'gcloud run services describe proxyrequest --region=<r> --format=value(status.url)'."
+        "url_pattern": "https://proxyrequest-<projectHash>-<regionShort>.a.run.app \u2014 projectHash is stable per (project, service); regionShort is opaque per region. Discover via 'gcloud run services describe proxyrequest --region=<r> --format=value(status.url)'."
       },
       "aws_lambda": {
         "status": "not yet deployed",
-        "how_to_add": "Build the same container at proxy/Dockerfile and push to ECR. Deploy as a Lambda function with a Function URL (no auth at the FURL layer — auth is via the PROXY_SECRET bearer token). Lambda regions give distinct egress IPs by default. Add a new entry below with provider:'aws', region:'<region>'."
+        "how_to_add": "Build the same container at proxy/Dockerfile and push to ECR. Deploy as a Lambda function with a Function URL (no auth at the FURL layer \u2014 auth is via the PROXY_SECRET bearer token). Lambda regions give distinct egress IPs by default. Add a new entry below with provider:'aws', region:'<region>'."
       },
       "azure_container_apps": {
         "status": "not yet deployed",
         "how_to_add": "Same container image. Deploy via 'az containerapp create' to multiple Azure regions. Each region gets a distinct egress IP. Add entries below with provider:'azure'."
       },
-      "any_http_endpoint": "Any HTTPS endpoint that implements the /fetch contract above and accepts the shared bearer token will work. Provider/region fields are informational only — they're used for logging and per-endpoint cooldown bookkeeping, not for routing."
+      "any_http_endpoint": "Any HTTPS endpoint that implements the /fetch contract above and accepts the shared bearer token will work. Provider/region fields are informational only \u2014 they're used for logging and per-endpoint cooldown bookkeeping, not for routing."
     },
     "how_to_add_an_endpoint": "Append a JSON object to 'endpoints' with {url, provider, region}. Schniffer loads this file at startup (via go:embed) and rotates round-robin across all entries. To remove a broken endpoint, delete its entry and redeploy schniffer."
   },
   "endpoints": [
-    {"url": "https://proxyrequest-ri77demp7a-uc.a.run.app", "provider": "gcp", "region": "us-central1"},
-    {"url": "https://proxyrequest-ri77demp7a-uw.a.run.app", "provider": "gcp", "region": "us-west1"},
-    {"url": "https://proxyrequest-ri77demp7a-wl.a.run.app", "provider": "gcp", "region": "us-west2"},
-    {"url": "https://proxyrequest-ri77demp7a-wn.a.run.app", "provider": "gcp", "region": "us-west4"},
-    {"url": "https://proxyrequest-ri77demp7a-vp.a.run.app", "provider": "gcp", "region": "us-south1"}
+    {
+      "url": "https://proxyrequest-ri77demp7a-uc.a.run.app",
+      "provider": "gcp",
+      "region": "us-central1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-uw.a.run.app",
+      "provider": "gcp",
+      "region": "us-west1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-wl.a.run.app",
+      "provider": "gcp",
+      "region": "us-west2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-wn.a.run.app",
+      "provider": "gcp",
+      "region": "us-west4"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-vp.a.run.app",
+      "provider": "gcp",
+      "region": "us-south1"
+    }
   ]
 }
