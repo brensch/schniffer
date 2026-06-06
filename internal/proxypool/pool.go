@@ -100,7 +100,7 @@ func New(secret string) (*Pool, error) {
 		endpoints:   f.Endpoints,
 		secret:      secret,
 		client:      &http.Client{Timeout: 35 * time.Second},
-		flushAfter:  50 * time.Millisecond,
+		flushAfter:  10 * time.Millisecond,
 		maxBatch:    50,
 		cooldown:    60 * time.Second,
 		endpointBad: map[string]time.Time{},

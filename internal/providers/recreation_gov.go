@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
@@ -50,61 +51,100 @@ type recGovResp struct {
 }
 
 // FetchAvailability fetches monthly availability pages between start and end (inclusive by month).
+// Months are fetched concurrently; the proxy pool batches concurrent calls into
+// a single outbound request, so this is cheap.
 func (r *RecreationGov) FetchAvailability(ctx context.Context, campgroundID string, start, end time.Time) ([]CampsiteAvailability, error) {
-	var out []CampsiteAvailability
+	type monthResult struct {
+		out []CampsiteAvailability
+		err error
+	}
+	var months []time.Time
 	cur := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
 	endMonth := time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for !cur.After(endMonth) {
-		base := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month", campgroundID)
-		u, err := url.Parse(base)
-		if err != nil {
-			return nil, fmt.Errorf("invalid base url: %w", err)
-		}
-		q := u.Query()
-		// Recreation.gov expects RFC3339 with milliseconds and Zulu time.
-		q.Set("start_date", cur.UTC().Format("2006-01-02T15:04:05.000Z"))
-		u.RawQuery = q.Encode()
-		slog.Info("Fetching availability", slog.String("url", u.String()))
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		httpx.SpoofChromeHeaders(req)
-		resp, err := r.client.Do(req)
-		if err != nil {
-			slog.Error("availability GET failed", slog.Any("err", err))
-			return nil, fmt.Errorf("availability GET failed: %w", err)
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			slog.Error("availability read body failed", slog.Any("err", err))
-			return nil, fmt.Errorf("availability read body failed: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			slog.Error("availability request failed, not ok", slog.Int("status", resp.StatusCode), slog.String("body", clipBody(body)))
-			return nil, fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
-		}
-		var parsed recGovResp
-		err = json.Unmarshal(body, &parsed)
-		if err != nil {
-			slog.Error("availability JSON decode failed", slog.Any("err", err), slog.String("body", clipBody(body)))
-			return nil, fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
-		}
-		for siteID, data := range parsed.Campsites {
-			for dateStr, status := range data.Availabilities {
-				d, err := time.Parse(time.RFC3339, dateStr)
-				if err != nil {
-					slog.Error("bad date from rec.gov", slog.String("date", dateStr))
-					continue
-				}
-				out = append(out, CampsiteAvailability{
-					ID:        siteID,
-					Date:      d,
-					Available: status == "Available",
-				})
-			}
-		}
+		months = append(months, cur)
 		cur = cur.AddDate(0, 1, 0)
 	}
+	if len(months) == 0 {
+		return nil, nil
+	}
+
+	results := make([]monthResult, len(months))
+	var wg sync.WaitGroup
+	for i, m := range months {
+		wg.Add(1)
+		go func(i int, m time.Time) {
+			defer wg.Done()
+			results[i] = r.fetchOneMonth(ctx, campgroundID, m)
+		}(i, m)
+	}
+	wg.Wait()
+
+	var out []CampsiteAvailability
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+			continue
+		}
+		out = append(out, r.out...)
+	}
+	if firstErr != nil && len(out) == 0 {
+		return nil, firstErr
+	}
 	return out, nil
+}
+
+func (r *RecreationGov) fetchOneMonth(ctx context.Context, campgroundID string, monthStart time.Time) (mr struct {
+	out []CampsiteAvailability
+	err error
+}) {
+	base := fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month", campgroundID)
+	u, err := url.Parse(base)
+	if err != nil {
+		mr.err = fmt.Errorf("invalid base url: %w", err)
+		return
+	}
+	q := u.Query()
+	q.Set("start_date", monthStart.UTC().Format("2006-01-02T15:04:05.000Z"))
+	u.RawQuery = q.Encode()
+	slog.Info("Fetching availability", slog.String("url", u.String()))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	httpx.SpoofChromeHeaders(req)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		mr.err = fmt.Errorf("availability GET failed: %w", err)
+		return
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		mr.err = fmt.Errorf("availability read body failed: %w", err)
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		mr.err = fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
+		return
+	}
+	var parsed recGovResp
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		mr.err = fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
+		return
+	}
+	for siteID, data := range parsed.Campsites {
+		for dateStr, status := range data.Availabilities {
+			d, err := time.Parse(time.RFC3339, dateStr)
+			if err != nil {
+				continue
+			}
+			mr.out = append(mr.out, CampsiteAvailability{
+				ID:        siteID,
+				Date:      d,
+				Available: status == "Available",
+			})
+		}
+	}
+	return
 }
 
 // PlanBuckets groups dates by month and returns one monthly range per group from day 1 to last day of month.

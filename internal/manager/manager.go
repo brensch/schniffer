@@ -77,6 +77,9 @@ func (m *Manager) Run(ctx context.Context) {
 	// Start the ad-hoc scrape processor
 	m.StartAdhocScrapeProcessor(ctx)
 
+	// Expire deactivation runs on its own cadence (used to run every poll cycle).
+	go m.runExpiryReaper(ctx)
+
 	// Start a goroutine for each provider
 	for _, providerName := range m.reg.GetProviderNames() {
 		go m.runProviderLoop(ctx, providerName)
@@ -84,6 +87,32 @@ func (m *Manager) Run(ctx context.Context) {
 
 	// Wait for context cancellation
 	<-ctx.Done()
+}
+
+const expiryReaperInterval = 5 * time.Minute
+
+// runExpiryReaper periodically deactivates schniff requests whose checkout date
+// has passed, and DMs the owning users. Decoupled from the hot poll loop so the
+// scan isn't wasted work every 10s.
+func (m *Manager) runExpiryReaper(ctx context.Context) {
+	t := time.NewTicker(expiryReaperInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			deactivated, err := m.store.DeactivateExpiredRequests(ctx)
+			if err != nil {
+				m.logger.Warn("expiry reaper: deactivate failed", slog.Any("err", err))
+				continue
+			}
+			if len(deactivated) > 0 {
+				m.logger.Info("expiry reaper deactivated requests", slog.Int("count", len(deactivated)))
+				m.notifyUsersOfDeactivatedRequests(ctx, deactivated)
+			}
+		}
+	}
 }
 
 const fastestPoll = 10 * time.Second
@@ -119,127 +148,184 @@ func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 	}
 }
 
-// PollProvider performs one poll cycle for a specific provider and returns a summary
+// maxConcurrentCampgrounds caps the fan-out per poll cycle. Each goroutine
+// makes one or more HTTP fetches via the proxy pool, which coalesces them
+// into batches; the cap exists to bound memory + DB writer pressure, not to
+// throttle the upstream.
+const maxConcurrentCampgrounds = 32
+
+// PollProvider performs one poll cycle for a specific provider.
+//
+// Returns an error only if more than half of campground fetches failed in the
+// same cycle (treated as a global upstream problem worth backing off for).
+// Individual fetch errors are logged but do not abort the cycle.
 func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error {
-	deactivatedRequests, err := m.store.DeactivateExpiredRequests(ctx)
-	if err != nil {
-		m.logger.Warn("failed to deactivate expired requests", slog.Any("err", err))
-		return err
-	}
-
-	if len(deactivatedRequests) > 0 {
-		m.logger.Info("deactivated expired requests", slog.Int("count", len(deactivatedRequests)))
-
-		// Send notification to each user about their deactivated requests
-		m.notifyUsersOfDeactivatedRequests(ctx, deactivatedRequests)
-	}
-
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
 		m.logger.Error("list requests failed", slog.Any("err", err))
 		return nil
 	}
 
-	// Filter requests for the target provider
 	var filteredRequests []db.SchniffRequest
 	for _, req := range requests {
 		if req.Provider == targetProvider {
 			filteredRequests = append(filteredRequests, req)
 		}
 	}
-
 	if len(filteredRequests) == 0 {
 		return nil
 	}
 
-	// dedupe by provider+campground, then provider decides how to bucket dates
 	datesByPC, _ := collectDatesByPC(filteredRequests)
+	if len(datesByPC) == 0 {
+		return nil
+	}
+
+	prov, ok := m.reg.Get(targetProvider)
+	if !ok {
+		return nil
+	}
+
+	type cgResult struct {
+		lookups []db.LookupLog
+		failed  bool
+	}
+	results := make(chan cgResult, len(datesByPC))
+	sem := make(chan struct{}, maxConcurrentCampgrounds)
+	var wg sync.WaitGroup
+
 	for k, datesSet := range datesByPC {
-		prov, ok := m.reg.Get(k.prov)
-		if !ok {
-			continue
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(k pc, datesSet map[time.Time]struct{}) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results <- m.pollOneCampground(ctx, prov, k, datesSet)
+		}(k, datesSet)
+	}
+	wg.Wait()
+	close(results)
+
+	var allLookups []db.LookupLog
+	var totalCG, failedCG int
+	for r := range results {
+		allLookups = append(allLookups, r.lookups...)
+		totalCG++
+		if r.failed {
+			failedCG++
 		}
-		// to sorted slice
-		dates := datesFromSet(datesSet)
-		// provider decides minimal set of requests
-		buckets := prov.PlanBuckets(dates)
-		// collect all states for this provider+campground across buckets to enable bundled notifications
-		var collectedStates []providers.CampsiteAvailability
-		for _, b := range buckets {
+	}
+
+	// One batched insert at end of cycle instead of N writes through the writer.
+	if len(allLookups) > 0 {
+		if err := m.executeDBOperation(func() error {
+			return m.store.RecordLookupBatch(ctx, allLookups)
+		}); err != nil {
+			m.logger.Warn("record lookup batch failed", slog.Any("err", err))
+		}
+	}
+
+	if err := m.ProcessNotificationsWithBatches(ctx, filteredRequests); err != nil {
+		m.logger.Warn("process notifications failed", slog.String("provider", targetProvider), slog.Any("err", err))
+	}
+
+	if totalCG > 0 && failedCG*2 > totalCG {
+		return fmt.Errorf("most campground fetches failed (%d/%d)", failedCG, totalCG)
+	}
+	return nil
+}
+
+// pollOneCampground handles one (provider, campground) — plans buckets,
+// fetches them in parallel, upserts the resulting state, and returns the
+// lookup log entries that the caller will batch-insert.
+func (m *Manager) pollOneCampground(ctx context.Context, prov providers.Provider, k pc, datesSet map[time.Time]struct{}) (out struct {
+	lookups []db.LookupLog
+	failed  bool
+}) {
+	dates := datesFromSet(datesSet)
+	buckets := prov.PlanBuckets(dates)
+	if len(buckets) == 0 {
+		return
+	}
+
+	type bucketResult struct {
+		bucket providers.DateRange
+		states []providers.CampsiteAvailability
+		err    error
+	}
+	bres := make([]bucketResult, len(buckets))
+	var bwg sync.WaitGroup
+	for i, b := range buckets {
+		bwg.Add(1)
+		go func(i int, b providers.DateRange) {
+			defer bwg.Done()
 			states, err := prov.FetchAvailability(ctx, k.cg, b.Start, b.End)
-			if err != nil {
-				// return an error straight away at first sign of api failing
-				return fmt.Errorf("failed to fetch availability: %w", err)
-			}
+			bres[i] = bucketResult{bucket: b, states: states, err: err}
+		}(i, b)
+	}
+	bwg.Wait()
 
-			// record lookup if no error
-			err = m.store.RecordLookup(ctx, db.LookupLog{
-				Provider:      k.prov,
-				CampgroundID:  k.cg,
-				StartDate:     b.Start,
-				EndDate:       b.End,
-				CheckedAt:     time.Now(),
-				Success:       true,
-				CampsiteCount: len(states),
-			})
-			if err != nil {
-				m.logger.Warn("record lookup failed", slog.Any("err", err))
-			}
-
-			if len(states) == 0 {
-				m.logger.Info("no states returned", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Time("start", b.Start), slog.Time("end", b.End))
-			}
-			// collect for later bundled change detection and notification
-			collectedStates = append(collectedStates, states...)
+	now := time.Now()
+	var collected []providers.CampsiteAvailability
+	bucketFails := 0
+	for _, r := range bres {
+		entry := db.LookupLog{
+			Provider:     k.prov,
+			CampgroundID: k.cg,
+			StartDate:    r.bucket.Start,
+			EndDate:      r.bucket.End,
+			CheckedAt:    now,
 		}
-
-		// Process all collected states for this provider+campground at once
-		if len(collectedStates) == 0 {
-			continue
-		}
-
-		// Convert to db format
-		batch := make([]db.CampsiteAvailability, 0, len(collectedStates))
-		now := time.Now()
-		for _, s := range collectedStates {
-			batch = append(batch, db.CampsiteAvailability{
-				Provider:     k.prov,
-				CampgroundID: k.cg,
-				CampsiteID:   s.ID,
-				Date:         s.Date,
-				Available:    s.Available,
-				LastChecked:  now,
-			})
-		}
-
-		// Upsert states
-		start := time.Now()
-		err := m.executeDBOperation(func() error {
-			return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
-		})
-		if err != nil {
-			// only http errors need to fail the function.
-			m.logger.Error("upsert states failed", slog.Any("err", err))
-		} else {
-			m.logger.Info("persisted campsite states",
+		if r.err != nil {
+			m.logger.Warn("fetch availability failed",
 				slog.String("provider", k.prov),
 				slog.String("campground", k.cg),
-				slog.Int("count", len(batch)),
-				slog.Duration("duration_ms", time.Since(start)),
-			)
+				slog.Time("start", r.bucket.Start),
+				slog.Time("end", r.bucket.End),
+				slog.Any("err", r.err))
+			entry.Success = false
+			entry.ErrorMsg = r.err.Error()
+			bucketFails++
+		} else {
+			entry.Success = true
+			entry.CampsiteCount = len(r.states)
+			collected = append(collected, r.states...)
 		}
-
+		out.lookups = append(out.lookups, entry)
+	}
+	if bucketFails == len(buckets) {
+		out.failed = true
 	}
 
-	// After processing all states, check for notifications
-	if len(filteredRequests) > 0 {
-		err := m.ProcessNotificationsWithBatches(ctx, filteredRequests)
-		if err != nil {
-			m.logger.Warn("process notifications failed", slog.String("provider", targetProvider), slog.Any("err", err))
-		}
+	if len(collected) == 0 {
+		return
 	}
 
-	return nil
+	batch := make([]db.CampsiteAvailability, 0, len(collected))
+	for _, s := range collected {
+		batch = append(batch, db.CampsiteAvailability{
+			Provider:     k.prov,
+			CampgroundID: k.cg,
+			CampsiteID:   s.ID,
+			Date:         s.Date,
+			Available:    s.Available,
+			LastChecked:  now,
+		})
+	}
+	start := time.Now()
+	if err := m.executeDBOperation(func() error {
+		return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
+	}); err != nil {
+		m.logger.Error("upsert states failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Any("err", err))
+	} else {
+		m.logger.Info("persisted campsite states",
+			slog.String("provider", k.prov),
+			slog.String("campground", k.cg),
+			slog.Int("count", len(batch)),
+			slog.Duration("duration_ms", time.Since(start)),
+		)
+	}
+	return
 }
 
 // normalizeDay returns t truncated to 00:00:00 UTC.
