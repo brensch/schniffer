@@ -2,7 +2,7 @@ name: Deploy proxy
 
 on:
   push:
-    branches: [main, proxy-deploy-workflow]
+    branches: [main]
     paths:
       - 'proxy/**'
       - '.github/workflows/deploy-proxy.yml'
