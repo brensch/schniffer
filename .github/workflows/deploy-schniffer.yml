@@ -1,0 +1,62 @@
+name: Deploy schniffer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-schniffer
+  cancel-in-progress: false
+
+env:
+  CANONICAL: /home/brensch/schniffer
+  BACKUPS:   /home/brensch/schniffer-backups
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Backup sqlite before redeploy
+        run: |
+          mkdir -p "$BACKUPS"
+          ts=$(date +%Y%m%d-%H%M%S)
+          if [ -f "$CANONICAL/data/schniffer.sqlite" ]; then
+            cp "$CANONICAL/data/schniffer.sqlite" "$BACKUPS/schniffer.sqlite.$ts"
+          fi
+          # keep newest 10
+          ls -1t "$BACKUPS"/schniffer.sqlite.* 2>/dev/null | tail -n +11 | xargs -r rm -f
+          ls -lh "$BACKUPS" | tail -10
+
+      - name: Sync source to canonical (preserve data/ and .env)
+        run: |
+          mkdir -p "$CANONICAL"
+          rsync -a --delete \
+            --exclude=/data/ \
+            --exclude=/.env \
+            --exclude=/.git/ \
+            ./ "$CANONICAL/"
+
+      - name: Build and restart container
+        working-directory: ${{ env.CANONICAL }}
+        run: docker compose up -d --build
+
+      - name: Wait for container to be running
+        run: |
+          for i in $(seq 1 30); do
+            state=$(docker inspect -f '{{.State.Status}}' schniffer-bot 2>/dev/null || echo missing)
+            if [ "$state" = "running" ]; then
+              echo "schniffer-bot is running"
+              docker logs --tail 30 schniffer-bot
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ERROR: schniffer-bot not running after 30s"
+          docker logs --tail 100 schniffer-bot 2>&1 || true
+          exit 1

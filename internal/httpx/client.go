@@ -1,35 +1,56 @@
 package httpx
 
 import (
+	"log/slog"
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
+	"sync"
 	"time"
+
+	"github.com/brensch/schniffer/internal/proxypool"
 )
 
-var defaultClient *http.Client
+var (
+	defaultOnce   sync.Once
+	defaultClient *http.Client
+)
 
-// Default returns a shared HTTP client with sensible timeouts.
+// Default returns a shared HTTP client. If PROXY_SECRET is set and
+// endpoints.json has entries, the client routes requests through the
+// batching proxy pool (rotating across egress IPs). Otherwise it returns
+// a direct client.
 func Default() *http.Client {
-	if defaultClient != nil {
-		return defaultClient
-	}
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	defaultClient = &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: transport,
-	}
+	defaultOnce.Do(func() {
+		secret := os.Getenv("PROXY_SECRET")
+		if pool, err := proxypool.New(secret); err == nil && pool != nil {
+			slog.Info("httpx using proxy pool", "endpoints", len(pool.Endpoints()))
+			defaultClient = &http.Client{
+				Timeout:   40 * time.Second,
+				Transport: pool,
+			}
+			return
+		} else if err != nil {
+			slog.Warn("proxy pool init failed; falling back to direct", "err", err)
+		}
+		transport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+		defaultClient = &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: transport,
+		}
+	})
 	return defaultClient
 }
 
