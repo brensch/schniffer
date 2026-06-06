@@ -43,7 +43,8 @@ jobs:
           TAG=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}
           IMAGE="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${TAG}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          gcloud builds submit proxy --tag="$IMAGE" --project="$PROJECT_ID" --quiet
+          gcloud builds submit proxy --tag="$IMAGE" --project="$PROJECT_ID" \
+            --gcs-log-dir="gs://schniffer_cloudbuild/logs" --quiet
 
       - name: Resolve secret
         id: secret
