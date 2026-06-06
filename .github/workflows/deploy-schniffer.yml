@@ -2,7 +2,7 @@ name: Deploy schniffer
 
 on:
   push:
-    branches: [main, proxy-deploy-workflow]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
