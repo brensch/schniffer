@@ -152,7 +152,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		req.Header.Set("Referer", "https://www.reservecalifornia.com/")
 		req.Header.Set("tenantid", "cali")
 
-		time.Sleep(time.Duration(i) * 5000 * time.Millisecond) // Exponential backoff
+		time.Sleep(time.Duration(i) * 500 * time.Millisecond) // small per-retry backoff; proxy pool handles per-IP throttle
 
 		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
 		resp, err := r.client.Do(req)
