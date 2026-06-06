@@ -3,26 +3,24 @@ services:
     build: .
     container_name: schniffer-bot
     env_file:
-      - .env
+      - ${SCHNIFFER_ENV:-.env}
     environment:
       - PROD=true
       - DB_PATH=/app/data/schniffer.sqlite
     volumes:
-      - ./data:/app/data
+      - ${SCHNIFFER_DATA:-./data}:/app/data
     restart: unless-stopped
     ports:
-      - "8069:8069"  # Expose port 8069 for external Caddy access
+      - "8069:8069"
     networks:
       - default
       - home_default
-    # roll logs
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-# note this connects to the network set up by caddy in the home assist project
 networks:
   home_default:
     external: true

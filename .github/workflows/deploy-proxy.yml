@@ -1,0 +1,121 @@
+name: Deploy proxy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proxy/**'
+      - '.github/workflows/deploy-proxy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-proxy
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  PROJECT_ID: schniffer
+  SERVICE: proxyrequest
+  SECRET_NAME: proxy-secret
+  REPO: proxy
+  AR_REGION: us-central1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build image
+        id: build
+        run: |
+          TAG=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}
+          IMAGE="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${TAG}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          gcloud builds submit proxy --tag="$IMAGE" --project="$PROJECT_ID" --quiet
+
+      - name: Resolve secret
+        id: secret
+        run: |
+          VALUE=$(gcloud secrets versions access latest --secret="$SECRET_NAME" --project="$PROJECT_ID")
+          echo "::add-mask::$VALUE"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to all regions in proxy/regions.txt
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          SECRET_VALUE: ${{ steps.secret.outputs.value }}
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r region; do
+            [ -z "$region" ] && continue
+            [[ "$region" =~ ^# ]] && continue
+            printf '%-25s ' "$region"
+            if gcloud run deploy "$SERVICE" \
+                --image="$IMAGE" \
+                --project="$PROJECT_ID" \
+                --region="$region" \
+                --allow-unauthenticated \
+                --cpu=1 --memory=256Mi --max-instances=2 \
+                --timeout=30 --concurrency=80 \
+                --set-env-vars="PROXY_SECRET=${SECRET_VALUE},CLOUD_RUN_REGION=${region}" \
+                --quiet >/tmp/d.log 2>&1; then
+              echo OK
+            else
+              echo "FAIL: $(tail -1 /tmp/d.log)"
+              fail=1
+            fi
+          done < proxy/regions.txt
+          exit $fail
+
+      - name: Regenerate GCP entries in endpoints.json
+        run: |
+          # Query current Cloud Run URLs for all regions in regions.txt, rewrite
+          # the gcp entries in internal/proxypool/endpoints.json while preserving
+          # all non-gcp entries and the _meta block.
+          python3 - <<'PY'
+          import json, subprocess
+          path = "internal/proxypool/endpoints.json"
+          with open(path) as f:
+              doc = json.load(f)
+          regions = [l.strip() for l in open("proxy/regions.txt") if l.strip() and not l.startswith("#")]
+          gcp = []
+          for r in regions:
+              url = subprocess.check_output([
+                  "gcloud","run","services","describe","proxyrequest",
+                  "--region",r,"--project","schniffer","--format=value(status.url)"
+              ]).decode().strip()
+              if url:
+                  gcp.append({"url": url, "provider": "gcp", "region": r})
+          others = [e for e in doc.get("endpoints", []) if e.get("provider") != "gcp"]
+          doc["endpoints"] = gcp + others
+          with open(path, "w") as f:
+              json.dump(doc, f, indent=2)
+              f.write("\n")
+          PY
+
+      - name: Commit endpoints.json if changed
+        run: |
+          if ! git diff --quiet internal/proxypool/endpoints.json; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add internal/proxypool/endpoints.json
+            git commit -m "chore(proxy): refresh GCP endpoint URLs
+
+            Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+            git push
+          else
+            echo "endpoints.json unchanged"
+          fi

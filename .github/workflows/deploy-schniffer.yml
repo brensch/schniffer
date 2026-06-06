@@ -1,0 +1,59 @@
+name: Deploy schniffer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-schniffer
+  cancel-in-progress: false
+
+env:
+  DATA_DIR: /home/brensch/schniffdata
+  BACKUPS:  /home/brensch/schniff-backups
+  COMPOSE_PROJECT_NAME: schniffer
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify data dir has .env and sqlite
+        run: |
+          test -f "$DATA_DIR/.env" || { echo "ERROR: $DATA_DIR/.env missing"; exit 1; }
+          test -f "$DATA_DIR/schniffer.sqlite" || { echo "ERROR: $DATA_DIR/schniffer.sqlite missing"; exit 1; }
+          ls -la "$DATA_DIR"
+
+      - name: Backup sqlite
+        run: |
+          mkdir -p "$BACKUPS"
+          ts=$(date +%Y%m%d-%H%M%S)
+          cp "$DATA_DIR/schniffer.sqlite" "$BACKUPS/schniffer.sqlite.$ts"
+          ls -1t "$BACKUPS"/schniffer.sqlite.* | tail -n +11 | xargs -r rm -f
+          ls -lh "$BACKUPS" | tail -5
+
+      - name: Build and (re)start container
+        env:
+          SCHNIFFER_DATA: ${{ env.DATA_DIR }}
+          SCHNIFFER_ENV: ${{ env.DATA_DIR }}/.env
+        run: docker compose up -d --build
+
+      - name: Wait for container to be running
+        run: |
+          for i in $(seq 1 30); do
+            state=$(docker inspect -f '{{.State.Status}}' schniffer-bot 2>/dev/null || echo missing)
+            if [ "$state" = "running" ]; then
+              echo "schniffer-bot is running"
+              docker logs --tail 30 schniffer-bot
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ERROR: schniffer-bot not running after 30s"
+          docker logs --tail 100 schniffer-bot 2>&1 || true
+          exit 1

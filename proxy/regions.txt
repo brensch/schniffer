@@ -1,0 +1,5 @@
+us-central1
+us-west1
+us-west2
+us-west4
+us-south1
