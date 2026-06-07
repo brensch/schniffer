@@ -50,10 +50,12 @@ func drainChromeStderr(r io.Reader, logger *slog.Logger) {
 		switch {
 		case chromeFatal.MatchString(line):
 			logger.Error("chrome stderr", slog.String("line", line))
+		case dbusNoise.MatchString(line):
+			// Drop entirely; not actionable and very chatty. Checked
+			// before the generic ERROR matcher because dbus failures
+			// surface as ERROR-prefixed lines that we do not care about.
 		case chromeError.MatchString(line):
 			logger.Warn("chrome stderr", slog.String("line", line))
-		case dbusNoise.MatchString(line):
-			// Drop entirely; not actionable and very chatty.
 		default:
 			logger.Debug("chrome stderr", slog.String("line", line))
 		}
