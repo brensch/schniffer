@@ -64,6 +64,12 @@ func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
+	minN, strat, ferr := parseScheduleFilters(opts, start, end)
+	if ferr != "" {
+		respond(s, i, ferr)
+		return
+	}
+
 	uid := getUserID(i)
 
 	// Get the group and verify ownership
@@ -79,11 +85,13 @@ func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.Interactio
 
 	for _, campgroundRef := range group.Campgrounds {
 		_, err := b.store.AddRequest(context.Background(), db.SchniffRequest{
-			UserID:       uid,
-			Provider:     campgroundRef.Provider,
-			CampgroundID: campgroundRef.CampgroundID,
-			Checkin:      start,
-			Checkout:     end,
+			UserID:        uid,
+			Provider:      campgroundRef.Provider,
+			CampgroundID:  campgroundRef.CampgroundID,
+			Checkin:       start,
+			Checkout:      end,
+			MinimumNights: minN,
+			Strategy:      strat,
 		})
 
 		if err != nil {
@@ -101,6 +109,12 @@ func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.Interactio
 		groupName, successCount, len(group.Campgrounds),
 		start.Format("2006-01-02"), end.Format("2006-01-02"),
 		stayDuration.Hours()/24)
+	if minN.Valid {
+		responseMsg += fmt.Sprintf(", minimum_nights=%d", minN.Int64)
+	}
+	if strat.Valid {
+		responseMsg += fmt.Sprintf(", strategy=%s", strat.String)
+	}
 
 	if len(errors) > 0 {
 		responseMsg += "\n\nErrors:\n" + strings.Join(errors, "\n")

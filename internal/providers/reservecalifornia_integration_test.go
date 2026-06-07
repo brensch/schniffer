@@ -24,8 +24,8 @@ func TestReserveCalifornia_Integration_GridEndpoint(t *testing.T) {
 	// Composite ID format: parentID-facilityID
 	campgroundID := "76-357"
 
-	start := time.Now().AddDate(0, 0, 7)  // One week from now
-	end := time.Now().AddDate(0, 0, 14)   // Two weeks from now
+	start := time.Now().AddDate(0, 0, 7) // One week from now
+	end := time.Now().AddDate(0, 0, 14)  // Two weeks from now
 
 	availability, err := provider.FetchAvailability(ctx, campgroundID, start, end)
 	if err != nil {

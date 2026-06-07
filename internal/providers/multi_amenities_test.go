@@ -7,6 +7,9 @@ import (
 )
 
 func TestMultipleCampgroundAmenities(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live ReserveCalifornia call in -short mode")
+	}
 	provider := NewReserveCalifornia()
 	ctx := context.Background()
 

@@ -244,7 +244,22 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	_, err = db.Exec(string(schemaBytes))
-	return err
+	if err != nil {
+		return err
+	}
+	// Idempotent column additions for existing databases.
+	for _, alter := range []string{
+		`ALTER TABLE schniff_requests ADD COLUMN minimum_nights INTEGER`,
+		`ALTER TABLE schniff_requests ADD COLUMN strategy TEXT`,
+	} {
+		if _, aerr := db.Exec(alter); aerr != nil {
+			msg := aerr.Error()
+			if !strings.Contains(msg, "duplicate column") {
+				return fmt.Errorf("apply migration %q: %w", alter, aerr)
+			}
+		}
+	}
+	return nil
 }
 
 // Models
@@ -258,6 +273,35 @@ type SchniffRequest struct {
 	Checkout     time.Time
 	CreatedAt    time.Time
 	Active       bool
+	// MinimumNights, when set, requires at least one campsite to be available
+	// for this many consecutive nights inside [Checkin, Checkout) before a
+	// notification (or auto-booking) fires.
+	MinimumNights sql.NullInt64
+	// Strategy, when set, names a higher-level filter (e.g. "full_weekend")
+	// applied before notifying/booking.
+	Strategy sql.NullString
+}
+
+// Strategy values supported by the notifier filter. Add new entries here as
+// they are introduced.
+const (
+	StrategyFullWeekend = "full_weekend"
+)
+
+// ValidStrategies enumerates the strategy strings accepted by AddRequest.
+// Keep aligned with the Discord autocomplete in the bot package.
+var ValidStrategies = []string{StrategyFullWeekend}
+
+// IsValidStrategy reports whether s is a recognised strategy. The empty
+// string is treated as "no strategy" and is not valid here — callers should
+// gate on emptiness before calling.
+func IsValidStrategy(s string) bool {
+	for _, v := range ValidStrategies {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 type CampsiteAvailability struct {
@@ -381,10 +425,16 @@ type DetailedSummaryStats struct {
 // CRUD
 
 func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error) {
+	if r.Strategy.Valid && r.Strategy.String != "" && !IsValidStrategy(r.Strategy.String) {
+		return 0, fmt.Errorf("invalid strategy %q", r.Strategy.String)
+	}
+	if r.MinimumNights.Valid && r.MinimumNights.Int64 < 1 {
+		return 0, fmt.Errorf("minimum_nights must be >= 1")
+	}
 	result, err := s.DB.ExecContext(ctx, `
-		INSERT INTO schniff_requests(user_id, provider, campground_id, checkin, checkout, created_at, active)
-		VALUES (?, ?, ?, ?, ?, datetime('now'), true)
-	`, r.UserID, r.Provider, r.CampgroundID, r.Checkin, r.Checkout)
+		INSERT INTO schniff_requests(user_id, provider, campground_id, checkin, checkout, created_at, active, minimum_nights, strategy)
+		VALUES (?, ?, ?, ?, ?, datetime('now'), true, ?, ?)
+	`, r.UserID, r.Provider, r.CampgroundID, r.Checkin, r.Checkout, r.MinimumNights, r.Strategy)
 	if err != nil {
 		return 0, err
 	}
@@ -393,7 +443,7 @@ func (s *Store) AddRequest(ctx context.Context, r SchniffRequest) (int64, error)
 
 func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active
+		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active, minimum_nights, strategy
 		FROM schniff_requests WHERE active=true
 	`)
 	if err != nil {
@@ -403,7 +453,7 @@ func (s *Store) ListActiveRequests(ctx context.Context) ([]SchniffRequest, error
 	var out []SchniffRequest
 	for rows.Next() {
 		var r SchniffRequest
-		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active)
+		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active, &r.MinimumNights, &r.Strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +479,7 @@ func (s *Store) DeactivateRequest(ctx context.Context, id int64, userID string) 
 // Convenience: list active requests for a specific user
 func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]SchniffRequest, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active
+		SELECT id, user_id, provider, campground_id, checkin, checkout, created_at, active, minimum_nights, strategy
 		FROM schniff_requests WHERE active=true AND user_id=?
 	`, userID)
 	if err != nil {
@@ -439,7 +489,7 @@ func (s *Store) ListUserActiveRequests(ctx context.Context, userID string) ([]Sc
 	var out []SchniffRequest
 	for rows.Next() {
 		var r SchniffRequest
-		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active)
+		err := rows.Scan(&r.ID, &r.UserID, &r.Provider, &r.CampgroundID, &r.Checkin, &r.Checkout, &r.CreatedAt, &r.Active, &r.MinimumNights, &r.Strategy)
 		if err != nil {
 			return nil, err
 		}
@@ -465,10 +515,10 @@ func (s *Store) DeactivateExpiredRequests(ctx context.Context) ([]SchniffRequest
 	// First, fetch and immediately deactivate the requests in a single atomic operation
 	// Use UPDATE ... RETURNING to get the deactivated records atomically
 	rows, err := tx.QueryContext(ctx, `
-		UPDATE schniff_requests 
-		SET active=false 
+		UPDATE schniff_requests
+		SET active=false
 		WHERE active=true AND (checkout < date('now') OR checkin < date('now'))
-		RETURNING id, user_id, provider, campground_id, checkin, checkout, created_at, active
+		RETURNING id, user_id, provider, campground_id, checkin, checkout, created_at, active, minimum_nights, strategy
 	`)
 	if err != nil {
 		return nil, err
@@ -479,7 +529,7 @@ func (s *Store) DeactivateExpiredRequests(ctx context.Context) ([]SchniffRequest
 	for rows.Next() {
 		var req SchniffRequest
 		err := rows.Scan(&req.ID, &req.UserID, &req.Provider, &req.CampgroundID,
-			&req.Checkin, &req.Checkout, &req.CreatedAt, &req.Active)
+			&req.Checkin, &req.Checkout, &req.CreatedAt, &req.Active, &req.MinimumNights, &req.Strategy)
 		if err != nil {
 			return nil, err
 		}

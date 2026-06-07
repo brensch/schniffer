@@ -11,10 +11,10 @@ import (
 )
 
 type SummaryData struct {
-	Stats               DetailedSummaryStats
-	NotificationCounts  []UserCount // users who received hits in last 24h, count desc
-	ActiveCounts        []UserCount // users with active schniffs, count desc
-	TrackedCampgrounds  []string
+	Stats              DetailedSummaryStats
+	NotificationCounts []UserCount // users who received hits in last 24h, count desc
+	ActiveCounts       []UserCount // users with active schniffs, count desc
+	TrackedCampgrounds []string
 
 	// Optional: maps user_id -> display name. When nil/missing the embed
 	// falls back to <@user_id> mentions, which Discord renders as the

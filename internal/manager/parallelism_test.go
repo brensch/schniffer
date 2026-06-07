@@ -47,8 +47,8 @@ func (f *fakeProvider) FetchAllCampgrounds(context.Context) ([]providers.Campgro
 func (f *fakeProvider) FetchCampsites(context.Context, string) ([]providers.CampsiteInfo, error) {
 	return nil, nil
 }
-func (f *fakeProvider) CampsiteURL(string, string) string  { return "" }
-func (f *fakeProvider) CampgroundURL(string) string        { return "" }
+func (f *fakeProvider) CampsiteURL(string, string) string { return "" }
+func (f *fakeProvider) CampgroundURL(string) string       { return "" }
 func (f *fakeProvider) PlanBuckets(d []time.Time) []providers.DateRange {
 	if len(d) == 0 {
 		return nil

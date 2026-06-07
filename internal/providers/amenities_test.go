@@ -8,6 +8,9 @@ import (
 )
 
 func TestExploreAmenities(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live ReserveCalifornia call in -short mode")
+	}
 	// Create ReserveCalifornia provider
 	provider := NewReserveCalifornia()
 

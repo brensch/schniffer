@@ -3,8 +3,9 @@
 // binary is for developer-driven smoke tests inside the docker container.
 //
 // Usage:
-//   REC_GOV_EMAIL=... REC_GOV_PASSWORD=... go run ./cmd/booker \
-//     -campsite 10085607 -campground 10085599 -from 2026-06-25 -nights 1
+//
+//	REC_GOV_EMAIL=... REC_GOV_PASSWORD=... go run ./cmd/booker \
+//	  -campsite 10085607 -campground 10085599 -from 2026-06-25 -nights 1
 package main
 
 import (

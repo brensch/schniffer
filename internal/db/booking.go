@@ -19,18 +19,18 @@ type UserCredential struct {
 }
 
 type Booking struct {
-	ID            int64
-	BatchID       string
-	UserID        string
-	Provider      string
-	CampgroundID  string
-	CampsiteID    string
-	Checkin       time.Time
-	Checkout      time.Time
-	Outcome       string
-	OrderID       *string
-	ErrorMsg      *string
-	AttemptedAt   time.Time
+	ID           int64
+	BatchID      string
+	UserID       string
+	Provider     string
+	CampgroundID string
+	CampsiteID   string
+	Checkin      time.Time
+	Checkout     time.Time
+	Outcome      string
+	OrderID      *string
+	ErrorMsg     *string
+	AttemptedAt  time.Time
 }
 
 const (
