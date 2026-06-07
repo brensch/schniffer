@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,23 +58,15 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 	summary.WriteString("Active Schniffs\n")
 	summary.WriteString(fmt.Sprintf("%d\n", stats.ActiveRequests))
 
-	// Schniffists who got schniffs
-	summary.WriteString("Schniffists who got schniffs\n")
-	if len(notifCounts) == 0 {
-		summary.WriteString("No bueno today.\n")
+	// Schniffists, combined view
+	summary.WriteString("Schniffists\n")
+	rows := mergeSchniffistRows(activeCounts, notifCounts)
+	if len(rows) == 0 {
+		summary.WriteString("No schniffists yet.\n")
 	} else {
-		for _, uc := range notifCounts {
-			summary.WriteString(fmt.Sprintf("<@%s> — %d schniffs\n", uc.UserID, uc.Count))
-		}
-	}
-
-	// Schniffists with active schniffs
-	summary.WriteString("Schniffists with active schniffs\n")
-	if len(activeCounts) == 0 {
-		summary.WriteString("None\n")
-	} else {
-		for _, uc := range activeCounts {
-			summary.WriteString(fmt.Sprintf("<@%s> — %d active\n", uc.UserID, uc.Count))
+		for _, r := range rows {
+			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d fired\n",
+				r.UserID, r.Active, r.Fired))
 		}
 	}
 
@@ -126,28 +119,72 @@ func userLabel(userID string, names map[string]string) string {
 	return fmt.Sprintf("<@%s>", userID)
 }
 
-func formatUserCounts(counts []UserCount, names map[string]string, schniffsLabel string) string {
-	if len(counts) == 0 {
+// mergeSchniffistRows combines active + notification counts per user into
+// one row each, sorted by (fired desc, active desc, userID asc). Users
+// who only appear in one of the two inputs are still included.
+func mergeSchniffistRows(active, fired []UserCount) []schniffistRow {
+	byID := map[string]*schniffistRow{}
+	order := []string{}
+	get := func(id string) *schniffistRow {
+		if r, ok := byID[id]; ok {
+			return r
+		}
+		r := &schniffistRow{UserID: id}
+		byID[id] = r
+		order = append(order, id)
+		return r
+	}
+	for _, uc := range active {
+		get(uc.UserID).Active = uc.Count
+	}
+	for _, uc := range fired {
+		get(uc.UserID).Fired = uc.Count
+	}
+	rows := make([]schniffistRow, 0, len(order))
+	for _, id := range order {
+		rows = append(rows, *byID[id])
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Fired != rows[j].Fired {
+			return rows[i].Fired > rows[j].Fired
+		}
+		if rows[i].Active != rows[j].Active {
+			return rows[i].Active > rows[j].Active
+		}
+		return rows[i].UserID < rows[j].UserID
+	})
+	return rows
+}
+
+type schniffistRow struct {
+	UserID string
+	Active int64
+	Fired  int64
+}
+
+// formatSchniffistRows renders one line per user:
+//
+//	<name> — <active> active / <fired> fired
+func formatSchniffistRows(rows []schniffistRow, names map[string]string) string {
+	if len(rows) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	for i, uc := range counts {
+	for i, r := range rows {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%s — %d %s", userLabel(uc.UserID, names), uc.Count, schniffsLabel)
+		fmt.Fprintf(&b, "%s — %d active / %d fired",
+			userLabel(r.UserID, names), r.Active, r.Fired)
 	}
 	return b.String()
 }
 
 func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
-	notifValue := formatUserCounts(summaryData.NotificationCounts, summaryData.UserNames, "schniffs")
-	if notifValue == "" {
-		notifValue = "*No bueno today.*"
-	}
-	activeValue := formatUserCounts(summaryData.ActiveCounts, summaryData.UserNames, "active")
-	if activeValue == "" {
-		activeValue = "*None*"
+	rows := mergeSchniffistRows(summaryData.ActiveCounts, summaryData.NotificationCounts)
+	schniffists := formatSchniffistRows(rows, summaryData.UserNames)
+	if schniffists == "" {
+		schniffists = "*No schniffists yet.*"
 	}
 
 	embed := &discordgo.MessageEmbed{
@@ -171,13 +208,8 @@ func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
 				Inline: true,
 			},
 			{
-				Name:   "🎉 Schniffists Who Got Schniffs",
-				Value:  notifValue,
-				Inline: false,
-			},
-			{
-				Name:   "👥 Schniffists With Active Schniffs",
-				Value:  activeValue,
+				Name:   "👥 Schniffists",
+				Value:  schniffists,
 				Inline: false,
 			},
 			{

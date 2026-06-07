@@ -122,32 +122,40 @@ func TestGetUserActiveRequestCounts(t *testing.T) {
 	}
 }
 
-func TestMakeSummaryEmbed_RendersNamesAndCounts(t *testing.T) {
+func TestMakeSummaryEmbed_CombinedActiveAndFired(t *testing.T) {
 	data := SummaryData{
-		NotificationCounts: []UserCount{
-			{UserID: "u1", Count: 4},
-			{UserID: "u2", Count: 1},
-		},
 		ActiveCounts: []UserCount{
-			{UserID: "u1", Count: 2},
+			{UserID: "u1", Count: 4}, // hulio has 4 active
+			{UserID: "u3", Count: 1}, // u3 has 1 active, no fires
+		},
+		NotificationCounts: []UserCount{
+			{UserID: "u1", Count: 2}, // hulio got 2 fires
+			{UserID: "u2", Count: 5}, // u2 got fires but no active (e.g. removed mid-window)
 		},
 		UserNames: map[string]string{
 			"u1": "hulio",
-			// u2 intentionally absent — should fall back to <@u2>
+			// u2, u3 intentionally absent — should fall back to <@id>
 		},
 	}
 	embed := MakeSummaryEmbed(data)
 	var got string
 	for _, f := range embed.Fields {
-		if strings.Contains(f.Name, "Got Schniffs") {
+		if f.Name == "👥 Schniffists" {
 			got = f.Value
 		}
 	}
-	if !strings.Contains(got, "hulio — 4 schniffs") {
-		t.Errorf("expected resolved name; got %q", got)
+	if got == "" {
+		t.Fatalf("Schniffists field missing")
 	}
-	if !strings.Contains(got, "<@u2> — 1 schniffs") {
-		t.Errorf("expected mention fallback for u2; got %q", got)
+	// u2 has the most fires → first row.
+	if !strings.HasPrefix(got, "<@u2> — 0 active / 5 fired") {
+		t.Errorf("expected u2 first (most fires); got %q", got)
+	}
+	if !strings.Contains(got, "hulio — 4 active / 2 fired") {
+		t.Errorf("expected hulio row; got %q", got)
+	}
+	if !strings.Contains(got, "<@u3> — 1 active / 0 fired") {
+		t.Errorf("expected u3 row (active-only); got %q", got)
 	}
 }
 
@@ -155,11 +163,11 @@ func TestMakeSummaryEmbed_EmptyStates(t *testing.T) {
 	embed := MakeSummaryEmbed(SummaryData{})
 	var got string
 	for _, f := range embed.Fields {
-		if strings.Contains(f.Name, "Got Schniffs") {
+		if f.Name == "👥 Schniffists" {
 			got = f.Value
 		}
 	}
-	if !strings.Contains(got, "No bueno today") {
+	if !strings.Contains(got, "No schniffists yet") {
 		t.Errorf("want empty placeholder, got %q", got)
 	}
 }
