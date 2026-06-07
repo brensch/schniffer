@@ -126,7 +126,11 @@ func (m *Manager) runExpiryReaper(ctx context.Context) {
 	}
 }
 
-const fastestPoll = 10 * time.Second
+// fastestPoll is the floor for the provider poll cadence. 5s lands well
+// inside the GCP Cloud Run free tier (see docs/auto-booking.md "Polling
+// cost analysis") and roughly halves the latency from rec.gov flipping
+// availability to schniffer noticing.
+const fastestPoll = 5 * time.Second
 const pollIncrement = 10 * time.Second
 
 func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
