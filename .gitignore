@@ -47,3 +47,4 @@ auto.duckdb
 .cache/
 /booker
 .claude/
+proxy/proxy

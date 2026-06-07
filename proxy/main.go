@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -99,7 +100,33 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(batchResp{Responses: resps, Region: region})
+	body := batchResp{Responses: resps, Region: region}
+
+	// Rec.gov availability payloads are JSON-heavy with repeated keys and
+	// long null-runs; gzip routinely compresses them ~50–80x. The home
+	// client (internal/proxypool) uses Go's http.Transport which sets
+	// Accept-Encoding: gzip automatically and transparently decompresses,
+	// so this needs no client-side change.
+	if acceptsGzip(r) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		_ = json.NewEncoder(gz).Encode(body)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func acceptsGzip(r *http.Request) bool {
+	for _, v := range r.Header.Values("Accept-Encoding") {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]), "gzip") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func doOne(ctx context.Context, req fetchReq) fetchResp {
