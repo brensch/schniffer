@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // CredentialLookup returns the email + plaintext password for userID. The
@@ -26,12 +28,14 @@ type PoolConfig struct {
 	LookupCredential CredentialLookup
 	OnDisable        DisableCallback
 	RefreshInterval  time.Duration // 0 = default 25min
+	WatchdogInterval time.Duration // 0 = default 60s; how often we check sessions for liveness
 	Logger           *slog.Logger
 }
 
 // Pool is the always-warm browser pool. One Chrome instance per linked user,
-// booted at startup, never evicted. A background goroutine periodically
-// refreshes each session to keep the JWT alive.
+// booted at startup and self-healing: a dead session (Chrome process gone /
+// chromedp ctx cancelled) is detected and replaced on demand, so a single
+// crash doesn't permanently break auto-booking for that user.
 type Pool struct {
 	cfg PoolConfig
 
@@ -40,14 +44,17 @@ type Pool struct {
 }
 
 type entry struct {
+	mu       sync.Mutex // serializes operations on this session (one Chrome window, one nav at a time)
 	session  *Session
-	mu       sync.Mutex // serializes operations on this session
 	disabled bool
 }
 
 func NewPool(cfg PoolConfig) *Pool {
 	if cfg.RefreshInterval == 0 {
 		cfg.RefreshInterval = 25 * time.Minute
+	}
+	if cfg.WatchdogInterval == 0 {
+		cfg.WatchdogInterval = 60 * time.Second
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -56,14 +63,27 @@ func NewPool(cfg PoolConfig) *Pool {
 }
 
 // StartUser launches Chrome for userID and logs in. Safe to call multiple
-// times — subsequent calls no-op if the session already exists.
+// times — subsequent calls no-op if a healthy session already exists.
 func (p *Pool) StartUser(ctx context.Context, userID string) error {
 	p.mu.RLock()
-	_, ok := p.sessions[userID]
+	e, ok := p.sessions[userID]
 	p.mu.RUnlock()
 	if ok {
-		return nil
+		e.mu.Lock()
+		alive := !e.disabled && sessionAlive(e.session)
+		e.mu.Unlock()
+		if alive {
+			return nil
+		}
 	}
+	return p.launchUser(ctx, userID)
+}
+
+// launchUser unconditionally opens a fresh Chrome + login for userID. If an
+// entry already exists, the old session is closed and replaced. Used both
+// by StartUser (initial warmup) and by the self-healing path inside
+// HoldCampsite / RunWatchdog.
+func (p *Pool) launchUser(ctx context.Context, userID string) error {
 	email, password, err := p.cfg.LookupCredential(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("lookup credential: %w", err)
@@ -85,14 +105,20 @@ func (p *Pool) StartUser(ctx context.Context, userID string) error {
 		}
 		return fmt.Errorf("login: %w", err)
 	}
+
+	// Swap in the new session; close any prior corpse.
 	p.mu.Lock()
+	old, existed := p.sessions[userID]
 	p.sessions[userID] = &entry{session: sess}
 	p.mu.Unlock()
-	p.cfg.Logger.Info("browser warm", "user", userID)
+	if existed && old != nil && old.session != nil {
+		old.session.Close()
+	}
+	p.cfg.Logger.Info("browser warm", "user", userID, "relaunched", existed)
 	return nil
 }
 
-// StartAll boots all provided users in parallel. Errors per-user are logged
+// StartAll boots all provided users in parallel. Per-user errors are logged
 // but do not block other users; returns once every launch attempt completes.
 func (p *Pool) StartAll(ctx context.Context, userIDs []string) {
 	var wg sync.WaitGroup
@@ -132,15 +158,13 @@ func (p *Pool) Close() {
 	p.sessions = map[string]*entry{}
 }
 
-// HoldCampsite performs a booking for userID. Serialized per-user; if
-// concurrent calls arrive for the same user they queue behind one another
-// (one Chrome window, one nav at a time).
+// HoldCampsite performs a booking for userID. Serialized per-user; if the
+// underlying Chrome has died (chromedp ctx cancelled), the session is
+// transparently relaunched and the booking proceeds on the fresh session.
 func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
-	p.mu.RLock()
-	e, ok := p.sessions[userID]
-	p.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("no warm session for user %s", userID)
+	e, err := p.ensureAlive(ctx, userID)
+	if err != nil {
+		return nil, err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -150,6 +174,46 @@ func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundI
 	opCtx, cancel := sessionOperationContext(e.session.Ctx(), ctx)
 	defer cancel()
 	return e.session.HoldCampsite(opCtx, campsiteID, campgroundID, checkIn, checkOut)
+}
+
+// ensureAlive returns a live entry for userID. If the current entry's
+// Chrome has died, it is closed and a fresh session is launched + logged in
+// before returning. Holds no locks across the (slow) launch.
+func (p *Pool) ensureAlive(ctx context.Context, userID string) (*entry, error) {
+	p.mu.RLock()
+	e, ok := p.sessions[userID]
+	p.mu.RUnlock()
+	if ok {
+		e.mu.Lock()
+		alive := !e.disabled && sessionAlive(e.session)
+		e.mu.Unlock()
+		if alive {
+			return e, nil
+		}
+		p.cfg.Logger.Warn("pool session not alive; relaunching", "user", userID)
+	} else {
+		p.cfg.Logger.Warn("pool has no entry for user; launching", "user", userID)
+	}
+	if err := p.launchUser(ctx, userID); err != nil {
+		return nil, err
+	}
+	p.mu.RLock()
+	e = p.sessions[userID]
+	p.mu.RUnlock()
+	if e == nil {
+		return nil, fmt.Errorf("no entry for user %s after launch", userID)
+	}
+	return e, nil
+}
+
+// sessionAlive returns true if the chromedp context for this session is
+// still healthy. We treat a cancelled session ctx as definitive evidence
+// that Chrome is gone; anything else, we trust until proven otherwise.
+func sessionAlive(s *Session) bool {
+	if s == nil {
+		return false
+	}
+	return s.Ctx().Err() == nil
 }
 
 // RunRefreshLoop nav's each session to the homepage every cfg.RefreshInterval
@@ -175,10 +239,9 @@ func (p *Pool) refreshAll(ctx context.Context) {
 	}
 	p.mu.RUnlock()
 	for _, id := range ids {
-		p.mu.RLock()
-		e := p.sessions[id]
-		p.mu.RUnlock()
-		if e == nil {
+		e, err := p.ensureAlive(ctx, id)
+		if err != nil {
+			p.cfg.Logger.Warn("refresh: ensure alive failed", "user", id, "err", err)
 			continue
 		}
 		e.mu.Lock()
@@ -190,6 +253,59 @@ func (p *Pool) refreshAll(ctx context.Context) {
 		cancel()
 		timeoutCancel()
 		e.mu.Unlock()
+	}
+}
+
+// RunWatchdog periodically pings each session to catch dead Chrome
+// processes between bookings, so the next hit doesn't pay the cold-start
+// cost. Blocks until ctx is cancelled.
+func (p *Pool) RunWatchdog(ctx context.Context) {
+	t := time.NewTicker(p.cfg.WatchdogInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			p.watchdogSweep(ctx)
+		}
+	}
+}
+
+func (p *Pool) watchdogSweep(ctx context.Context) {
+	p.mu.RLock()
+	type pair struct {
+		id string
+		e  *entry
+	}
+	pairs := make([]pair, 0, len(p.sessions))
+	for id, e := range p.sessions {
+		pairs = append(pairs, pair{id, e})
+	}
+	p.mu.RUnlock()
+	for _, pa := range pairs {
+		pa.e.mu.Lock()
+		dead := pa.e.disabled || !sessionAlive(pa.e.session)
+		pa.e.mu.Unlock()
+		if !dead {
+			// Also do a quick liveness ping so we catch hung browsers
+			// (chromedp ctx not yet cancelled but Chrome unresponsive).
+			pa.e.mu.Lock()
+			pingCtx, pingCancel := context.WithTimeout(pa.e.session.Ctx(), 3*time.Second)
+			var v bool
+			perr := chromedp.Run(pingCtx, chromedp.Evaluate(`true`, &v))
+			pingCancel()
+			pa.e.mu.Unlock()
+			if perr == nil {
+				continue
+			}
+			p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
+		} else {
+			p.cfg.Logger.Warn("watchdog: session dead; will relaunch", "user", pa.id)
+		}
+		if err := p.launchUser(ctx, pa.id); err != nil {
+			p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
+		}
 	}
 }
 
@@ -216,6 +332,9 @@ func sessionOperationContext(sessionCtx, callerCtx context.Context) (context.Con
 }
 
 // HasUser reports whether the pool currently has a warm session for userID.
+// Returns true even if the session has died — callers should treat this as
+// "the user is linked and we'll try"; the actual aliveness check + relaunch
+// happens inside HoldCampsite.
 func (p *Pool) HasUser(userID string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

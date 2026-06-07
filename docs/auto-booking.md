@@ -425,3 +425,211 @@ A way to ship this incrementally, each phase reviewable on its own:
   for free.
 - **Other providers** (reservecalifornia): same pattern, different captcha
   and endpoint surface. Out of scope until rec.gov is solid.
+
+---
+
+## Operational requirements (production)
+
+The booking pool runs Chrome as a subprocess of the schniffer Go binary
+inside the same container. That has hard environmental requirements that
+**must** be set by whoever runs the container; the code can't compensate
+for them.
+
+### 1. Shared memory (`/dev/shm`)
+
+Chrome's renderer, GPU, and IPC layers use POSIX shared memory for almost
+every page draw. Docker's default `/dev/shm` is **64 MB**, which Chrome
+will exhaust within a few navigations and die with `SIGBUS`, `ENOSPC`, or
+silent process exit. The `Pool` will then return `nav: context canceled`
+for every booking until the container is restarted (or, with the
+self-healing watchdog, until the next relaunch — but that wastes the
+warmed cookie state and may itself fail to allocate).
+
+`docker-compose.yml` sets:
+
+```yaml
+shm_size: 2gb
+```
+
+If you ever run the container outside of compose, pass `--shm-size=2g`
+explicitly. We also pass Chrome `--disable-dev-shm-usage` defensively (it
+makes Chrome use `/tmp` for some allocations), but that only mitigates the
+problem; it doesn't replace a properly sized shm mount.
+
+### 2. Memory limit
+
+`mem_limit: 6g` + `memswap_limit: 6g`. Generous on a 16 GB host. Caps
+runaway pool growth without throttling normal operation. Chrome processes
+plus the Go binary plus Xvfb peak around 1.5 GB for a single warm session;
+ten users would land around 4 GB.
+
+### 3. Persistent profile dir (cookies survive deploys)
+
+`BOOKER_PROFILE_DIR=/app/.cache/recgov-profiles` bind-mounted to a host
+directory. Without the bind, every `docker compose up --build` (which our
+deploy workflow runs on every push to `main`) wipes the
+`r1s-fingerprint` cookie and JWT. A cold profile + immediate booking POST
+is the worst possible signal to rec.gov's risk model and reliably returns
+"abnormal activity detected".
+
+`docker-compose.yml` sets:
+
+```yaml
+volumes:
+  - ${SCHNIFFER_PROFILES:-./profiles}:/app/.cache/recgov-profiles
+```
+
+The deploy workflow (`.github/workflows/deploy-schniffer.yml`) creates
+`/home/brensch/schniffprofiles` on the runner and passes it as
+`SCHNIFFER_PROFILES`.
+
+### 4. Xvfb wrapping
+
+The production `Dockerfile` `CMD` is:
+
+```
+xvfb-run -a -s "-screen 0 1280x900x24" ./schniffer
+```
+
+Anything that overrides `CMD` must preserve the `xvfb-run` wrapper.
+Without it, Chrome starts headless and gets bot-scored to zero by
+reCAPTCHA Enterprise — every booking will fail human-verification with no
+useful error.
+
+### 5. Self-healing pool
+
+The `Pool` runs two background loops:
+
+- `RunRefreshLoop` — every 25 min, navigates each session to the homepage
+  so cookies + JWT don't go stale.
+- `RunWatchdog` — every 60 s, checks `sess.Ctx().Err()` plus a 3 s
+  `chromedp.Evaluate("true")` ping. If a session is dead or hung, it
+  closes it and relaunches Chrome + re-logs in. This means a single
+  Chrome crash does *not* permanently break auto-booking for that user;
+  the next watchdog tick or the next booking attempt will detect and
+  recover.
+
+`Pool.HoldCampsite` also re-checks aliveness inline before each booking
+and relaunches if needed, so a hit between watchdog ticks doesn't pay
+"context canceled" on a dead session.
+
+### 6. Visibility
+
+Chrome's stderr is filtered + routed through `slog` so a crash shows up in
+`docker logs schniffer-bot`. DBus + GPU noise is dropped, FATAL/CHECK
+lines and renderer aborts surface at `ERROR`, generic ERROR lines at
+`WARN`. Look for `component=chrome level=ERROR`.
+
+Booking attempts log `auto-booking attempt` / `auto-booking held` /
+`auto-booking failed` with structured fields (user, campsite,
+checkin/checkout, batch_id) — useful for grepping in conjunction with the
+`bookings` table.
+
+### 7. Disk
+
+`docker compose up --build` rebuilds the image on every deploy. The build
+cache + dangling images grow quickly. Periodically:
+
+```
+docker system prune -af --volumes
+docker builder prune -af
+```
+
+(safe — the persistent volumes are named, not anonymous, so this doesn't
+touch the sqlite db or the profile dir).
+
+### 8. Polling cost analysis (GCP Cloud Run free tier)
+
+Outbound API calls go through `internal/proxypool`, which batches multiple
+upstream requests into one POST per Cloud Run invocation (up to 50 in
+flight, 10ms flush window). At the time of writing the proxy runs in 5
+GCP regions (us-central1, us-west1, us-west2, us-west4, us-south1).
+
+Measured baseline (live prod, 10s poll cadence, ~22 active campgrounds,
+24h window via Cloud Monitoring API):
+
+| Resource | Used (24h) | Projected (30d) | Free tier (30d) | % used |
+|---|---|---|---|---|
+| `request_count` | 7,260 | ~218,000 | 2,000,000 | 11 % |
+| `cpu/allocation_time` (vCPU-s) | 2,791 | ~84,000 | 180,000 | 47 % |
+| `memory/allocation_time` (GB-s) | 634 | ~19,000 | 360,000 | 5 % |
+| Egress (estimated) | ~370 MB | ~11 GB | 1 GB | ~$1.20/mo |
+
+At 5s cadence (2× upstream throughput):
+
+| Resource | Projected (30d) | Free tier (30d) | % used |
+|---|---|---|---|
+| `request_count` | ~436,000 | 2,000,000 | 22 % |
+| `cpu/allocation_time` | ~168,000 | 180,000 | **93 %** ⚠️ |
+| `memory/allocation_time` | ~38,000 | 360,000 | 11 % |
+| Egress | ~22 GB | 1 GB | ~$2.50/mo |
+
+So **5s polling fits inside the free tier on requests/CPU/memory** and
+costs roughly $2–5/month total in egress + spillover. Going below 5s
+starts to push vCPU-seconds over the free tier and risks tripping
+`recreation.gov`'s per-IP throttle (we already see startup 429s when 22
+campgrounds fire in one cycle — adding more pressure won't help). The
+`runProviderLoop` exponential-backoff on 429 caps the effective rate, but
+that means more "rate limited" Discord notifications and longer tail
+latency on hits.
+
+How to re-check the numbers yourself:
+
+```bash
+gcloud config set project schniffer
+TOKEN=$(gcloud auth print-access-token)
+START=$(date -u -d "1 day ago" +%Y-%m-%dT%H:%M:%SZ)
+END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for METRIC in run.googleapis.com/request_count \
+              run.googleapis.com/container/cpu/allocation_time \
+              run.googleapis.com/container/memory/allocation_time; do
+  echo "=== $METRIC ==="
+  curl -sG "https://monitoring.googleapis.com/v3/projects/schniffer/timeSeries" \
+    -H "Authorization: Bearer $TOKEN" \
+    --data-urlencode "filter=metric.type=\"$METRIC\"" \
+    --data-urlencode "interval.startTime=$START" --data-urlencode "interval.endTime=$END" \
+    --data-urlencode 'aggregation.alignmentPeriod=86400s' \
+    --data-urlencode 'aggregation.perSeriesAligner=ALIGN_SUM' \
+    --data-urlencode 'aggregation.crossSeriesReducer=REDUCE_SUM' \
+    | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+total=sum(float(p['value'].get('doubleValue', p['value'].get('int64Value','0')))
+          for ts in d.get('timeSeries',[]) for p in ts.get('points',[]))
+print(f'  24h: {total:,.0f}')"
+done
+```
+
+The local `lookup_log` table is the other source of truth for upstream
+throughput:
+
+```bash
+sqlite3 /home/brensch/schniffdata/schniffer.sqlite "
+  select strftime('%Y-%m-%d %H', checked_at) h, count(*) n
+  from lookup_log
+  where checked_at > datetime('now','-6 hour')
+  group by h order by h;"
+```
+
+The ratio `local_lookups / cloud_run_invocations` tells you how well the
+batching is working; we see ~10× in production, which is the right ball-
+park for 22 simultaneous campgrounds funnelled through a 10ms-flush
+batcher.
+
+### 9. Quick health check
+
+```bash
+# Container running, Chrome process tree alive
+docker exec schniffer-bot pgrep -af chrome | head
+
+# /dev/shm sized correctly
+docker exec schniffer-bot df -h /dev/shm   # expect 2.0G
+
+# Profile dir populated and bind-mounted
+docker inspect schniffer-bot --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+
+# Recent booking outcomes
+sqlite3 /home/brensch/schniffdata/schniffer.sqlite \
+  "select id, user_id, campsite_id, outcome, substr(error_msg,1,80), attempted_at \
+   from bookings order by id desc limit 10;"
+```

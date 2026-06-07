@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -32,6 +34,10 @@ const (
 // rejected (or MFA/captcha intervenes). Callers use this to disable the user's
 // stored credential and notify them.
 var ErrBadCredentials = errors.New("bad credentials")
+
+// ErrHumanVerification is returned when rec.gov rejects the automated v3
+// reCAPTCHA score and requires its visible human-verification challenge.
+var ErrHumanVerification = errors.New("human verification required")
 
 type Config struct {
 	ProfileDir string
@@ -70,7 +76,10 @@ func Open(cfg Config) (*Session, error) {
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.WindowSize(1280, 900),
-		chromedp.CombinedOutput(os.Stderr),
+		// Route Chrome's stderr through slog so crashes show up in
+		// `docker logs` alongside everything else. Plain os.Stderr drowns
+		// in dbus noise.
+		chromedp.CombinedOutput(newChromeStderr(slog.Default().With("component", "chrome"), cfg.ProfileDir)),
 	}
 	chromePath := cfg.ChromePath
 	if chromePath == "" {
@@ -205,25 +214,42 @@ type HoldResult struct {
 }
 
 // HoldCampsite navigates to the campsite page, mints a fresh reCAPTCHA
-// Enterprise token, and POSTs to the multi-reservation endpoint from inside
-// the page (so cookies + CORS just work).
+// Enterprise token in-page, and POSTs to the multi-reservation endpoint.
 func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
+	return s.holdCampsiteWithToken(ctx, campsiteID, campgroundID, checkIn, checkOut, "")
+}
+
+// HoldCampsiteWithToken does the same but uses presetToken (e.g. from
+// 2captcha) instead of calling grecaptcha.enterprise.execute() in-page.
+func (s *Session) HoldCampsiteWithToken(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time, presetToken string) (*HoldResult, error) {
+	if presetToken == "" {
+		return nil, errors.New("presetToken required")
+	}
+	return s.holdCampsiteWithToken(ctx, campsiteID, campgroundID, checkIn, checkOut, presetToken)
+}
+
+func (s *Session) holdCampsiteWithToken(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time, presetToken string) (*HoldResult, error) {
 	const iso = "2006-01-02T00:00:00.000Z"
+	if !checkIn.Before(checkOut) {
+		return nil, errors.New("check-in must be before check-out")
+	}
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(fmt.Sprintf("%s/camping/campsites/%s", SiteOrigin, campsiteID)),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
 		return nil, fmt.Errorf("nav: %w", err)
 	}
-	if err := chromedp.Run(ctx, chromedp.Poll(
-		`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
-		nil, chromedp.WithPollingTimeout(30*time.Second),
-	)); err != nil {
-		return nil, fmt.Errorf("wait recaptcha: %w", err)
+	if presetToken == "" {
+		if err := chromedp.Run(ctx, chromedp.Poll(
+			`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
+			nil, chromedp.WithPollingTimeout(30*time.Second),
+		)); err != nil {
+			return nil, fmt.Errorf("wait recaptcha: %w", err)
+		}
 	}
 	nightMap := map[string]map[string]string{}
-	for d := checkIn; d.Before(checkOut); d = d.AddDate(0, 0, 1) {
-		nightMap[d.UTC().Format(iso)] = map[string]string{
+	for day := checkIn; day.Before(checkOut); day = day.AddDate(0, 0, 1) {
+		nightMap[day.UTC().Format(iso)] = map[string]string{
 			"campsite_id":   campsiteID,
 			"campsite_loop": "",
 			"campsite_name": "",
@@ -237,10 +263,13 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 		"nightMap":     nightMap,
 		"siteKey":      RecaptchaSiteKey,
 		"action":       RecaptchaAction,
+		"presetToken":  presetToken,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	js := `(async (p) => {
-		const token = await grecaptcha.enterprise.execute(p.siteKey, {action: p.action});
+	script := `(async (p) => {
+		const token = p.presetToken && p.presetToken.length > 0
+			? p.presetToken
+			: await grecaptcha.enterprise.execute(p.siteKey, {action: p.action});
 		const recRaw = window.localStorage.getItem('recaccount');
 		if (!recRaw) throw new Error('no recaccount in localStorage');
 		const rec = JSON.parse(recRaw);
@@ -265,7 +294,7 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 				terminal: 'east',
 			},
 		};
-		const resp = await fetch('/api/camps/reservations/campgrounds/' + p.campgroundID + '/multi', {
+		const response = await fetch('/api/camps/reservations/campgrounds/' + p.campgroundID + '/multi', {
 			method: 'POST',
 			headers: {
 				'content-type': 'application/json',
@@ -274,27 +303,50 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
-		const text = await resp.text();
+		const text = await response.text();
 		let parsed;
 		try { parsed = JSON.parse(text); } catch (_) { parsed = {raw: text}; }
-		return {status: resp.status, ...parsed};
+		return {status: response.status, ...parsed};
 	})(` + string(payloadJSON) + `)`
 	var out map[string]any
 	awaitOpt := func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &out, awaitOpt)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(script, &out, awaitOpt)); err != nil {
 		return nil, fmt.Errorf("exec booking: %w", err)
 	}
-	status, _ := out["status"].(float64)
-	if status < 200 || status >= 300 {
-		return &HoldResult{Raw: out}, fmt.Errorf("rec.gov returned status %v", out["status"])
+	result := &HoldResult{OrderID: ExtractOrderID(out), Raw: out}
+	if err := bookingResponseError(out, result.OrderID); err != nil {
+		return result, err
 	}
-	return &HoldResult{OrderID: ExtractOrderID(out), Raw: out}, nil
+	return result, nil
 }
 
-// ExtractOrderID walks the multi-reservation response and returns the first
-// reservation id we can find. The shape varies across rec.gov SPA bundles.
+func bookingResponseError(response map[string]any, orderID string) error {
+	status, _ := response["status"].(float64)
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("rec.gov returned status %v", response["status"])
+	}
+	message, _ := response["error"].(string)
+	if ok, exists := response["ok"].(bool); exists && !ok {
+		if strings.Contains(strings.ToLower(message), "abnormal activity") {
+			return fmt.Errorf("%w: %s", ErrHumanVerification, message)
+		}
+		if message == "" {
+			message = "booking request was rejected"
+		}
+		return errors.New(message)
+	}
+	if message != "" {
+		return errors.New(message)
+	}
+	if orderID == "" {
+		return errors.New("booking response contained no reservation id")
+	}
+	return nil
+}
+
+// ExtractOrderID returns the identifier used by rec.gov's order-details route.
 func ExtractOrderID(m map[string]any) string {
-	for _, k := range []string{"order_id", "id"} {
+	for _, k := range []string{"reservation_id", "order_id", "id"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return v
 		}
@@ -385,5 +437,13 @@ func OrderURL(orderID string) string {
 	return fmt.Sprintf("%s/camping/reservations/orderdetails?id=%s", SiteOrigin, orderID)
 }
 
-// for slog import staying used in some paths
-var _ = slog.Default
+// CampsiteBookingURL opens rec.gov's normal add-to-cart UI with dates filled.
+// This gives users a manual fallback when rec.gov requires visible CAPTCHA.
+func CampsiteBookingURL(campsiteID string, checkIn, checkOut time.Time) string {
+	query := url.Values{
+		"startDate": {checkIn.Format("01/02/2006")},
+		"endDate":   {checkOut.Format("01/02/2006")},
+		"book_now":  {"true"},
+	}
+	return fmt.Sprintf("%s/camping/campsites/%s?%s", SiteOrigin, campsiteID, query.Encode())
+}

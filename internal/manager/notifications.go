@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -228,6 +229,18 @@ func (m *Manager) startBookingAttempt(
 			return
 		}
 
+		m.logger.Info("auto-booking attempt",
+			slog.String("user", req.UserID),
+			slog.String("provider", req.Provider),
+			slog.String("campground", req.CampgroundID),
+			slog.String("campsite", pick.CampsiteID),
+			slog.String("checkin", pick.CheckIn.Format("2006-01-02")),
+			slog.String("checkout", pick.CheckOut.Format("2006-01-02")),
+			slog.Int("nights", pick.Nights),
+			slog.Float64("rating", pick.Rating),
+			slog.String("batch_id", batchID),
+		)
+
 		// Fire-and-forget "attempting" DM right now; nothing in the booking
 		// path waits on it.
 		go func() {
@@ -272,6 +285,24 @@ func (m *Manager) startBookingAttempt(
 		}
 		recCancel()
 
+		if err != nil {
+			m.logger.Warn("auto-booking failed",
+				slog.String("user", req.UserID),
+				slog.String("campsite", pick.CampsiteID),
+				slog.Any("err", err),
+			)
+		} else {
+			oid := ""
+			if res != nil {
+				oid = res.OrderID
+			}
+			m.logger.Info("auto-booking held",
+				slog.String("user", req.UserID),
+				slog.String("campsite", pick.CampsiteID),
+				slog.String("order_id", oid),
+			)
+		}
+
 		result := formatBookingOutcome(pick, res, err)
 		if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
 			m.logger.Warn("send booking result message failed", slog.Any("err", derr))
@@ -281,6 +312,11 @@ func (m *Manager) startBookingAttempt(
 
 func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) string {
 	if err != nil {
+		if errors.Is(err, booker.ErrHumanVerification) {
+			url := booker.CampsiteBookingURL(pick.CampsiteID, pick.CheckIn, pick.CheckOut)
+			return fmt.Sprintf("⚠️ Recreation.gov requires a human verification step for site **%s**. [Open the site and finish manually](%s).",
+				pick.CampsiteID, url)
+		}
 		return fmt.Sprintf("❌ Couldn't hold site **%s**: %s", pick.CampsiteID, err.Error())
 	}
 	url := ""

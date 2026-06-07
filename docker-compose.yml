@@ -2,13 +2,26 @@ services:
   schniffer:
     build: .
     container_name: schniffer-bot
+    # Chrome inside the container needs real shared memory for renderer + GPU
+    # buffers. Default /dev/shm is 64 MB which causes Chrome to die after a
+    # handful of navigations and break the booking pool until restart.
+    shm_size: 2gb
+    # Cap memory so a runaway Chrome pool can't OOM the rest of the host.
+    # Generous on a 16 GB box — far more than the pool needs in practice.
+    mem_limit: 6g
+    memswap_limit: 6g
     env_file:
       - ${SCHNIFFER_ENV:-.env}
     environment:
       - PROD=true
       - DB_PATH=/app/data/schniffer.sqlite
+      - BOOKER_PROFILE_DIR=/app/.cache/recgov-profiles
     volumes:
       - ${SCHNIFFER_DATA:-./data}:/app/data
+      # Persist Chrome user-data-dirs across deploys. The r1s-fingerprint
+      # cookie and warmed JWT survive only if this is a host bind, NOT an
+      # in-image directory (which is wiped on every --build).
+      - ${SCHNIFFER_PROFILES:-./profiles}:/app/.cache/recgov-profiles
     restart: unless-stopped
     ports:
       - "8069:8069"
