@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/bwmarrin/discordgo"
@@ -28,6 +29,16 @@ type Manager struct {
 	summaryChannelID string
 	logger           *slog.Logger
 	dbWriteChan      chan dbWriteRequest
+
+	// Optional auto-booking. Nil when SCHNIFFER_ENC_KEY is unset or pool
+	// isn't wired; notification path falls back to plain DM in that case.
+	pool *booker.Pool
+}
+
+// SetAutoBooking wires the browser pool used during notification dispatch.
+// Call once after NewManager.
+func (m *Manager) SetAutoBooking(pool *booker.Pool) {
+	m.pool = pool
 }
 
 func NewManager(store *db.Store, reg *providers.Registry, notifier *discordgo.Session, summaryChannelID string) *Manager {

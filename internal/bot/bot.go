@@ -3,9 +3,11 @@ package bot
 import (
 	"log/slog"
 
+	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/nonsense"
 	"github.com/brensch/schniffer/internal/providers"
+	"github.com/brensch/schniffer/internal/secrets"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -18,6 +20,17 @@ type Bot struct {
 	registry *providers.Registry
 	logger   *slog.Logger
 	useGuild bool // use guild commands (default) vs global commands (production)
+
+	// Optional auto-booking plumbing; nil-safe so the bot still runs without it.
+	secrets *secrets.Box
+	pool    *booker.Pool
+}
+
+// SetAutoBooking wires the secrets box + browser pool used by /schniff link
+// and /schniff unlink. Call after Bot.New if auto-booking is enabled.
+func (b *Bot) SetAutoBooking(box *secrets.Box, pool *booker.Pool) {
+	b.secrets = box
+	b.pool = pool
 }
 
 func New(store *db.Store, discordSession *discordgo.Session, registry *providers.Registry, guildID string, useGuild bool) (*Bot, error) {
@@ -151,6 +164,8 @@ func (b *Bot) registerCommands() {
 				}},
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
+					{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
+					{Name: "unlink", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove your stored recreation.gov credentials"},
 				// {Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
 			},
 		},
@@ -178,6 +193,9 @@ func (b *Bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	case discordgo.InteractionApplicationCommand:
 		b.handleApplicationCommand(s, i)
+		return
+	case discordgo.InteractionModalSubmit:
+		b.handleModalSubmit(s, i)
 		return
 	default:
 		return
@@ -243,6 +261,10 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleSummaryCommand(s, i, sub)
 	case "nonsense":
 		b.handleNonsenseCommand(s, i, sub)
+	case "link":
+		b.handleLinkCommand(s, i)
+	case "unlink":
+		b.handleUnlinkCommand(s, i)
 	}
 }
 
