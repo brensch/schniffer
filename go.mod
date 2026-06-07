@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	github.com/2captcha/2captcha-go v1.1.10 // indirect
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
 	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect

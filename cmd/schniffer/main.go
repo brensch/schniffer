@@ -88,6 +88,7 @@ func main() {
 	pool := initAutoBooking(ctx, store, discordSession, b, mgr)
 	if pool != nil {
 		go pool.RunRefreshLoop(ctx)
+		go pool.RunWatchdog(ctx)
 		defer pool.Close()
 	}
 
