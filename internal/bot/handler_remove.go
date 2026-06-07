@@ -12,34 +12,42 @@ func (b *Bot) handleRemoveCommand(s *discordgo.Session, i *discordgo.Interaction
 	uid := getUserID(i)
 	opts := optMap(sub.Options)
 	opt, ok := opts["ids"]
-	if ok && opt != nil {
-		id := int64(opt.IntValue())
-		err := b.store.DeactivateRequest(context.Background(), id, uid)
-		if err != nil {
-			respond(s, i, "error: "+err.Error())
-			return
-		}
-		respond(s, i, "removed")
+	if !ok || opt == nil {
+		respond(s, i, "you have to tell me what to remove bro. pick an id, or use /schniff remove-all")
 		return
 	}
+	id := int64(opt.IntValue())
+	if id <= 0 {
+		respond(s, i, "you have to tell me what to remove bro. pick an id, or use /schniff remove-all")
+		return
+	}
+	if err := b.store.DeactivateRequest(context.Background(), id, uid); err != nil {
+		respond(s, i, "error: "+err.Error())
+		return
+	}
+	respond(s, i, "removed")
+}
 
-	// No ID provided, remove all schniffs
-	reqs, err := b.store.ListActiveRequests(context.Background())
+func (b *Bot) handleRemoveAllCommand(s *discordgo.Session, i *discordgo.InteractionCreate, _ *discordgo.ApplicationCommandInteractionDataOption) {
+	uid := getUserID(i)
+	reqs, err := b.store.ListUserActiveRequests(context.Background(), uid)
 	if err != nil {
 		b.logger.Warn("list active reqs failed", "err", err)
 		respond(s, i, "failed to get schniffs to remove")
 		return
 	}
-
+	if len(reqs) == 0 {
+		respond(s, i, "you have no active schniffs")
+		return
+	}
 	for _, r := range reqs {
-		err = b.store.DeactivateRequest(context.Background(), r.ID, r.UserID)
-		if err != nil {
+		if err := b.store.DeactivateRequest(context.Background(), r.ID, uid); err != nil {
 			respond(s, i, "error: "+err.Error())
 			return
 		}
-		slog.Info("Removed schniff for user", "id", r.ID, "user_id", r.UserID)
+		slog.Info("Removed schniff for user", "id", r.ID, "user_id", uid)
 	}
-	respond(s, i, "removed all schniffs")
+	respond(s, i, "removed all your schniffs")
 }
 
 // autocompleteRemoveIDs suggests the caller's active schniffs as choices.
