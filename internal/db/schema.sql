@@ -224,3 +224,36 @@ CREATE TABLE IF NOT EXISTS adhoc_scrape_requests (
 CREATE INDEX IF NOT EXISTS idx_adhoc_requests_lookup ON adhoc_scrape_requests(provider, campground_id, requested_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adhoc_requests_status ON adhoc_scrape_requests(status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_adhoc_requests_recent ON adhoc_scrape_requests(provider, campground_id, requested_at DESC) WHERE status IN ('pending', 'completed');
+
+-- Per-user encrypted rec.gov credentials for auto-booking.
+-- password_ct is AES-256-GCM ciphertext (nonce || ct+tag) keyed by SCHNIFFER_ENC_KEY.
+CREATE TABLE IF NOT EXISTS user_credentials (
+    user_id      TEXT PRIMARY KEY,        -- Discord user id
+    provider     TEXT NOT NULL DEFAULT 'recreation_gov',
+    email        TEXT NOT NULL,
+    password_ct  BLOB NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    disabled_at  DATETIME,                -- non-null = creds known bad
+    disabled_reason TEXT
+);
+
+-- Recorded auto-booking attempts. One row per attempt; outcome = held|failed|skipped.
+CREATE TABLE IF NOT EXISTS bookings (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id       TEXT NOT NULL,         -- matches notifications.batch_id
+    user_id        TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    campground_id  TEXT NOT NULL,
+    campsite_id    TEXT NOT NULL,
+    checkin        DATE NOT NULL,
+    checkout       DATE NOT NULL,
+    outcome        TEXT NOT NULL,         -- held|failed|skipped
+    order_id       TEXT,                  -- rec.gov reservation_id when held
+    error_msg      TEXT,
+    attempted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookings_batch ON bookings(batch_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id, attempted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bookings_campground ON bookings(provider, campground_id, attempted_at DESC);

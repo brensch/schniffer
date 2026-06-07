@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/bot"
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/providers"
+	"github.com/brensch/schniffer/internal/secrets"
 	"github.com/brensch/schniffer/internal/web"
 	"github.com/bwmarrin/discordgo"
 )
@@ -77,6 +81,16 @@ func main() {
 	defer discordSession.Close()
 
 	mgr := manager.NewManager(store, provRegistry, discordSession, broadcastChannel)
+
+	// Optional auto-booking: only enabled when SCHNIFFER_ENC_KEY is set.
+	// Without it we can't decrypt stored passwords, so the pool stays nil and
+	// notifications fall back to plain DMs.
+	pool := initAutoBooking(ctx, store, discordSession, b, mgr)
+	if pool != nil {
+		go pool.RunRefreshLoop(ctx)
+		defer pool.Close()
+	}
+
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
 
@@ -99,4 +113,97 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("night night")
+}
+
+// initAutoBooking wires up the secrets box, browser pool, and bot/manager
+// integrations. Returns nil if SCHNIFFER_ENC_KEY is unset — the bot still
+// runs, just without auto-booking.
+func initAutoBooking(
+	ctx context.Context,
+	store *db.Store,
+	session *discordgo.Session,
+	b *bot.Bot,
+	mgr *manager.Manager,
+) *booker.Pool {
+	if os.Getenv(secrets.EnvKey) == "" {
+		slog.Info("auto-booking disabled (no SCHNIFFER_ENC_KEY)")
+		return nil
+	}
+	key, err := secrets.LoadKeyFromEnv()
+	if err != nil {
+		slog.Error("load enc key failed", slog.Any("err", err))
+		return nil
+	}
+	box, err := secrets.New(key)
+	if err != nil {
+		slog.Error("init secrets box failed", slog.Any("err", err))
+		return nil
+	}
+
+	baseProfile := os.Getenv("BOOKER_PROFILE_DIR")
+	if baseProfile == "" {
+		baseProfile = filepath.Join(".cache", "recgov-profiles")
+	}
+	if err := os.MkdirAll(baseProfile, 0o700); err != nil {
+		slog.Error("mkdir profiles base failed", slog.Any("err", err))
+		return nil
+	}
+
+	lookup := func(ctx context.Context, userID string) (string, string, error) {
+		cred, err := store.GetUserCredential(ctx, userID)
+		if err != nil {
+			return "", "", err
+		}
+		if cred == nil || cred.DisabledAt != nil {
+			return "", "", nil
+		}
+		pw, err := box.Open(cred.PasswordCT)
+		if err != nil {
+			return "", "", fmt.Errorf("decrypt: %w", err)
+		}
+		return cred.Email, string(pw), nil
+	}
+
+	onDisable := func(ctx context.Context, userID, reason string) {
+		if err := store.DisableUserCredential(ctx, userID, reason); err != nil {
+			slog.Warn("disable credential failed", slog.String("user", userID), slog.Any("err", err))
+		}
+		ch, err := session.UserChannelCreate(userID)
+		if err != nil {
+			slog.Warn("dm channel create failed", slog.String("user", userID), slog.Any("err", err))
+			return
+		}
+		msg := "⚠️ Your saved recreation.gov credentials no longer work (" + reason + "). " +
+			"Auto-booking is paused for you. Run `/schniff link` to fix it."
+		if _, err := session.ChannelMessageSend(ch.ID, msg); err != nil {
+			slog.Warn("dm send failed", slog.String("user", userID), slog.Any("err", err))
+		}
+	}
+
+	pool := booker.NewPool(booker.PoolConfig{
+		BaseProfileDir:   baseProfile,
+		LookupCredential: lookup,
+		OnDisable:        onDisable,
+		Logger:           slog.Default(),
+	})
+
+	b.SetAutoBooking(box, pool)
+	mgr.SetAutoBooking(pool)
+
+	// Warm every linked user's Chrome in the background; do not block startup.
+	go func() {
+		creds, err := store.ListActiveUserCredentials(ctx)
+		if err != nil {
+			slog.Warn("list credentials failed", slog.Any("err", err))
+			return
+		}
+		ids := make([]string, 0, len(creds))
+		for _, c := range creds {
+			ids = append(ids, c.UserID)
+		}
+		slog.Info("warming browser pool", slog.Int("users", len(ids)))
+		pool.StartAll(ctx, ids)
+		slog.Info("browser pool warm", slog.Int("users", len(ids)))
+	}()
+	return pool
 }

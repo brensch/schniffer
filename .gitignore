@@ -43,3 +43,7 @@ auto.duckdb
 *.sqlite-wal
 *.sqlite-shm
 *.bak
+
+.cache/
+/booker
+.claude/

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/nonsense"
 	"github.com/brensch/schniffer/internal/providers"
@@ -71,7 +72,7 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 			defer nwg.Done()
 			defer func() { <-sem }()
 
-			sent, sendErr := m.sendStateChangeNotification(ctx, req, changes)
+			sent, sendErr := m.sendStateChangeNotification(ctx, req, changes, batchID)
 			if sendErr != nil {
 				m.logger.Warn("send state change notification failed",
 					slog.String("userID", req.UserID),
@@ -126,6 +127,7 @@ func (m *Manager) sendStateChangeNotification(
 	ctx context.Context,
 	req db.SchniffRequest,
 	changes []db.StateChangeForRequest,
+	batchID string,
 ) (sent bool, err error) {
 	// Decide based on the provided changes (avoid any redundant lookups).
 	newlyAvail, _ := separateChanges(changes)
@@ -143,46 +145,43 @@ func (m *Manager) sendStateChangeNotification(
 		return false, err
 	}
 
+	// HOT PATH: if the user has a warm browser session, kick off the booking
+	// attempt NOW in parallel with embed building. The goroutine posts its
+	// own "attempting" DM and result DM directly to channel.ID — we do not
+	// block the hit notification on it, and we do not block the booking on
+	// the hit notification.
+	if m.pool != nil && m.pool.HasUser(req.UserID) {
+		m.startBookingAttempt(ctx, req, newlyAvail, batchID, channel.ID)
+	}
+
 	// Build the current availability context for the requested date range.
-	// This gives users a "what can I book right now" snapshot, not just the changed dates.
 	allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
 	if qerr != nil {
 		m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
-		// We can still continue with only the change lists, but the experience is better with context.
 	}
 
-	// Group by campsite; collect IDs to enrich details
 	byCampsite := groupAvailabilityByCampsite(allAvailable)
 	campsiteIDs := collectMapKeys(byCampsite)
-
-	// Try to fetch enhanced details in batch; if it fails, fall back to empty map
 	detailsMap, derr := m.store.GetCampsiteDetailsBatch(ctx, req.Provider, req.CampgroundID, campsiteIDs)
 	if derr != nil {
 		m.logger.Warn("GetCampsiteDetailsBatch failed; using basic details", slog.Any("err", derr))
-		detailsMap = map[string]db.CampsiteDetails{} // empty — pure helpers will handle defaults
+		detailsMap = map[string]db.CampsiteDetails{}
 	}
-
-	// Build stats (pure).
 	stats := buildCampsiteStats(byCampsite, req.Checkin, req.Checkout, detailsMap)
 
-	// Get campground presentation info
 	campground, _, gerr := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
 	if gerr != nil {
 		m.logger.Warn("GetCampgroundByID failed; proceeding with minimal info", slog.Any("err", gerr))
 	}
 	campgroundURL := m.CampgroundURL(req.Provider, req.CampgroundID)
-
-	// missing the provider is irrelevant, checked in
 	provider, _ := m.reg.Get(req.Provider)
 
-	// Build a single embed showing only the top 3 campsites with up to 20 dates each.
 	embeds := BuildNotificationEmbeds(
 		req.Checkin, req.Checkout, req.UserID,
 		campground.Name, campgroundURL, campground.ID,
 		stats,
 		provider,
 	)
-
 	actuallySent := false
 	for _, e := range embeds {
 		if e == nil {
@@ -190,13 +189,164 @@ func (m *Manager) sendStateChangeNotification(
 		}
 		if _, sendErr := m.notifier.ChannelMessageSendEmbed(channel.ID, e); sendErr != nil {
 			m.logger.Error("failed to send notification embed", slog.Any("err", sendErr), slog.String("userID", req.UserID))
-			err = sendErr // track the last error
+			err = sendErr
+			continue
+		}
+		actuallySent = true
+	}
+	return actuallySent, err
+}
+
+// startBookingAttempt runs the selection + HoldCampsite call in a goroutine.
+// It sends two DMs directly to channelID: an "attempting to hold X" message
+// as soon as we have a pick, and a result message when the hold finishes.
+// The caller does not block on Discord, and the booking does not block on
+// Discord.
+func (m *Manager) startBookingAttempt(
+	ctx context.Context,
+	req db.SchniffRequest,
+	newlyAvail []db.AvailabilityItem,
+	batchID string,
+	channelID string,
+) {
+	go func() {
+		// Defensive clip in case state changes overlap multiple windows.
+		clipped := clipToWindow(newlyAvail, req.Checkin, req.Checkout)
+		if len(clipped) == 0 {
+			return
+		}
+
+		// Pull rating per campsite for the selection tiebreak; best-effort.
+		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
+		ids := uniqueCampsiteIDs(clipped)
+		details, _ := m.store.GetCampsiteDetailsBatch(dctx, req.Provider, req.CampgroundID, ids)
+		dcancel()
+		candidates := buildCandidates(clipped, details)
+
+		pick, ok := booker.SelectBestPartial(candidates)
+		if !ok {
+			return
+		}
+
+		// Fire-and-forget "attempting" DM right now; nothing in the booking
+		// path waits on it.
+		go func() {
+			msg := fmt.Sprintf("🛒 I'm attempting to hold site **%s** for you right now (%s → %s, %d night%s). I'll let you know how I go.",
+				pick.CampsiteID,
+				pick.CheckIn.Format("Mon Jan 2"),
+				pick.CheckOut.Format("Mon Jan 2"),
+				pick.Nights, pluralS(pick.Nights),
+			)
+			if _, err := m.notifier.ChannelMessageSend(channelID, msg); err != nil {
+				m.logger.Warn("send attempting message failed", slog.Any("err", err))
+			}
+		}()
+
+		bctx, bcancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer bcancel()
+		res, err := m.pool.HoldCampsite(bctx, req.UserID, pick.CampsiteID, req.CampgroundID, pick.CheckIn, pick.CheckOut)
+
+		booking := db.Booking{
+			BatchID:      batchID,
+			UserID:       req.UserID,
+			Provider:     req.Provider,
+			CampgroundID: req.CampgroundID,
+			CampsiteID:   pick.CampsiteID,
+			Checkin:      pick.CheckIn,
+			Checkout:     pick.CheckOut,
+		}
+		if err != nil {
+			emsg := err.Error()
+			booking.Outcome = db.BookingOutcomeFailed
+			booking.ErrorMsg = &emsg
 		} else {
-			actuallySent = true
+			booking.Outcome = db.BookingOutcomeHeld
+			if res != nil && res.OrderID != "" {
+				oid := res.OrderID
+				booking.OrderID = &oid
+			}
+		}
+		recCtx, recCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if _, rerr := m.store.InsertBooking(recCtx, booking); rerr != nil {
+			m.logger.Warn("insert booking row failed", slog.Any("err", rerr))
+		}
+		recCancel()
+
+		result := formatBookingOutcome(pick, res, err)
+		if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
+			m.logger.Warn("send booking result message failed", slog.Any("err", derr))
+		}
+	}()
+}
+
+func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) string {
+	if err != nil {
+		return fmt.Sprintf("❌ Couldn't hold site **%s**: %s", pick.CampsiteID, err.Error())
+	}
+	url := ""
+	if res != nil && res.OrderID != "" {
+		url = booker.OrderURL(res.OrderID)
+	}
+	line := fmt.Sprintf("✅ Held site **%s** for you (%s → %s, %d night%s).",
+		pick.CampsiteID,
+		pick.CheckIn.Format("Mon Jan 2"),
+		pick.CheckOut.Format("Mon Jan 2"),
+		pick.Nights, pluralS(pick.Nights),
+	)
+	if url != "" {
+		line += " [Finish checkout](" + url + ")"
+	}
+	return line
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// clipToWindow drops items outside [checkin, checkout).
+func clipToWindow(items []db.AvailabilityItem, checkin, checkout time.Time) []db.AvailabilityItem {
+	in := normalizeDay(checkin)
+	out := normalizeDay(checkout)
+	keep := items[:0:0]
+	for _, it := range items {
+		d := normalizeDay(it.Date)
+		if (d.Equal(in) || d.After(in)) && d.Before(out) {
+			keep = append(keep, it)
 		}
 	}
+	return keep
+}
 
-	return actuallySent, err
+func uniqueCampsiteIDs(items []db.AvailabilityItem) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, it := range items {
+		if seen[it.CampsiteID] {
+			continue
+		}
+		seen[it.CampsiteID] = true
+		out = append(out, it.CampsiteID)
+	}
+	return out
+}
+
+func buildCandidates(items []db.AvailabilityItem, details map[string]db.CampsiteDetails) []booker.Candidate {
+	byID := map[string][]time.Time{}
+	for _, it := range items {
+		byID[it.CampsiteID] = append(byID[it.CampsiteID], it.Date)
+	}
+	out := make([]booker.Candidate, 0, len(byID))
+	for id, dates := range byID {
+		out = append(out, booker.Candidate{
+			CampsiteID: id,
+			Dates:      dates,
+			Rating:     details[id].Rating,
+		})
+	}
+	return out
 }
 
 // ------- Data structures used by pure functions -------

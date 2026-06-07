@@ -1,0 +1,36 @@
+# Booker dev/runtime image. Same base for local iteration and production.
+# Real google-chrome-stable (not headless-shell — reCAPTCHA Enterprise
+# fingerprints headless-shell and scores it as a bot) + Xvfb so Chrome runs
+# headful on a virtual display. Go is in the image so we can `go run` inside
+# during dev; for production we'd `go build` once and ship just the binary.
+FROM golang:1.26-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget gnupg ca-certificates fonts-liberation xdg-utils \
+        xvfb xauth \
+        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+        libpango-1.0-0 libcairo2 libasound2 \
+        procps tini \
+    && wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Persistent chrome profile so cookies + the r1s-fingerprint anti-bot cookie
+# survive container restarts. Bind-mount this from the host in dev.
+ENV CHROME_PROFILE=/profile
+RUN mkdir -p $CHROME_PROFILE
+
+# Default virtual display for Xvfb. xvfb-run picks any free :NN but we set a
+# default for tools that read $DISPLAY directly.
+ENV DISPLAY=:99
+
+WORKDIR /work
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]
