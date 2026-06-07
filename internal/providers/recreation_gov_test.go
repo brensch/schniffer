@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,8 +22,12 @@ func newRecreationGovForTest(t *testing.T, srv *httptest.Server) *RecreationGov 
 }
 
 func TestRecreationGov_FetchAvailability_URLQueryEncoded(t *testing.T) {
-	// Arrange a fake API that captures the raw query string.
-	var captured []string
+	// Arrange a fake API that captures the raw query string. The provider
+	// fans out month buckets concurrently, so guard the slice.
+	var (
+		mu       sync.Mutex
+		captured []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/camps/availability/campground/") {
 			http.NotFound(w, r)
@@ -32,7 +37,9 @@ func TestRecreationGov_FetchAvailability_URLQueryEncoded(t *testing.T) {
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
 		}
+		mu.Lock()
 		captured = append(captured, r.URL.RawQuery)
+		mu.Unlock()
 		// Minimal valid body
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"campsites": map[string]any{}})
@@ -49,22 +56,25 @@ func TestRecreationGov_FetchAvailability_URLQueryEncoded(t *testing.T) {
 		t.Fatalf("FetchAvailability returned error: %v", err)
 	}
 
-	if len(captured) == 0 {
+	mu.Lock()
+	got := append([]string(nil), captured...)
+	mu.Unlock()
+	if len(got) == 0 {
 		t.Fatalf("server did not receive any requests")
 	}
 	// Verify each query contains properly encoded start_date; plus and colon should be percent-encoded.
-	for _, raw := range captured {
+	for _, raw := range got {
 		q, _ := url.ParseQuery(raw)
-		got := q.Get("start_date")
-		if got == "" {
+		sd := q.Get("start_date")
+		if sd == "" {
 			t.Fatalf("start_date missing from query: %q", raw)
 		}
 		if strings.ContainsAny(raw, "+ :") {
 			t.Fatalf("query appears not encoded: %q", raw)
 		}
 		// Check format ends with Z and has milliseconds
-		if !strings.HasSuffix(got, "Z") || len(got) < len("2006-01-02T15:04:05.000Z") {
-			t.Fatalf("unexpected start_date format: %q", got)
+		if !strings.HasSuffix(sd, "Z") || len(sd) < len("2006-01-02T15:04:05.000Z") {
+			t.Fatalf("unexpected start_date format: %q", sd)
 		}
 	}
 }
