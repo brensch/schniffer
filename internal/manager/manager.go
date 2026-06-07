@@ -403,30 +403,108 @@ func collectDatesByPC(reqs []db.SchniffRequest) (map[pc]map[time.Time]struct{}, 
 	return datesBy, reqsBy
 }
 
-// Daily summary routine - runs at 10 PM San Francisco time every night
+// dailySummarySchedule defines when the nightly roundup fires. 21:00
+// America/Los_Angeles means 9pm Pacific, automatically tracking PST/PDT.
+// Timezone data is provided by `_ "time/tzdata"` imported in main, so this
+// works in any base image including debian:bookworm-slim.
+const dailySummarySchedule = "0 21 * * *"
+const dailySummaryTimezone = "America/Los_Angeles"
+
+// RunDailySummary schedules the nightly Discord roundup. Returns
+// immediately; the scheduler keeps running until ctx is cancelled.
 func (m *Manager) RunDailySummary(ctx context.Context) {
-	// Load San Francisco timezone
-	sfLocation, err := time.LoadLocation("America/Los_Angeles")
+	loc, err := time.LoadLocation(dailySummaryTimezone)
 	if err != nil {
-		m.logger.Error("failed to load San Francisco timezone", slog.Any("err", err))
+		// With _ "time/tzdata" embedded this should never happen, but if
+		// it does we degrade gracefully to UTC rather than silently
+		// disabling the summary entirely.
+		m.logger.Error("failed to load timezone for daily summary; falling back to UTC",
+			slog.String("timezone", dailySummaryTimezone),
+			slog.Any("err", err))
+		loc = time.UTC
+	}
+	c := cron.New(cron.WithLocation(loc))
+	if _, err := c.AddFunc(dailySummarySchedule, func() {
+		m.fireDailySummary(ctx)
+	}); err != nil {
+		m.logger.Error("failed to register daily summary cron",
+			slog.String("schedule", dailySummarySchedule),
+			slog.Any("err", err))
 		return
 	}
+	c.Start()
+	now := time.Now().In(loc)
+	next := c.Entries()[0].Next
+	m.logger.Info("daily summary scheduled",
+		slog.String("schedule", dailySummarySchedule),
+		slog.String("timezone", loc.String()),
+		slog.String("now", now.Format(time.RFC3339)),
+		slog.String("next_fire", next.Format(time.RFC3339)),
+		slog.Duration("until_next", next.Sub(now)),
+	)
+	<-ctx.Done()
+	stopCtx := c.Stop()
+	<-stopCtx.Done()
+}
 
-	// use go cron library to fire at 10pm every day.
-	cron := cron.New(cron.WithLocation(sfLocation))
-	cron.AddFunc("0 22 * * *", func() {
-		summary, err := m.store.GetSummaryData(ctx)
+// fireDailySummary builds and sends one roundup. Surfaced as its own
+// method so the failure modes log at WARN/ERROR — silent cron jobs are
+// the worst kind.
+func (m *Manager) fireDailySummary(ctx context.Context) {
+	channelID := m.GetSummaryChannel()
+	if channelID == "" {
+		m.logger.Error("daily summary skipped: no summary channel configured")
+		return
+	}
+	summary, err := m.store.GetSummaryData(ctx)
+	if err != nil {
+		m.logger.Error("daily summary: get data failed", slog.Any("err", err))
+		return
+	}
+	summary.UserNames = m.resolveUserNames(summary)
+	embed := db.MakeSummaryEmbed(summary)
+	m.logger.Info("daily summary firing",
+		slog.Int64("notifications_24h", summary.Stats.Notifications24h),
+		slog.Int64("lookups_24h", summary.Stats.Lookups24h),
+		slog.Int64("active_requests", summary.Stats.ActiveRequests),
+		slog.Int("notification_users", len(summary.NotificationCounts)),
+		slog.Int("active_users", len(summary.ActiveCounts)),
+	)
+	if _, err := m.notifier.ChannelMessageSendEmbed(channelID, embed); err != nil {
+		m.logger.Error("daily summary: send failed", slog.Any("err", err))
+	}
+}
+
+// resolveUserNames asks Discord for the display name of each user that
+// appears in the summary. Falls back to an empty map; MakeSummaryEmbed
+// then renders <@id> mentions which Discord resolves client-side.
+func (m *Manager) resolveUserNames(s db.SummaryData) map[string]string {
+	ids := make(map[string]struct{})
+	for _, uc := range s.NotificationCounts {
+		ids[uc.UserID] = struct{}{}
+	}
+	for _, uc := range s.ActiveCounts {
+		ids[uc.UserID] = struct{}{}
+	}
+	if len(ids) == 0 || m.notifier == nil {
+		return nil
+	}
+	names := make(map[string]string, len(ids))
+	for id := range ids {
+		u, err := m.notifier.User(id)
 		if err != nil {
-			m.logger.Error("failed to get summary data", slog.Any("err", err))
-			return
+			m.logger.Debug("daily summary: user lookup failed (will fall back to mention)",
+				slog.String("user_id", id), slog.Any("err", err))
+			continue
 		}
-
-		embed := db.MakeSummaryEmbed(summary)
-
-		m.logger.Info("daily summary generated", slog.Any("summary", summary))
-		m.notifier.ChannelMessageSendEmbed(m.GetSummaryChannel(), embed)
-	})
-	cron.Start()
+		if u == nil {
+			continue
+		}
+		if u.Username != "" {
+			names[id] = u.Username
+		}
+	}
+	return names
 }
 
 // CampsiteURL exposes provider-specific campsite URLs for the bot to build embeds.
