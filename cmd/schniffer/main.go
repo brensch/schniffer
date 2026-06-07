@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 	"syscall"
 
+	// Embed the full IANA timezone database into the binary so
+	// time.LoadLocation works regardless of whether /usr/share/zoneinfo
+	// exists in the container. Costs ~450 KB at build time.
+	_ "time/tzdata"
+
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/bot"
 	"github.com/brensch/schniffer/internal/db"

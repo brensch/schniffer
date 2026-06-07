@@ -1433,8 +1433,8 @@ func (s *Store) GetDetailedSummaryStats(ctx context.Context) (DetailedSummarySta
 // GetUsersWithNotifications returns users who got notifications in last 24h
 func (s *Store) GetUsersWithNotifications(ctx context.Context) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT DISTINCT user_id 
-		FROM notifications 
+		SELECT DISTINCT user_id
+		FROM notifications
 		WHERE sent_at >= datetime('now', '-1 day')
 		ORDER BY user_id
 	`)
@@ -1453,6 +1453,65 @@ func (s *Store) GetUsersWithNotifications(ctx context.Context) ([]string, error)
 		users = append(users, userID)
 	}
 	return users, rows.Err()
+}
+
+// UserCount pairs a Discord user id with a count (notifications received,
+// active schniffs, etc).
+type UserCount struct {
+	UserID string
+	Count  int64
+}
+
+// GetUserNotificationCounts returns the number of distinct available-state
+// notifications each user received in the last 24h, ordered by count desc.
+// One row per state-change × campsite × date, matching the "schniffs found"
+// counter on the summary embed.
+func (s *Store) GetUserNotificationCounts(ctx context.Context) ([]UserCount, error) {
+	rows, err := s.ReadConnection().QueryContext(ctx, `
+		SELECT user_id, count(*) AS n
+		FROM notifications
+		WHERE sent_at >= datetime('now', '-1 day') AND state = 'available'
+		GROUP BY user_id
+		ORDER BY n DESC, user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserCount
+	for rows.Next() {
+		var u UserCount
+		if err := rows.Scan(&u.UserID, &u.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// GetUserActiveRequestCounts returns the number of active schniffs per
+// user, ordered by count desc.
+func (s *Store) GetUserActiveRequestCounts(ctx context.Context) ([]UserCount, error) {
+	rows, err := s.ReadConnection().QueryContext(ctx, `
+		SELECT user_id, count(*) AS n
+		FROM schniff_requests
+		WHERE active = true
+		GROUP BY user_id
+		ORDER BY n DESC, user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserCount
+	for rows.Next() {
+		var u UserCount
+		if err := rows.Scan(&u.UserID, &u.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // GetUsersWithActiveRequests returns users who have active schniffs

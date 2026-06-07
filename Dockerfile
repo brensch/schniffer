@@ -19,7 +19,7 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates wget gnupg fonts-liberation xdg-utils \
+        ca-certificates tzdata wget gnupg fonts-liberation xdg-utils \
         xvfb xauth tini procps \
         libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
         libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \

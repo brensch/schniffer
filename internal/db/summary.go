@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,10 +11,15 @@ import (
 )
 
 type SummaryData struct {
-	Stats                 DetailedSummaryStats
-	NotificationUsernames []string
-	ActiveUsernames       []string
-	TrackedCampgrounds    []string
+	Stats               DetailedSummaryStats
+	NotificationCounts  []UserCount // users who received hits in last 24h, count desc
+	ActiveCounts        []UserCount // users with active schniffs, count desc
+	TrackedCampgrounds  []string
+
+	// Optional: maps user_id -> display name. When nil/missing the embed
+	// falls back to <@user_id> mentions, which Discord renders as the
+	// display name client-side.
+	UserNames map[string]string
 }
 
 // GetDetailedSummary returns a formatted summary string with comprehensive statistics
@@ -24,16 +30,16 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to get stats: %w", err)
 	}
 
-	// Get users with notifications
-	usersWithNotifications, err := s.GetUsersWithNotifications(ctx)
+	// Get users with notifications + counts
+	notifCounts, err := s.GetUserNotificationCounts(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to get users with notifications: %w", err)
+		return "", fmt.Errorf("failed to get notification counts: %w", err)
 	}
 
-	// Get users with active requests
-	usersWithActiveRequests, err := s.GetUsersWithActiveRequests(ctx)
+	// Get users with active requests + counts
+	activeCounts, err := s.GetUserActiveRequestCounts(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to get users with active requests: %w", err)
+		return "", fmt.Errorf("failed to get active request counts: %w", err)
 	}
 
 	// Get tracked campgrounds
@@ -52,23 +58,15 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 	summary.WriteString("Active Schniffs\n")
 	summary.WriteString(fmt.Sprintf("%d\n", stats.ActiveRequests))
 
-	// Schniffists who got schniffs
-	summary.WriteString("Schniffists who got schniffs\n")
-	if len(usersWithNotifications) == 0 {
-		summary.WriteString("No bueno today.\n")
+	// Schniffists, combined view
+	summary.WriteString("Schniffists\n")
+	rows := mergeSchniffistRows(activeCounts, notifCounts)
+	if len(rows) == 0 {
+		summary.WriteString("No schniffists yet.\n")
 	} else {
-		for _, username := range usersWithNotifications {
-			summary.WriteString(fmt.Sprintf("<@%s> ", username))
-		}
-	}
-
-	// Schniffists with active schniffs
-	summary.WriteString("Schniffists with active schniffs\n")
-	if len(usersWithActiveRequests) == 0 {
-		summary.WriteString("None\n")
-	} else {
-		for _, username := range usersWithActiveRequests {
-			summary.WriteString(fmt.Sprintf("<@%s> ", username))
+		for _, r := range rows {
+			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d fired\n",
+				r.UserID, r.Active, r.Fired))
 		}
 	}
 
@@ -83,46 +81,115 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 	return summary.String(), nil
 }
 
-// GetSummaryData returns structured summary data for creating embeds
+// GetSummaryData returns structured summary data for creating embeds.
+// UserNames is left empty; callers that want display names instead of
+// mention rendering should populate it from Discord before passing to
+// MakeSummaryEmbed.
 func (s *Store) GetSummaryData(ctx context.Context) (SummaryData, error) {
-	// Get detailed stats
 	stats, err := s.GetDetailedSummaryStats(ctx)
 	if err != nil {
 		return SummaryData{}, fmt.Errorf("failed to get stats: %w", err)
 	}
-
-	// Get users with notifications
-	usersWithNotifications, err := s.GetUsersWithNotifications(ctx)
+	notifyCounts, err := s.GetUserNotificationCounts(ctx)
 	if err != nil {
-		return SummaryData{}, fmt.Errorf("failed to get users with notifications: %w", err)
+		return SummaryData{}, fmt.Errorf("failed to get notification counts: %w", err)
 	}
-
-	// Get users with active requests
-	usersWithActiveRequests, err := s.GetUsersWithActiveRequests(ctx)
+	activeCounts, err := s.GetUserActiveRequestCounts(ctx)
 	if err != nil {
-		return SummaryData{}, fmt.Errorf("failed to get users with active requests: %w", err)
+		return SummaryData{}, fmt.Errorf("failed to get active request counts: %w", err)
 	}
-
-	// Get tracked campgrounds
 	trackedCampgrounds, err := s.GetTrackedCampgrounds(ctx)
 	if err != nil {
 		return SummaryData{}, fmt.Errorf("failed to get tracked campgrounds: %w", err)
 	}
-
 	return SummaryData{
-		Stats:                 stats,
-		NotificationUsernames: usersWithNotifications,
-		ActiveUsernames:       usersWithActiveRequests,
-		TrackedCampgrounds:    trackedCampgrounds,
+		Stats:              stats,
+		NotificationCounts: notifyCounts,
+		ActiveCounts:       activeCounts,
+		TrackedCampgrounds: trackedCampgrounds,
 	}, nil
 }
 
-func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
+// userLabel renders one user as either their cached display name or, as
+// a fallback, an @-mention which Discord auto-resolves client-side.
+func userLabel(userID string, names map[string]string) string {
+	if name, ok := names[userID]; ok && name != "" {
+		return name
+	}
+	return fmt.Sprintf("<@%s>", userID)
+}
 
-	// Create embed
+// mergeSchniffistRows combines active + notification counts per user into
+// one row each, sorted by (fired desc, active desc, userID asc). Users
+// who only appear in one of the two inputs are still included.
+func mergeSchniffistRows(active, fired []UserCount) []schniffistRow {
+	byID := map[string]*schniffistRow{}
+	order := []string{}
+	get := func(id string) *schniffistRow {
+		if r, ok := byID[id]; ok {
+			return r
+		}
+		r := &schniffistRow{UserID: id}
+		byID[id] = r
+		order = append(order, id)
+		return r
+	}
+	for _, uc := range active {
+		get(uc.UserID).Active = uc.Count
+	}
+	for _, uc := range fired {
+		get(uc.UserID).Fired = uc.Count
+	}
+	rows := make([]schniffistRow, 0, len(order))
+	for _, id := range order {
+		rows = append(rows, *byID[id])
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Fired != rows[j].Fired {
+			return rows[i].Fired > rows[j].Fired
+		}
+		if rows[i].Active != rows[j].Active {
+			return rows[i].Active > rows[j].Active
+		}
+		return rows[i].UserID < rows[j].UserID
+	})
+	return rows
+}
+
+type schniffistRow struct {
+	UserID string
+	Active int64
+	Fired  int64
+}
+
+// formatSchniffistRows renders one line per user:
+//
+//	<name> — <active> active / <fired> fired
+func formatSchniffistRows(rows []schniffistRow, names map[string]string) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%s — %d active / %d fired",
+			userLabel(r.UserID, names), r.Active, r.Fired)
+	}
+	return b.String()
+}
+
+func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
+	rows := mergeSchniffistRows(summaryData.ActiveCounts, summaryData.NotificationCounts)
+	schniffists := formatSchniffistRows(rows, summaryData.UserNames)
+	if schniffists == "" {
+		schniffists = "*No schniffists yet.*"
+	}
+
 	embed := &discordgo.MessageEmbed{
 		Title:     "🏕️ 24h Schniffer Roundup",
-		Color:     0x5865F2, // Discord Blurple
+		Color:     0x5865F2,
 		Timestamp: time.Now().Format(time.RFC3339),
 		Fields: []*discordgo.MessageEmbedField{
 			{
@@ -141,46 +208,29 @@ func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
 				Inline: true,
 			},
 			{
-				Name: "🎉 Schniffists Who Got Schniffs",
-				Value: func() string {
-					if len(summaryData.NotificationUsernames) > 0 {
-						return strings.Join(summaryData.NotificationUsernames, "\n")
-					}
-					return "*No bueno today.*"
-				}(),
-				Inline: false,
-			},
-			{
-				Name: "👥 Schniffists With Active Schniffs",
-				Value: func() string {
-					if len(summaryData.ActiveUsernames) > 0 {
-						return strings.Join(summaryData.ActiveUsernames, "\n")
-					}
-					return "*None*"
-				}(),
+				Name:   "👥 Schniffists",
+				Value:  schniffists,
 				Inline: false,
 			},
 			{
 				Name: "🏞️ Campgrounds Being Tracked",
 				Value: func() string {
-					if len(summaryData.TrackedCampgrounds) > 0 {
-						// Limit to first 10 campgrounds to avoid hitting embed limits
-						campgrounds := summaryData.TrackedCampgrounds
-						if len(campgrounds) > 10 {
-							campgrounds = campgrounds[:10]
-						}
-						value := strings.Join(campgrounds, "\n")
-						if len(summaryData.TrackedCampgrounds) > 10 {
-							value += fmt.Sprintf("\n*...and %d more*", len(summaryData.TrackedCampgrounds)-10)
-						}
-						return value
+					if len(summaryData.TrackedCampgrounds) == 0 {
+						return "*None*"
 					}
-					return "*None*"
+					campgrounds := summaryData.TrackedCampgrounds
+					if len(campgrounds) > 10 {
+						campgrounds = campgrounds[:10]
+					}
+					value := strings.Join(campgrounds, "\n")
+					if len(summaryData.TrackedCampgrounds) > 10 {
+						value += fmt.Sprintf("\n*...and %d more*", len(summaryData.TrackedCampgrounds)-10)
+					}
+					return value
 				}(),
 				Inline: false,
 			},
 		},
 	}
-
 	return embed
 }
