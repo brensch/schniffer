@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brensch/schniffer/internal/booker"
@@ -43,8 +44,14 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 	var notificationsToRecord []db.Notification
 	now := time.Now()
 
-	// Process each request independently
+	// Process each request independently. DM sends are I/O-bound and slow
+	// (~100-300ms each), so fan out with a bounded worker pool.
 	reqIndex := indexRequestsByID(requests)
+	const maxConcurrentDMs = 5
+	sem := make(chan struct{}, maxConcurrentDMs)
+	var nwg sync.WaitGroup
+	var nmu sync.Mutex
+
 	for requestID, changes := range changesByRequest {
 		req, ok := reqIndex[requestID]
 		if !ok {
@@ -59,38 +66,46 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 			slog.Int("changes", len(changes)),
 		)
 
-		// Use the changes we already have. Only send if there is at least ONE newly-available change.
-		sent, sendErr := m.sendStateChangeNotification(ctx, req, changes, batchID)
-		if sendErr != nil {
-			m.logger.Warn("send state change notification failed",
-				slog.String("userID", req.UserID),
-				slog.Any("err", sendErr))
-		}
+		nwg.Add(1)
+		sem <- struct{}{}
+		go func(req db.SchniffRequest, changes []db.StateChangeForRequest) {
+			defer nwg.Done()
+			defer func() { <-sem }()
 
-		// Post a fun summary broadcast only when we actually sent a DM about availability.
-		if sent {
-			_, _ = m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
-		}
-
-		// Record outgoing notifications for each change (both available and unavailable).
-		for _, c := range changes {
-			state := "available"
-			if !c.NewAvailable {
-				state = "unavailable"
+			sent, sendErr := m.sendStateChangeNotification(ctx, req, changes, batchID)
+			if sendErr != nil {
+				m.logger.Warn("send state change notification failed",
+					slog.String("userID", req.UserID),
+					slog.Any("err", sendErr))
 			}
-			notificationsToRecord = append(notificationsToRecord, db.Notification{
-				RequestID:     req.ID,
-				UserID:        req.UserID,
-				Provider:      c.Provider,
-				CampgroundID:  c.CampgroundID,
-				CampsiteID:    c.CampsiteID,
-				Date:          c.Date,
-				State:         state,
-				StateChangeID: &c.ID,
-				SentAt:        now,
-			})
-		}
+			if sent {
+				_, _ = m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
+			}
+
+			local := make([]db.Notification, 0, len(changes))
+			for _, c := range changes {
+				state := "available"
+				if !c.NewAvailable {
+					state = "unavailable"
+				}
+				local = append(local, db.Notification{
+					RequestID:     req.ID,
+					UserID:        req.UserID,
+					Provider:      c.Provider,
+					CampgroundID:  c.CampgroundID,
+					CampsiteID:    c.CampsiteID,
+					Date:          c.Date,
+					State:         state,
+					StateChangeID: &c.ID,
+					SentAt:        now,
+				})
+			}
+			nmu.Lock()
+			notificationsToRecord = append(notificationsToRecord, local...)
+			nmu.Unlock()
+		}(req, changes)
 	}
+	nwg.Wait()
 
 	// Record all notifications (single DB call)
 	if len(notificationsToRecord) > 0 {

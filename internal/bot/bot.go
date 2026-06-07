@@ -159,9 +159,10 @@ func (b *Bot) registerCommands() {
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
 				}},
 				{Name: "map", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open map to create groups or quickly see availability at a site."},
-				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a schniff. Blank id removes all.", Options: []*discordgo.ApplicationCommandOption{
-					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: false, Description: "Request ID to remove", Autocomplete: true},
+				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a single schniff by id.", Options: []*discordgo.ApplicationCommandOption{
+					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
+				{Name: "remove-all", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove ALL of your active schniffs."},
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
 					{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
@@ -255,6 +256,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleLinkMapCommand(s, i, sub)
 	case "remove":
 		b.handleRemoveCommand(s, i, sub)
+	case "remove-all":
+		b.handleRemoveAllCommand(s, i, sub)
 	case "list":
 		b.handleListCommand(s, i, sub)
 	case "summary":

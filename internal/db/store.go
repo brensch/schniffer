@@ -804,6 +804,31 @@ func (s *Store) RecordLookup(ctx context.Context, l LookupLog) error {
 	return err
 }
 
+func (s *Store) RecordLookupBatch(ctx context.Context, ls []LookupLog) error {
+	if len(ls) == 0 {
+		return nil
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO lookup_log(provider, campground_id, start_date, end_date, checked_at, success, error_msg, campsite_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, l := range ls {
+		if _, err := stmt.ExecContext(ctx, l.Provider, l.CampgroundID, l.StartDate, l.EndDate, l.CheckedAt, l.Success, l.ErrorMsg, l.CampsiteCount); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RecordNotification(ctx context.Context, n Notification) error {
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO notifications(request_id, user_id, provider, campground_id, campsite_id, date, state, sent_at)
