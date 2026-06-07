@@ -49,8 +49,22 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	minN, strat, ferr := parseScheduleFilters(opts, start, end)
+	if ferr != "" {
+		respond(s, i, ferr)
+		return
+	}
+
 	uid := getUserID(i)
-	_, err = b.store.AddRequest(context.Background(), db.SchniffRequest{UserID: uid, Provider: campgroundProvider, CampgroundID: campgroundID, Checkin: start, Checkout: end})
+	_, err = b.store.AddRequest(context.Background(), db.SchniffRequest{
+		UserID:        uid,
+		Provider:      campgroundProvider,
+		CampgroundID:  campgroundID,
+		Checkin:       start,
+		Checkout:      end,
+		MinimumNights: minN,
+		Strategy:      strat,
+	})
 	if err != nil {
 		respond(s, i, "error: "+err.Error())
 		return
@@ -59,7 +73,14 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	// get the length of the stay
 	stayDuration := end.Sub(start)
 	formattedName := b.formatCampgroundWithLink(context.Background(), campgroundProvider, campgroundID, campgroundName)
-	respond(s, i, fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", formattedName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24))
+	msg := fmt.Sprintf("Now schniffing: %s, dates %s to %s (%.0f nights)", formattedName, start.Format("2006-01-02"), end.Format("2006-01-02"), stayDuration.Hours()/24)
+	if minN.Valid {
+		msg += fmt.Sprintf(", minimum_nights=%d", minN.Int64)
+	}
+	if strat.Valid {
+		msg += fmt.Sprintf(", strategy=%s", strat.String)
+	}
+	respond(s, i, msg)
 }
 
 func (b *Bot) autocompleteCampgrounds(i *discordgo.InteractionCreate, query string) []*discordgo.ApplicationCommandOptionChoice {

@@ -140,6 +140,25 @@ func (m *Manager) sendStateChangeNotification(
 		return false, nil
 	}
 
+	// Build the current availability context for the requested date range.
+	// We need this up front because the schniff's optional minimum_nights /
+	// strategy filters gate both the DM and the auto-booking call.
+	allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
+	if qerr != nil {
+		m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
+	}
+
+	if !requestConditionsMet(req, allAvailable) {
+		m.logger.Info("schniff conditions not yet met; skipping notify+book",
+			slog.Int64("requestID", req.ID),
+			slog.String("userID", req.UserID),
+			slog.String("campgroundID", req.CampgroundID),
+			slog.Bool("hasMinNights", req.MinimumNights.Valid),
+			slog.Bool("hasStrategy", req.Strategy.Valid),
+		)
+		return false, nil
+	}
+
 	// Create DM channel only if we plan to send something.
 	channel, err := m.notifier.UserChannelCreate(req.UserID)
 	if err != nil {
@@ -153,12 +172,6 @@ func (m *Manager) sendStateChangeNotification(
 	// the hit notification.
 	if m.pool != nil && m.pool.HasUser(req.UserID) {
 		m.startBookingAttempt(ctx, req, newlyAvail, batchID, channel.ID)
-	}
-
-	// Build the current availability context for the requested date range.
-	allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
-	if qerr != nil {
-		m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
 	}
 
 	byCampsite := groupAvailabilityByCampsite(allAvailable)

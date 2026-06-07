@@ -63,7 +63,7 @@ func TestGenerateNights_ThuFriDoesNotOverlapFriSun(t *testing.T) {
 	fri := day(2025, 8, 15)
 	sun := day(2025, 8, 17)
 
-	requested := generateNights(fri, sun) // {Fri, Sat}
+	requested := generateNights(fri, sun)  // {Fri, Sat}
 	campground := generateNights(thu, fri) // {Thu}
 
 	for _, want := range requested {

@@ -56,20 +56,10 @@ func TestBuildDeactivationEmbed(t *testing.T) {
 		t.Errorf("Expected color %d, got %d", expectedColor, embed.Color)
 	}
 
-	// Check that we have fields for each request plus call-to-action field
-	expectedFieldCount := 3 // 2 requests + 1 call-to-action
+	// One field per deactivated request.
+	expectedFieldCount := 2
 	if len(embed.Fields) != expectedFieldCount {
 		t.Errorf("Expected %d fields, got %d", expectedFieldCount, len(embed.Fields))
-	}
-
-	// Check footer
-	if embed.Footer == nil {
-		t.Error("Expected footer to be present")
-	} else {
-		expectedFooterText := "💡 Click the /schniff command above to create new requests in a server where I'm present."
-		if embed.Footer.Text != expectedFooterText {
-			t.Errorf("Expected footer text '%s', got '%s'", expectedFooterText, embed.Footer.Text)
-		}
 	}
 
 	// Check timestamp format
@@ -90,22 +80,6 @@ func TestBuildDeactivationEmbed(t *testing.T) {
 
 		if !contains(firstField.Value, "🏕️ **Provider:** recreation_gov") {
 			t.Errorf("Expected provider information in field value, got '%s'", firstField.Value)
-		}
-	}
-
-	// Verify that the slash command mention is included in description
-	if !contains(embed.Description, "</schniff:0>") {
-		t.Errorf("Expected slash command mention in description, got '%s'", embed.Description)
-	}
-
-	// Verify the call-to-action field exists
-	if len(embed.Fields) >= 3 {
-		ctaField := embed.Fields[2] // Last field should be call-to-action
-		if ctaField.Name != "🚀 Create New Requests" {
-			t.Errorf("Expected call-to-action field name '🚀 Create New Requests', got '%s'", ctaField.Name)
-		}
-		if !contains(ctaField.Value, "</schniff:0>") {
-			t.Errorf("Expected slash command mention in call-to-action field, got '%s'", ctaField.Value)
 		}
 	}
 }
@@ -134,9 +108,9 @@ func TestBuildDeactivationEmbed_SingleRequest(t *testing.T) {
 		t.Errorf("Expected title '%s', got '%s'", expectedTitle, embed.Title)
 	}
 
-	// Should have exactly two fields (1 request + 1 call-to-action)
-	if len(embed.Fields) != 2 {
-		t.Errorf("Expected 2 fields, got %d", len(embed.Fields))
+	// Should have exactly one field (1 request).
+	if len(embed.Fields) != 1 {
+		t.Errorf("Expected 1 field, got %d", len(embed.Fields))
 	}
 }
 

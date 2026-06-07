@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS schniff_requests (
     checkin     DATE NOT NULL,
     checkout    DATE NOT NULL,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-    active      BOOLEAN DEFAULT TRUE
+    active      BOOLEAN DEFAULT TRUE,
+    minimum_nights INTEGER, -- optional: only notify/book if a single campsite covers this many consecutive nights inside the window
+    strategy    TEXT        -- optional: e.g. 'full_weekend'; only notify/book when the named condition is met
 );
 
 CREATE INDEX IF NOT EXISTS idx_schniff_requests_active ON schniff_requests(active);

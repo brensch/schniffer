@@ -152,11 +152,15 @@ func (b *Bot) registerCommands() {
 					{Name: "campground", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select campground", Autocomplete: true},
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
+					{Name: "minimum_nights", Type: discordgo.ApplicationCommandOptionInteger, Required: false, Description: "Only fire if one campsite has this many consecutive nights free", Autocomplete: true},
+					{Name: "strategy", Type: discordgo.ApplicationCommandOptionString, Required: false, Description: "Extra condition before notifying/booking", Choices: strategyChoices()},
 				}},
 				{Name: "add-bulk", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Add a schniff for all campgrounds in a group. Use `/schniff map` to make groups.", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "group", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select group", Autocomplete: true},
 					{Name: "checkin", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-in (YYYY-MM-DD)"},
 					{Name: "checkout", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Check-out (YYYY-MM-DD)"},
+					{Name: "minimum_nights", Type: discordgo.ApplicationCommandOptionInteger, Required: false, Description: "Only fire if one campsite has this many consecutive nights free", Autocomplete: true},
+					{Name: "strategy", Type: discordgo.ApplicationCommandOptionString, Required: false, Description: "Extra condition before notifying/booking", Choices: strategyChoices()},
 				}},
 				{Name: "map", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open map to create groups or quickly see availability at a site."},
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a single schniff by id.", Options: []*discordgo.ApplicationCommandOption{
@@ -165,8 +169,8 @@ func (b *Bot) registerCommands() {
 				{Name: "remove-all", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove ALL of your active schniffs."},
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
-					{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
-					{Name: "unlink", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove your stored recreation.gov credentials"},
+				{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
+				{Name: "unlink", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove your stored recreation.gov credentials"},
 				// {Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
 			},
 		},
@@ -222,6 +226,8 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 		choices = b.autocompleteGroups(i, focused.StringValue())
 	case "ids":
 		choices = b.autocompleteRemoveIDs(i)
+	case "minimum_nights":
+		choices = autocompleteMinimumNights(sub.Options)
 	}
 	if choices == nil {
 		return

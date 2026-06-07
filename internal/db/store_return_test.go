@@ -28,7 +28,9 @@ func TestDeactivateExpiredRequests_ReturnsCorrectRequests(t *testing.T) {
 			checkin     DATE NOT NULL,
 			checkout    DATE NOT NULL,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			active      BOOLEAN DEFAULT TRUE
+			active      BOOLEAN DEFAULT TRUE,
+			minimum_nights INTEGER,
+			strategy    TEXT
 		)
 	`)
 	if err != nil {
@@ -79,9 +81,10 @@ func TestDeactivateExpiredRequests_ReturnsCorrectRequests(t *testing.T) {
 		if !expectedUsers[req.UserID] {
 			t.Errorf("Unexpected user ID in deactivated requests: %s", req.UserID)
 		}
-		// The returned requests should have Active=true (their state before deactivation)
-		if !req.Active {
-			t.Errorf("Returned request should have Active=true (original state), got Active=%v", req.Active)
+		// SQLite RETURNING on UPDATE yields the new row state, so deactivated
+		// requests come back with Active=false.
+		if req.Active {
+			t.Errorf("Returned request should have Active=false (post-update state), got Active=%v", req.Active)
 		}
 		if req.Provider == "" || req.CampgroundID == "" {
 			t.Errorf("Deactivated request missing required fields: Provider=%s, CampgroundID=%s", req.Provider, req.CampgroundID)

@@ -29,7 +29,9 @@ func TestDeactivateExpiredRequests(t *testing.T) {
 			checkin     DATE NOT NULL,
 			checkout    DATE NOT NULL,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-			active      BOOLEAN DEFAULT TRUE
+			active      BOOLEAN DEFAULT TRUE,
+			minimum_nights INTEGER,
+			strategy    TEXT
 		)
 	`)
 	if err != nil {

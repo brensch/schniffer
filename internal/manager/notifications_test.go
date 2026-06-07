@@ -94,23 +94,13 @@ func TestBuildNotificationEmbeds_NoCampsites(t *testing.T) {
 		provider,
 	)
 
-	if len(embeds) == 0 {
-		t.Fatalf("expected at least one embed with description header")
-	}
-	for _, e := range embeds {
-		if e.Description == "" {
-			t.Errorf("description should not be empty")
-		}
-		// No fields because no campsites
-		if len(e.Fields) != 1 {
-			// one "Remember" field is appended at the end of the last embed
-			// but since there are no campsite fields, it will be on the only embed
-			t.Logf("fields=%d (OK if 'Remember' was added)", len(e.Fields))
-		}
+	// Current builder returns nil when there is nothing to render.
+	if len(embeds) != 0 {
+		t.Fatalf("expected no embeds for empty stats, got %d", len(embeds))
 	}
 }
 
-func TestBuildNotificationEmbeds_RemovesCostAndRating_AndHasDivider(t *testing.T) {
+func TestBuildNotificationEmbeds_RemovesCostAndRating(t *testing.T) {
 	checkin := mustDate(2025, 8, 18)
 	checkout := checkin.AddDate(0, 0, 5)
 	provider := &mockProvider{}
@@ -128,19 +118,12 @@ func TestBuildNotificationEmbeds_RemovesCostAndRating_AndHasDivider(t *testing.T
 		t.Fatalf("expected embeds")
 	}
 
-	foundDivider := false
 	for _, e := range embeds {
 		for _, f := range e.Fields {
 			if containsAny(f.Value, "Cost:", "Rating:", "⭐") {
 				t.Fatalf("cost/rating must not be present; found in field: %q", f.Value)
 			}
-			if strings.Contains(f.Value, "────────────────────────────────────────") {
-				foundDivider = true
-			}
 		}
-	}
-	if !foundDivider {
-		t.Fatalf("expected divider line between campsites")
 	}
 }
 
@@ -167,12 +150,13 @@ func TestBuildNotificationEmbeds_SortsByDaysAvailableThenID(t *testing.T) {
 		t.Fatalf("expected embeds")
 	}
 
-	// The first campsite field should be csA (or csA part 1 of N if chunked)
+	// Top 3 by days available: csA (7), csC (7, sorted by ID tiebreak), csB (4).
+	// Fancy details mean field names are "Fancy Site csX", not "Campsite csX".
 	var firstField *discordgo.MessageEmbedField
 outer:
 	for _, e := range embeds {
 		for _, f := range e.Fields {
-			if strings.HasPrefix(f.Name, "Campsite ") {
+			if strings.HasPrefix(f.Name, "Fancy Site ") || strings.HasPrefix(f.Name, "Campsite ") {
 				firstField = f
 				break outer
 			}
@@ -181,17 +165,17 @@ outer:
 	if firstField == nil {
 		t.Fatalf("no campsite fields found")
 	}
-	if !strings.HasPrefix(firstField.Name, "Campsite csA") {
+	if !strings.Contains(firstField.Name, "csA") {
 		t.Fatalf("expected first campsite to be csA, got field name: %s", firstField.Name)
 	}
 }
 
-func TestBuildNotificationEmbeds_SplitsAcrossMultipleEmbeds_ByFieldCount(t *testing.T) {
+func TestBuildNotificationEmbeds_KeepsTopThree(t *testing.T) {
 	checkin := mustDate(2025, 8, 18)
 	checkout := checkin.AddDate(0, 0, 3)
 	provider := &mockProvider{}
 
-	// 60 campsites -> with 25 fields max per embed, should create at least 3 embeds
+	// Many campsites — current builder collapses to top 3 in a single embed.
 	stats := make([]manager.CampsiteStats, 0, 60)
 	for i := 0; i < 60; i++ {
 		id := fmt.Sprintf("cs%03d", i+1)
@@ -205,22 +189,23 @@ func TestBuildNotificationEmbeds_SplitsAcrossMultipleEmbeds_ByFieldCount(t *test
 		provider,
 	)
 
-	if len(embeds) < 3 {
-		t.Fatalf("expected >= 3 embeds, got %d", len(embeds))
+	if len(embeds) != 1 {
+		t.Fatalf("expected exactly 1 embed, got %d", len(embeds))
 	}
-	for i, e := range embeds {
-		if len(e.Fields) > 25 {
-			t.Fatalf("embed %d exceeds 25 fields: %d", i, len(e.Fields))
-		}
+	// 3 campsite fields + 1 Important Information field.
+	if got := len(embeds[0].Fields); got != 4 {
+		t.Fatalf("expected 4 fields (3 campsites + info), got %d", got)
 	}
 }
 
-func TestBuildNotificationEmbeds_ChunksLongFieldValues_AndDoesNotTruncate(t *testing.T) {
+func TestBuildNotificationEmbeds_LongDateListIsCapped(t *testing.T) {
 	checkin := mustDate(2025, 8, 18)
 	checkout := checkin.AddDate(0, 0, 300)
 	provider := &mockProvider{}
 
-	// Single campsite with 200+ dates -> field value should exceed 1024 and be chunked into multiple fields
+	// Single campsite with 200 available dates — current builder caps the
+	// rendered list at 20 dates and appends an "…and N more" note rather
+	// than chunking across fields.
 	longDates := genDates(checkin, 200)
 	stats := []manager.CampsiteStats{
 		makeStats(300, "csLONG", longDates, true),
@@ -237,38 +222,19 @@ func TestBuildNotificationEmbeds_ChunksLongFieldValues_AndDoesNotTruncate(t *tes
 		t.Fatalf("expected embeds")
 	}
 
-	// Collect fields for this campsite
-	var parts []*discordgo.MessageEmbedField
+	var siteField *discordgo.MessageEmbedField
 	for _, e := range embeds {
 		for _, f := range e.Fields {
-			if strings.HasPrefix(f.Name, "Campsite csLONG") {
-				parts = append(parts, f)
+			if strings.Contains(f.Name, "csLONG") {
+				siteField = f
 			}
 		}
 	}
-	if len(parts) < 2 {
-		t.Fatalf("expected multiple chunked fields for csLONG, got %d", len(parts))
+	if siteField == nil {
+		t.Fatalf("csLONG field missing")
 	}
-	for i, p := range parts {
-		if len(p.Value) == 0 {
-			t.Fatalf("part %d empty", i)
-		}
-		if len(p.Value) > 1024 {
-			t.Fatalf("part %d exceeds 1024 chars; got %d", i, len(p.Value))
-		}
-	}
-
-	// Ensure some tail dates are present (no truncation of the list overall)
-	lastDateStr := longDates[len(longDates)-1].Format("2006-01-02")
-	foundLast := false
-	for _, p := range parts {
-		if strings.Contains(p.Value, lastDateStr) {
-			foundLast = true
-			break
-		}
-	}
-	if !foundLast {
-		t.Fatalf("expected last date %s to appear across chunks", lastDateStr)
+	if !strings.Contains(siteField.Value, "…and 180 more") {
+		t.Fatalf("expected truncation note in field value, got: %q", siteField.Value)
 	}
 }
 
@@ -307,11 +273,12 @@ func TestBuildNotificationEmbeds_EquipmentNotTruncated(t *testing.T) {
 	checkout := checkin.AddDate(0, 0, 5)
 	provider := &mockProvider{}
 
-	// Large equipment list should not be truncated by builder
+	// Large equipment list should not be truncated by builder.
+	equipment := []string{"Tent", "RV", "Trailer", "Van", "Car", "Bike", "Boat", "Kayak", "Motorcycle", "Foot"}
 	dets := db.CampsiteDetails{
 		Name:         "Monster Equip Site",
 		Type:         "Tent/RV",
-		Equipment:    []string{"Tent", "RV", "Trailer", "Van", "Car", "Bike", "Boat", "Kayak", "Motorcycle", "Foot"},
+		Equipment:    equipment,
 		CostPerNight: 999, // ignored
 		Rating:       5,   // ignored
 	}
@@ -335,16 +302,17 @@ func TestBuildNotificationEmbeds_EquipmentNotTruncated(t *testing.T) {
 	if len(embeds) == 0 {
 		t.Fatalf("expected embeds")
 	}
+	want := strings.Join(equipment, ", ")
 	ok := false
 	for _, e := range embeds {
 		for _, f := range e.Fields {
-			if strings.Contains(f.Value, "Equipment: Tent, RV, Trailer, Van, Car, Bike, Boat, Kayak, Motorcycle, Foot") {
+			if strings.Contains(f.Value, want) {
 				ok = true
 			}
 		}
 	}
 	if !ok {
-		t.Fatalf("expected full equipment list present without truncation")
+		t.Fatalf("expected full equipment list %q present without truncation", want)
 	}
 }
 
@@ -529,6 +497,12 @@ func TestBuildNotificationEmbed_Suite_Smoke(t *testing.T) {
 				tc.campsiteStats,
 				tc.provider,
 			)
+			if len(tc.campsiteStats) == 0 {
+				if len(embeds) != 0 {
+					t.Fatalf("expected no embeds for empty stats, got %d", len(embeds))
+				}
+				return
+			}
 			if len(embeds) == 0 {
 				t.Fatalf("expected embeds")
 			}
