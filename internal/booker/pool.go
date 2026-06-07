@@ -147,7 +147,9 @@ func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundI
 	if e.disabled {
 		return nil, errors.New("session disabled")
 	}
-	return e.session.HoldCampsite(ctx, campsiteID, campgroundID, checkIn, checkOut)
+	opCtx, cancel := sessionOperationContext(e.session.Ctx(), ctx)
+	defer cancel()
+	return e.session.HoldCampsite(opCtx, campsiteID, campgroundID, checkIn, checkOut)
 }
 
 // RunRefreshLoop nav's each session to the homepage every cfg.RefreshInterval
@@ -180,12 +182,36 @@ func (p *Pool) refreshAll(ctx context.Context) {
 			continue
 		}
 		e.mu.Lock()
-		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+		rctx, cancel := sessionOperationContext(e.session.Ctx(), timeoutCtx)
 		if err := e.session.Refresh(rctx); err != nil {
 			p.cfg.Logger.Warn("session refresh failed", "user", id, "err", err)
 		}
 		cancel()
+		timeoutCancel()
 		e.mu.Unlock()
+	}
+}
+
+// sessionOperationContext keeps chromedp's browser metadata from sessionCtx
+// while propagating the caller's cancellation and deadline.
+func sessionOperationContext(sessionCtx, callerCtx context.Context) (context.Context, context.CancelFunc) {
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if deadline, ok := callerCtx.Deadline(); ok {
+		ctx, cancel = context.WithDeadline(sessionCtx, deadline)
+	} else {
+		ctx, cancel = context.WithCancel(sessionCtx)
+	}
+	stop := context.AfterFunc(callerCtx, cancel)
+	if callerCtx.Err() != nil {
+		cancel()
+	}
+	return ctx, func() {
+		stop()
+		cancel()
 	}
 }
 
