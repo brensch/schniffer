@@ -15,7 +15,6 @@ concurrency:
 env:
   DATA_DIR: /home/brensch/schniffdata
   PROFILES_DIR: /home/brensch/schniffprofiles
-  BACKUPS:  /home/brensch/schniff-backups
   COMPOSE_PROJECT_NAME: schniffer
 
 jobs:
@@ -37,14 +36,6 @@ jobs:
           # so the host dir needs to be writable by root in container; bind
           # mounts preserve host ownership, so we just ensure it exists.
           ls -la "$PROFILES_DIR" || true
-
-      - name: Backup sqlite
-        run: |
-          mkdir -p "$BACKUPS"
-          ts=$(date +%Y%m%d-%H%M%S)
-          cp "$DATA_DIR/schniffer.sqlite" "$BACKUPS/schniffer.sqlite.$ts"
-          ls -1t "$BACKUPS"/schniffer.sqlite.* | tail -n +11 | xargs -r rm -f
-          ls -lh "$BACKUPS" | tail -5
 
       - name: Build and (re)start container
         env:
