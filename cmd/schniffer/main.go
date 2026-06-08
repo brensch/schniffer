@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	// Embed the full IANA timezone database into the binary so
 	// time.LoadLocation works regardless of whether /usr/share/zoneinfo
@@ -99,6 +101,7 @@ func main() {
 
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
+	go runHealthcheckPinger(ctx, "https://hc-ping.com/ec9f9824-6317-4fb8-a5e3-dcc9e06431d5", 10*time.Minute)
 
 	// // Background metadata sync
 	// go mgr.RunCampgroundSync(ctx, "recreation_gov")
@@ -119,6 +122,37 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("night night")
+}
+
+// runHealthcheckPinger fires a GET at url every interval to signal liveness to
+// an external watchdog (e.g. healthchecks.io). Pings immediately on start so a
+// fresh deploy is reflected without waiting a full interval.
+func runHealthcheckPinger(ctx context.Context, url string, interval time.Duration) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	ping := func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			slog.Warn("healthcheck request build failed", slog.Any("err", err))
+			return
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			slog.Warn("healthcheck ping failed", slog.Any("err", err))
+			return
+		}
+		_ = resp.Body.Close()
+	}
+	ping()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			ping()
+		}
+	}
 }
 
 // initAutoBooking wires up the secrets box, browser pool, and bot/manager
