@@ -50,6 +50,16 @@ type ArbResult struct {
 	DisplacedBy []DisplacementRecord
 }
 
+// pickForRequest applies the right selector for a request: full_weekend
+// schniffs book only the first Fri+Sat pair, everything else takes the
+// longest contiguous run.
+func pickForRequest(req db.SchniffRequest, candidates []booker.Candidate) (booker.Pick, bool) {
+	if req.Strategy.Valid && req.Strategy.String == db.StrategyFullWeekend {
+		return booker.SelectFirstWeekend(candidates)
+	}
+	return booker.SelectBestPartial(candidates)
+}
+
 // Arbitrate runs greedy global assignment over (request, campsite) pairs.
 // At each step the highest-scoring still-eligible pair wins: more nights →
 // higher rating → lower request_id. Once a campsite is taken or a request
@@ -69,7 +79,7 @@ func Arbitrate(inputs []ArbInput, expiringOwners map[string]string) []ArbResult 
 			if owner, ok := expiringOwners[c.CampsiteID]; ok && owner == in.Request.UserID {
 				continue
 			}
-			pick, ok := booker.SelectBestPartial([]booker.Candidate{c})
+			pick, ok := pickForRequest(in.Request, []booker.Candidate{c})
 			if !ok {
 				continue
 			}
@@ -112,7 +122,7 @@ func Arbitrate(inputs []ArbInput, expiringOwners map[string]string) []ArbResult 
 		// sites in their candidate pool?
 		for _, c := range in.Candidates {
 			if owner, ok := expiringOwners[c.CampsiteID]; ok && owner == in.Request.UserID {
-				pick, hasDates := booker.SelectBestPartial([]booker.Candidate{c})
+				pick, hasDates := pickForRequest(in.Request, []booker.Candidate{c})
 				r.ExpiringOwner = true
 				r.ExpiringOwnerHadCap = hasDates
 				if hasDates {
