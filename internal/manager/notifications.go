@@ -20,12 +20,18 @@ import (
 
 // ------- Public API on Manager -------
 
-// ProcessNotificationsWithBatches handles the state-change-based notification system.
-// DB access, logging, and notifier usage live here (methods on Manager).
+// recentHoldWindow is how far back we look in the bookings table to decide
+// whether a campsite flipping back to "available" is one of our own holds
+// expiring (vs. a genuine new opening). rec.gov cart holds last 15 minutes;
+// the extra few cover polling jitter.
+const recentHoldWindow = 20 * time.Minute
+
+// ProcessNotificationsWithBatches handles the state-change-based notification
+// system. Requests are grouped into (provider, campground) buckets so we can
+// arbitrate between users who want the same site before any holds fire.
 func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests []db.SchniffRequest) error {
 	m.logger.Info("processing notifications", slog.Int("request_count", len(requests)))
 
-	// Get unnotified state changes for all requests
 	stateChanges, err := m.store.GetUnnotifiedStateChanges(ctx, requests)
 	if err != nil {
 		m.logger.Warn("get unnotified state changes failed", slog.Any("err", err))
@@ -36,79 +42,43 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 		return nil
 	}
 
-	// Group changes per request (pure helper)
 	changesByRequest := groupStateChangesByRequest(stateChanges)
-	m.logger.Info("grouped state changes by request", slog.Int("requests", len(changesByRequest)))
-
-	// Batch ID for recording notifications
-	batchID := uuid.New().String()
-	var notificationsToRecord []db.Notification
-	now := time.Now()
-
-	// Process each request independently. DM sends are I/O-bound and slow
-	// (~100-300ms each), so fan out with a bounded worker pool.
 	reqIndex := indexRequestsByID(requests)
-	const maxConcurrentDMs = 5
-	sem := make(chan struct{}, maxConcurrentDMs)
-	var nwg sync.WaitGroup
-	var nmu sync.Mutex
 
-	for requestID, changes := range changesByRequest {
-		req, ok := reqIndex[requestID]
+	type bucketKey struct{ provider, campground string }
+	bucketReqs := map[bucketKey][]int64{}
+	for reqID := range changesByRequest {
+		r, ok := reqIndex[reqID]
 		if !ok {
-			m.logger.Warn("request not found for state changes", slog.Int64("requestID", requestID))
+			m.logger.Warn("request not found for state changes", slog.Int64("requestID", reqID))
 			continue
 		}
+		k := bucketKey{r.Provider, r.CampgroundID}
+		bucketReqs[k] = append(bucketReqs[k], reqID)
+	}
 
-		m.logger.Info("processing request",
-			slog.Int64("requestID", requestID),
-			slog.String("provider", req.Provider),
-			slog.String("campgroundID", req.CampgroundID),
-			slog.Int("changes", len(changes)),
-		)
+	batchID := uuid.New().String()
+	now := time.Now()
 
-		nwg.Add(1)
-		sem <- struct{}{}
-		go func(req db.SchniffRequest, changes []db.StateChangeForRequest) {
-			defer nwg.Done()
-			defer func() { <-sem }()
+	var nmu sync.Mutex
+	var notificationsToRecord []db.Notification
 
-			sent, sendErr := m.sendStateChangeNotification(ctx, req, changes, batchID)
-			if sendErr != nil {
-				m.logger.Warn("send state change notification failed",
-					slog.String("userID", req.UserID),
-					slog.Any("err", sendErr))
-			}
-			if sent {
-				_, _ = m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(req.UserID))
-			}
-
-			local := make([]db.Notification, 0, len(changes))
-			for _, c := range changes {
-				state := "available"
-				if !c.NewAvailable {
-					state = "unavailable"
-				}
-				local = append(local, db.Notification{
-					RequestID:     req.ID,
-					UserID:        req.UserID,
-					Provider:      c.Provider,
-					CampgroundID:  c.CampgroundID,
-					CampsiteID:    c.CampsiteID,
-					Date:          c.Date,
-					State:         state,
-					StateChangeID: &c.ID,
-					SentAt:        now,
-				})
+	var bwg sync.WaitGroup
+	for k, ids := range bucketReqs {
+		bwg.Add(1)
+		go func(k bucketKey, ids []int64) {
+			defer bwg.Done()
+			notes := m.processCampgroundBucket(ctx, k.provider, k.campground, ids, reqIndex, changesByRequest, batchID, now)
+			if len(notes) == 0 {
+				return
 			}
 			nmu.Lock()
-			notificationsToRecord = append(notificationsToRecord, local...)
+			notificationsToRecord = append(notificationsToRecord, notes...)
 			nmu.Unlock()
-		}(req, changes)
+		}(k, ids)
 	}
-	nwg.Wait()
+	bwg.Wait()
 
-	// Record all notifications (single DB call)
 	if len(notificationsToRecord) > 0 {
 		if err := m.store.InsertNotificationsBatch(ctx, notificationsToRecord, batchID); err != nil {
 			m.logger.Warn("record notification batch failed", slog.Any("err", err))
@@ -122,205 +92,393 @@ func (m *Manager) ProcessNotificationsWithBatches(ctx context.Context, requests 
 	return nil
 }
 
-// sendStateChangeNotification fetches context data, builds the embed(s) via pure helpers, and sends them.
-// It returns 'sent = true' iff a DM was sent (i.e., there was at least one newly-available change).
-func (m *Manager) sendStateChangeNotification(
+// preparedRequest carries the per-request data we need across arbitration
+// and dispatch within a single bucket goroutine.
+type preparedRequest struct {
+	req          db.SchniffRequest
+	changes      []db.StateChangeForRequest
+	allAvailable []db.AvailabilityItem
+	candidates   []booker.Candidate
+}
+
+// bookOutcome travels back from the per-winner hold goroutines to the
+// bucket coordinator, which uses .success to decide which displaced losers
+// get DM'd.
+type bookOutcome struct {
+	winnerReqID  int64
+	winnerUserID string
+	pick         booker.Pick
+	success      bool
+}
+
+// processCampgroundBucket arbitrates between all requests pointing at the
+// same campground, dispatches the resulting DMs / channel pings / holds,
+// then (after holds finish) sends "older schniff won" summary DMs to losers.
+// Returns the notification rows to insert for the whole bucket.
+func (m *Manager) processCampgroundBucket(
 	ctx context.Context,
-	req db.SchniffRequest,
-	changes []db.StateChangeForRequest,
+	provider, campgroundID string,
+	reqIDs []int64,
+	reqIndex map[int64]db.SchniffRequest,
+	changesByRequest map[int64][]db.StateChangeForRequest,
 	batchID string,
-) (sent bool, err error) {
-	// Decide based on the provided changes (avoid any redundant lookups).
-	newlyAvail, _ := separateChanges(changes)
-	if len(newlyAvail) == 0 {
-		m.logger.Info("no newly-available changes; skipping DM",
-			slog.Int64("requestID", req.ID),
-			slog.String("userID", req.UserID),
-			slog.String("campgroundID", req.CampgroundID))
-		return false, nil
-	}
-
-	// Build the current availability context for the requested date range.
-	// We need this up front because the schniff's optional minimum_nights /
-	// strategy filters gate both the DM and the auto-booking call.
-	allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
-	if qerr != nil {
-		m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
-	}
-
-	if !requestConditionsMet(req, allAvailable) {
-		m.logger.Info("schniff conditions not yet met; skipping notify+book",
-			slog.Int64("requestID", req.ID),
-			slog.String("userID", req.UserID),
-			slog.String("campgroundID", req.CampgroundID),
-			slog.Bool("hasMinNights", req.MinimumNights.Valid),
-			slog.Bool("hasStrategy", req.Strategy.Valid),
-		)
-		return false, nil
-	}
-
-	// Create DM channel only if we plan to send something.
-	channel, err := m.notifier.UserChannelCreate(req.UserID)
+	now time.Time,
+) []db.Notification {
+	recentHolds, err := m.store.RecentHoldOwnersForCampground(ctx, provider, campgroundID, now.Add(-recentHoldWindow))
 	if err != nil {
-		return false, err
+		m.logger.Warn("recent-hold lookup failed",
+			slog.String("provider", provider),
+			slog.String("campground", campgroundID),
+			slog.Any("err", err))
+	}
+	expiringOwners := make(map[string]string, len(recentHolds))
+	recentHeldSet := make(map[string]struct{}, len(recentHolds))
+	expiringHoldByCampsite := make(map[string]db.RecentHoldOwner, len(recentHolds))
+	for _, h := range recentHolds {
+		expiringOwners[h.CampsiteID] = h.UserID
+		recentHeldSet[h.CampsiteID] = struct{}{}
+		expiringHoldByCampsite[h.CampsiteID] = h
 	}
 
-	// HOT PATH: if the user has a warm browser session, kick off the booking
-	// attempt NOW in parallel with embed building. The goroutine posts its
-	// own "attempting" DM and result DM directly to channel.ID — we do not
-	// block the hit notification on it, and we do not block the booking on
-	// the hit notification.
-	if m.pool != nil && m.pool.HasUser(req.UserID) {
-		m.startBookingAttempt(ctx, req, newlyAvail, batchID, channel.ID)
+	prep := make([]preparedRequest, 0, len(reqIDs))
+	for _, id := range reqIDs {
+		req, ok := reqIndex[id]
+		if !ok {
+			continue
+		}
+		changes := changesByRequest[id]
+		newlyAvail, _ := separateChanges(changes)
+		if len(newlyAvail) == 0 {
+			m.logger.Info("no newly-available changes; skipping",
+				slog.Int64("requestID", req.ID),
+				slog.String("userID", req.UserID))
+			continue
+		}
+
+		allAvailable, qerr := m.store.GetCurrentlyAvailableCampsites(ctx, req.Provider, req.CampgroundID, req.Checkin, req.Checkout)
+		if qerr != nil {
+			m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
+		}
+		if !requestConditionsMet(req, allAvailable) {
+			m.logger.Info("schniff conditions not yet met; skipping",
+				slog.Int64("requestID", req.ID),
+				slog.String("userID", req.UserID),
+				slog.Bool("hasMinNights", req.MinimumNights.Valid),
+				slog.Bool("hasStrategy", req.Strategy.Valid))
+			continue
+		}
+
+		clipped := clipToWindow(newlyAvail, req.Checkin, req.Checkout)
+		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
+		details, _ := m.store.GetCampsiteDetailsBatch(dctx, req.Provider, req.CampgroundID, uniqueCampsiteIDs(clipped))
+		dcancel()
+		candidates := buildCandidates(clipped, details)
+
+		prep = append(prep, preparedRequest{
+			req:          req,
+			changes:      changes,
+			allAvailable: allAvailable,
+			candidates:   candidates,
+		})
 	}
 
-	byCampsite := groupAvailabilityByCampsite(allAvailable)
+	if len(prep) == 0 {
+		return nil
+	}
+
+	inputs := make([]ArbInput, len(prep))
+	for i, p := range prep {
+		inputs[i] = ArbInput{Request: p.req, Candidates: p.candidates}
+	}
+	results := Arbitrate(inputs, expiringOwners)
+
+	outcomeChan := make(chan bookOutcome, len(results))
+	expectedBooks := 0
+
+	notifs := make([]db.Notification, 0)
+	for i, r := range results {
+		p := prep[i]
+
+		for _, c := range p.changes {
+			state := "available"
+			if !c.NewAvailable {
+				state = "unavailable"
+			}
+			cc := c
+			notifs = append(notifs, db.Notification{
+				RequestID:     p.req.ID,
+				UserID:        p.req.UserID,
+				Provider:      cc.Provider,
+				CampgroundID:  cc.CampgroundID,
+				CampsiteID:    cc.CampsiteID,
+				Date:          cc.Date,
+				State:         state,
+				StateChangeID: &cc.ID,
+				SentAt:        now,
+			})
+		}
+
+		// Losers: no DM, no embed, no channel, no book. Displacement DM is
+		// sent later after winners' holds resolve.
+		if !r.Won && !r.ExpiringOwner {
+			continue
+		}
+
+		channel, cerr := m.notifier.UserChannelCreate(p.req.UserID)
+		if cerr != nil {
+			m.logger.Warn("user channel create failed",
+				slog.String("userID", p.req.UserID),
+				slog.Any("err", cerr))
+			continue
+		}
+
+		// Send the normal "site available" embed to both winners and
+		// expiring-owners. The follow-up + book decision differs below.
+		embed := m.sendAvailabilityEmbed(ctx, p)
+		if embed != nil {
+			if _, err := m.notifier.ChannelMessageSendEmbed(channel.ID, embed); err != nil {
+				m.logger.Error("failed to send notification embed",
+					slog.String("userID", p.req.UserID),
+					slog.Any("err", err))
+			}
+		}
+
+		if r.ExpiringOwner {
+			followup := fmt.Sprintf(
+				"🛒 i put site **%s** in your basket before and you didn't get it. this notification is that basket expiring. to avoid an infinite loop i'm not doing it this time.",
+				r.ExpiringOwnerPick.CampsiteID,
+			)
+			if _, err := m.notifier.ChannelMessageSend(channel.ID, followup); err != nil {
+				m.logger.Warn("send basket-expired followup failed", slog.Any("err", err))
+			}
+		}
+
+		// Auto-book + channel ping only when the user actually won a site in
+		// arbitration. An ExpiringOwner who didn't also win something else
+		// skips both. Channel is suppressed when the won site is one we
+		// recently held (i.e. the "new" availability is a cycle, not news).
+		if r.Won {
+			if _, recyc := recentHeldSet[r.Pick.CampsiteID]; !recyc {
+				m.maybeChannelBroadcast(p.req.UserID)
+			}
+			if m.pool != nil && m.pool.HasUser(p.req.UserID) {
+				expectedBooks++
+				go m.attemptHoldAndReport(ctx, p.req, r.Pick, batchID, channel.ID, outcomeChan)
+			}
+		}
+	}
+
+	outcomesByReq := make(map[int64]bookOutcome, expectedBooks)
+	for i := 0; i < expectedBooks; i++ {
+		select {
+		case <-ctx.Done():
+			i = expectedBooks
+		case o := <-outcomeChan:
+			outcomesByReq[o.winnerReqID] = o
+		}
+	}
+
+	for i, r := range results {
+		if r.Won || len(r.DisplacedBy) == 0 {
+			continue
+		}
+		successful := r.DisplacedBy[:0:0]
+		for _, d := range r.DisplacedBy {
+			if o, ok := outcomesByReq[d.WinnerReqID]; ok && o.success {
+				successful = append(successful, d)
+			}
+		}
+		if len(successful) == 0 {
+			continue
+		}
+		m.sendDisplacementDM(ctx, prep[i].req.UserID, successful)
+	}
+
+	return notifs
+}
+
+// sendAvailabilityEmbed builds the embed for a single request's currently
+// available campsites. Returns the embed (caller sends), or nil if there's
+// nothing to show. Extracted so winners and expiring-owners share the same
+// embed format.
+func (m *Manager) sendAvailabilityEmbed(ctx context.Context, p preparedRequest) *discordgo.MessageEmbed {
+	byCampsite := groupAvailabilityByCampsite(p.allAvailable)
 	campsiteIDs := collectMapKeys(byCampsite)
-	detailsMap, derr := m.store.GetCampsiteDetailsBatch(ctx, req.Provider, req.CampgroundID, campsiteIDs)
+	detailsMap, derr := m.store.GetCampsiteDetailsBatch(ctx, p.req.Provider, p.req.CampgroundID, campsiteIDs)
 	if derr != nil {
 		m.logger.Warn("GetCampsiteDetailsBatch failed; using basic details", slog.Any("err", derr))
 		detailsMap = map[string]db.CampsiteDetails{}
 	}
-	stats := buildCampsiteStats(byCampsite, req.Checkin, req.Checkout, detailsMap)
-
-	campground, _, gerr := m.store.GetCampgroundByID(ctx, req.Provider, req.CampgroundID)
+	stats := buildCampsiteStats(byCampsite, p.req.Checkin, p.req.Checkout, detailsMap)
+	campground, _, gerr := m.store.GetCampgroundByID(ctx, p.req.Provider, p.req.CampgroundID)
 	if gerr != nil {
 		m.logger.Warn("GetCampgroundByID failed; proceeding with minimal info", slog.Any("err", gerr))
 	}
-	campgroundURL := m.CampgroundURL(req.Provider, req.CampgroundID)
-	provider, _ := m.reg.Get(req.Provider)
+	campgroundURL := m.CampgroundURL(p.req.Provider, p.req.CampgroundID)
+	provider, _ := m.reg.Get(p.req.Provider)
 
 	embeds := BuildNotificationEmbeds(
-		req.Checkin, req.Checkout, req.UserID,
+		p.req.Checkin, p.req.Checkout, p.req.UserID,
 		campground.Name, campgroundURL, campground.ID,
 		stats,
 		provider,
 	)
-	actuallySent := false
 	for _, e := range embeds {
-		if e == nil {
-			continue
+		if e != nil {
+			return e
 		}
-		if _, sendErr := m.notifier.ChannelMessageSendEmbed(channel.ID, e); sendErr != nil {
-			m.logger.Error("failed to send notification embed", slog.Any("err", sendErr), slog.String("userID", req.UserID))
-			err = sendErr
-			continue
-		}
-		actuallySent = true
 	}
-	return actuallySent, err
+	return nil
 }
 
-// startBookingAttempt runs the selection + HoldCampsite call in a goroutine.
-// It sends two DMs directly to channelID: an "attempting to hold X" message
-// as soon as we have a pick, and a result message when the hold finishes.
-// The caller does not block on Discord, and the booking does not block on
-// Discord.
-func (m *Manager) startBookingAttempt(
+// maybeChannelBroadcast posts the silly broadcast to the public summary
+// channel; isolated so the bucket coordinator can suppress it when the
+// triggering availability is one of our own recent holds expiring.
+func (m *Manager) maybeChannelBroadcast(userID string) {
+	if m.summaryChannelID == "" {
+		return
+	}
+	if _, err := m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(userID)); err != nil {
+		m.logger.Warn("send channel broadcast failed", slog.Any("err", err))
+	}
+}
+
+// attemptHoldAndReport runs one HoldCampsite call synchronously and reports
+// the result back to the bucket coordinator via outcomeChan. It also sends
+// the user-facing "attempting" + result DMs directly to channelID, and
+// records the booking row to the DB — same side effects as the old
+// startBookingAttempt, just structured to return its outcome upward.
+func (m *Manager) attemptHoldAndReport(
 	ctx context.Context,
 	req db.SchniffRequest,
-	newlyAvail []db.AvailabilityItem,
+	pick booker.Pick,
 	batchID string,
 	channelID string,
+	outcomeChan chan<- bookOutcome,
 ) {
+	m.logger.Info("auto-booking attempt",
+		slog.String("user", req.UserID),
+		slog.String("provider", req.Provider),
+		slog.String("campground", req.CampgroundID),
+		slog.String("campsite", pick.CampsiteID),
+		slog.String("checkin", pick.CheckIn.Format("2006-01-02")),
+		slog.String("checkout", pick.CheckOut.Format("2006-01-02")),
+		slog.Int("nights", pick.Nights),
+		slog.Float64("rating", pick.Rating),
+		slog.String("batch_id", batchID),
+	)
+
 	go func() {
-		// Defensive clip in case state changes overlap multiple windows.
-		clipped := clipToWindow(newlyAvail, req.Checkin, req.Checkout)
-		if len(clipped) == 0 {
-			return
-		}
-
-		// Pull rating per campsite for the selection tiebreak; best-effort.
-		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
-		ids := uniqueCampsiteIDs(clipped)
-		details, _ := m.store.GetCampsiteDetailsBatch(dctx, req.Provider, req.CampgroundID, ids)
-		dcancel()
-		candidates := buildCandidates(clipped, details)
-
-		pick, ok := booker.SelectBestPartial(candidates)
-		if !ok {
-			return
-		}
-
-		m.logger.Info("auto-booking attempt",
-			slog.String("user", req.UserID),
-			slog.String("provider", req.Provider),
-			slog.String("campground", req.CampgroundID),
-			slog.String("campsite", pick.CampsiteID),
-			slog.String("checkin", pick.CheckIn.Format("2006-01-02")),
-			slog.String("checkout", pick.CheckOut.Format("2006-01-02")),
-			slog.Int("nights", pick.Nights),
-			slog.Float64("rating", pick.Rating),
-			slog.String("batch_id", batchID),
+		msg := fmt.Sprintf("🛒 I'm attempting to hold site **%s** for you right now (%s → %s, %d night%s). I'll let you know how I go.",
+			pick.CampsiteID,
+			pick.CheckIn.Format("Mon Jan 2"),
+			pick.CheckOut.Format("Mon Jan 2"),
+			pick.Nights, pluralS(pick.Nights),
 		)
-
-		// Fire-and-forget "attempting" DM right now; nothing in the booking
-		// path waits on it.
-		go func() {
-			msg := fmt.Sprintf("🛒 I'm attempting to hold site **%s** for you right now (%s → %s, %d night%s). I'll let you know how I go.",
-				pick.CampsiteID,
-				pick.CheckIn.Format("Mon Jan 2"),
-				pick.CheckOut.Format("Mon Jan 2"),
-				pick.Nights, pluralS(pick.Nights),
-			)
-			if _, err := m.notifier.ChannelMessageSend(channelID, msg); err != nil {
-				m.logger.Warn("send attempting message failed", slog.Any("err", err))
-			}
-		}()
-
-		bctx, bcancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer bcancel()
-		res, err := m.pool.HoldCampsite(bctx, req.UserID, pick.CampsiteID, req.CampgroundID, pick.CheckIn, pick.CheckOut)
-
-		booking := db.Booking{
-			BatchID:      batchID,
-			UserID:       req.UserID,
-			Provider:     req.Provider,
-			CampgroundID: req.CampgroundID,
-			CampsiteID:   pick.CampsiteID,
-			Checkin:      pick.CheckIn,
-			Checkout:     pick.CheckOut,
-		}
-		if err != nil {
-			emsg := err.Error()
-			booking.Outcome = db.BookingOutcomeFailed
-			booking.ErrorMsg = &emsg
-		} else {
-			booking.Outcome = db.BookingOutcomeHeld
-			if res != nil && res.OrderID != "" {
-				oid := res.OrderID
-				booking.OrderID = &oid
-			}
-		}
-		recCtx, recCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if _, rerr := m.store.InsertBooking(recCtx, booking); rerr != nil {
-			m.logger.Warn("insert booking row failed", slog.Any("err", rerr))
-		}
-		recCancel()
-
-		if err != nil {
-			m.logger.Warn("auto-booking failed",
-				slog.String("user", req.UserID),
-				slog.String("campsite", pick.CampsiteID),
-				slog.Any("err", err),
-			)
-		} else {
-			oid := ""
-			if res != nil {
-				oid = res.OrderID
-			}
-			m.logger.Info("auto-booking held",
-				slog.String("user", req.UserID),
-				slog.String("campsite", pick.CampsiteID),
-				slog.String("order_id", oid),
-			)
-		}
-
-		result := formatBookingOutcome(pick, res, err)
-		if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
-			m.logger.Warn("send booking result message failed", slog.Any("err", derr))
+		if _, err := m.notifier.ChannelMessageSend(channelID, msg); err != nil {
+			m.logger.Warn("send attempting message failed", slog.Any("err", err))
 		}
 	}()
+
+	bctx, bcancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer bcancel()
+	res, err := m.pool.HoldCampsite(bctx, req.UserID, pick.CampsiteID, req.CampgroundID, pick.CheckIn, pick.CheckOut)
+
+	booking := db.Booking{
+		BatchID:      batchID,
+		UserID:       req.UserID,
+		Provider:     req.Provider,
+		CampgroundID: req.CampgroundID,
+		CampsiteID:   pick.CampsiteID,
+		Checkin:      pick.CheckIn,
+		Checkout:     pick.CheckOut,
+	}
+	if err != nil {
+		emsg := err.Error()
+		booking.Outcome = db.BookingOutcomeFailed
+		booking.ErrorMsg = &emsg
+	} else {
+		booking.Outcome = db.BookingOutcomeHeld
+		if res != nil && res.OrderID != "" {
+			oid := res.OrderID
+			booking.OrderID = &oid
+		}
+	}
+	recCtx, recCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if _, rerr := m.store.InsertBooking(recCtx, booking); rerr != nil {
+		m.logger.Warn("insert booking row failed", slog.Any("err", rerr))
+	}
+	recCancel()
+
+	if err != nil {
+		m.logger.Warn("auto-booking failed",
+			slog.String("user", req.UserID),
+			slog.String("campsite", pick.CampsiteID),
+			slog.Any("err", err))
+	} else {
+		oid := ""
+		if res != nil {
+			oid = res.OrderID
+		}
+		m.logger.Info("auto-booking held",
+			slog.String("user", req.UserID),
+			slog.String("campsite", pick.CampsiteID),
+			slog.String("order_id", oid))
+	}
+
+	result := formatBookingOutcome(pick, res, err)
+	if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
+		m.logger.Warn("send booking result message failed", slog.Any("err", derr))
+	}
+
+	outcomeChan <- bookOutcome{
+		winnerReqID:  req.ID,
+		winnerUserID: req.UserID,
+		pick:         pick,
+		success:      err == nil,
+	}
+}
+
+// sendDisplacementDM tells a user that an older schniff (lower request_id)
+// beat them to one or more sites this tick, naming the winners so the user
+// can reach out. Winner IDs are plain text — DMs from a bot can't ping
+// other users anyway, and we want recipients to know the username.
+func (m *Manager) sendDisplacementDM(ctx context.Context, userID string, displacements []DisplacementRecord) {
+	channel, err := m.notifier.UserChannelCreate(userID)
+	if err != nil {
+		m.logger.Warn("displacement DM: user channel create failed",
+			slog.String("userID", userID),
+			slog.Any("err", err))
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("👀 Heads up — a site you were watching opened up, but an older schniff got there first:\n")
+	for _, d := range displacements {
+		name := m.lookupUsername(d.WinnerUserID)
+		b.WriteString(fmt.Sprintf("• Site **%s** → **%s** created their schniff before you, so I booked it for them. It's in their basket now.\n",
+			d.CampsiteID, name))
+	}
+	if _, err := m.notifier.ChannelMessageSend(channel.ID, b.String()); err != nil {
+		m.logger.Warn("send displacement DM failed",
+			slog.String("userID", userID),
+			slog.Any("err", err))
+	}
+	_ = ctx
+}
+
+// lookupUsername returns the Discord username for userID, falling back to a
+// raw ID reference if the lookup fails. Plain text only — DMs from a bot
+// can't ping other users.
+func (m *Manager) lookupUsername(userID string) string {
+	if m.notifier == nil {
+		return userID
+	}
+	u, err := m.notifier.User(userID)
+	if err != nil || u == nil || u.Username == "" {
+		return userID
+	}
+	return u.Username
 }
 
 func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) string {
