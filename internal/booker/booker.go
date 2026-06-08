@@ -39,11 +39,6 @@ var ErrBadCredentials = errors.New("bad credentials")
 // reCAPTCHA score and requires its visible human-verification challenge.
 var ErrHumanVerification = errors.New("human verification required")
 
-// ErrSiteUnavailable is returned when rec.gov rejects the booking with a 400.
-// In practice this means the site was taken between our availability poll and
-// our POST — someone else (often another bot) got there first.
-var ErrSiteUnavailable = errors.New("site no longer available")
-
 type Config struct {
 	ProfileDir string
 	ChromePath string // empty = autodetect
@@ -312,8 +307,8 @@ func bookingResponseError(response map[string]any, orderID string) error {
 	if status < 200 || status >= 300 {
 		body, _ := json.Marshal(response)
 		slog.Warn("rec.gov booking rejected", slog.Any("status", response["status"]), slog.String("body", string(body)))
-		if int(status) == 400 {
-			return fmt.Errorf("%w (rec.gov 400)", ErrSiteUnavailable)
+		if msg, ok := response["error"].(string); ok && msg != "" {
+			return fmt.Errorf("rec.gov %v: %s", response["status"], msg)
 		}
 		return fmt.Errorf("rec.gov returned status %v: %s", response["status"], string(body))
 	}
