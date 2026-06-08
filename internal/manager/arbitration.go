@@ -2,6 +2,7 @@ package manager
 
 import (
 	"sort"
+	"time"
 
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
@@ -50,6 +51,20 @@ type ArbResult struct {
 	DisplacedBy []DisplacementRecord
 }
 
+// isOwnExpiringHold reports whether the (user, campsite, date-range) tuple
+// matches a recent held booking that's still inside its 15-min cart window.
+// Used by arbitration to avoid auto-re-booking the same site & dates a user
+// just let expire. A new candidate range that doesn't overlap the held
+// range (e.g. a separate trip later in the season) is NOT a match — that
+// trip is fair game to auto-book.
+func isOwnExpiringHold(holds map[string]db.RecentHoldOwner, campsiteID, userID string, checkIn, checkOut time.Time) bool {
+	h, ok := holds[campsiteID]
+	if !ok || h.UserID != userID {
+		return false
+	}
+	return checkIn.Before(h.Checkout) && h.Checkin.Before(checkOut)
+}
+
 // pickForRequest applies the right selector for a request: full_weekend
 // schniffs book only the first Fri+Sat pair, everything else takes the
 // longest contiguous run.
@@ -65,10 +80,11 @@ func pickForRequest(req db.SchniffRequest, candidates []booker.Candidate) (booke
 // higher rating → lower request_id. Once a campsite is taken or a request
 // already has a win, both drop out of the pool.
 //
-// A pair where the request's user is the expiringOwners[campsite] (their
-// own hold just expired on that site) is excluded — we never auto-book the
-// same user the same site they just let go.
-func Arbitrate(inputs []ArbInput, expiringOwners map[string]string) []ArbResult {
+// A pair where the request's user is the expiring holder of that campsite
+// AND the candidate's pick overlaps the held date range is excluded — we
+// never auto-book the same user the same (campsite, dates) they just let
+// go. A different date range on the same campsite is still fair game.
+func Arbitrate(inputs []ArbInput, expiringHolds map[string]db.RecentHoldOwner) []ArbResult {
 	type pairScore struct {
 		reqIdx int
 		pick   booker.Pick
@@ -76,11 +92,11 @@ func Arbitrate(inputs []ArbInput, expiringOwners map[string]string) []ArbResult 
 	var pairs []pairScore
 	for i, in := range inputs {
 		for _, c := range in.Candidates {
-			if owner, ok := expiringOwners[c.CampsiteID]; ok && owner == in.Request.UserID {
-				continue
-			}
 			pick, ok := pickForRequest(in.Request, []booker.Candidate{c})
 			if !ok {
+				continue
+			}
+			if isOwnExpiringHold(expiringHolds, c.CampsiteID, in.Request.UserID, pick.CheckIn, pick.CheckOut) {
 				continue
 			}
 			pairs = append(pairs, pairScore{reqIdx: i, pick: pick})
@@ -119,19 +135,24 @@ func Arbitrate(inputs []ArbInput, expiringOwners map[string]string) []ArbResult 
 		}
 
 		// ExpiringOwner: did this user have one of their own recently-held
-		// sites in their candidate pool?
+		// sites in their candidate pool, with overlapping dates?
 		for _, c := range in.Candidates {
-			if owner, ok := expiringOwners[c.CampsiteID]; ok && owner == in.Request.UserID {
-				pick, hasDates := pickForRequest(in.Request, []booker.Candidate{c})
-				r.ExpiringOwner = true
-				r.ExpiringOwnerHadCap = hasDates
-				if hasDates {
-					r.ExpiringOwnerPick = pick
-				} else {
-					r.ExpiringOwnerPick = booker.Pick{CampsiteID: c.CampsiteID}
-				}
-				break
+			pick, hasDates := pickForRequest(in.Request, []booker.Candidate{c})
+			var checkIn, checkOut = pick.CheckIn, pick.CheckOut
+			if !hasDates {
+				checkIn, checkOut = in.Request.Checkin, in.Request.Checkout
 			}
+			if !isOwnExpiringHold(expiringHolds, c.CampsiteID, in.Request.UserID, checkIn, checkOut) {
+				continue
+			}
+			r.ExpiringOwner = true
+			r.ExpiringOwnerHadCap = hasDates
+			if hasDates {
+				r.ExpiringOwnerPick = pick
+			} else {
+				r.ExpiringOwnerPick = booker.Pick{CampsiteID: c.CampsiteID}
+			}
+			break
 		}
 
 		// Displacement (strict): only report displacements for requests that

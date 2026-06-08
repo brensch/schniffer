@@ -98,7 +98,13 @@ type preparedRequest struct {
 	req          db.SchniffRequest
 	changes      []db.StateChangeForRequest
 	allAvailable []db.AvailabilityItem
-	candidates   []booker.Candidate
+	// risingEdges is the per-schniff rising-edge set: campsite-day pairs
+	// that are currently available and that we haven't already shown this
+	// user (or that came back after going away). This is what the embed
+	// lists. On the schniff's first fire it'll cover all matching sites; on
+	// later fires it narrows down to the truly new ones.
+	risingEdges []db.AvailabilityItem
+	candidates  []booker.Candidate
 }
 
 // bookOutcome travels back from the per-winner hold goroutines to the
@@ -131,13 +137,39 @@ func (m *Manager) processCampgroundBucket(
 			slog.String("campground", campgroundID),
 			slog.Any("err", err))
 	}
-	expiringOwners := make(map[string]string, len(recentHolds))
 	recentHeldSet := make(map[string]struct{}, len(recentHolds))
 	expiringHoldByCampsite := make(map[string]db.RecentHoldOwner, len(recentHolds))
 	for _, h := range recentHolds {
-		expiringOwners[h.CampsiteID] = h.UserID
 		recentHeldSet[h.CampsiteID] = struct{}{}
 		expiringHoldByCampsite[h.CampsiteID] = h
+	}
+
+	// skipNotifs collects mark-as-processed rows for requests that don't
+	// make it into prep (no newly-available changes, or strategy not met).
+	// Without these, GetUnnotifiedStateChanges keeps returning the same
+	// state changes every poll AND the rising-edge query gets a stale view
+	// (e.g. an unavailable transition we never recorded looks like the
+	// site is "still notified as available").
+	skipNotifs := make([]db.Notification, 0)
+	markProcessed := func(req db.SchniffRequest, changes []db.StateChangeForRequest) {
+		for _, c := range changes {
+			state := "available"
+			if !c.NewAvailable {
+				state = "unavailable"
+			}
+			cc := c
+			skipNotifs = append(skipNotifs, db.Notification{
+				RequestID:     req.ID,
+				UserID:        req.UserID,
+				Provider:      cc.Provider,
+				CampgroundID:  cc.CampgroundID,
+				CampsiteID:    cc.CampsiteID,
+				Date:          cc.Date,
+				State:         state,
+				StateChangeID: &cc.ID,
+				SentAt:        now,
+			})
+		}
 	}
 
 	prep := make([]preparedRequest, 0, len(reqIDs))
@@ -149,9 +181,10 @@ func (m *Manager) processCampgroundBucket(
 		changes := changesByRequest[id]
 		newlyAvail, _ := separateChanges(changes)
 		if len(newlyAvail) == 0 {
-			m.logger.Info("no newly-available changes; skipping",
+			m.logger.Info("no newly-available changes; skipping embed",
 				slog.Int64("requestID", req.ID),
 				slog.String("userID", req.UserID))
+			markProcessed(req, changes)
 			continue
 		}
 
@@ -160,11 +193,12 @@ func (m *Manager) processCampgroundBucket(
 			m.logger.Warn("get currently available campsites failed", slog.Any("err", qerr))
 		}
 		if !requestConditionsMet(req, allAvailable) {
-			m.logger.Info("schniff conditions not yet met; skipping",
+			m.logger.Info("schniff conditions not yet met; skipping embed",
 				slog.Int64("requestID", req.ID),
 				slog.String("userID", req.UserID),
 				slog.Bool("hasMinNights", req.MinimumNights.Valid),
 				slog.Bool("hasStrategy", req.Strategy.Valid))
+			markProcessed(req, changes)
 			continue
 		}
 
@@ -174,23 +208,32 @@ func (m *Manager) processCampgroundBucket(
 		dcancel()
 		candidates := buildCandidates(clipped, details)
 
+		risingEdges, rerr := m.store.GetRisingEdgesForRequest(ctx, req)
+		if rerr != nil {
+			m.logger.Warn("rising-edge lookup failed; falling back to this-batch changes",
+				slog.Int64("requestID", req.ID),
+				slog.Any("err", rerr))
+			risingEdges = clipped
+		}
+
 		prep = append(prep, preparedRequest{
 			req:          req,
 			changes:      changes,
 			allAvailable: allAvailable,
+			risingEdges:  risingEdges,
 			candidates:   candidates,
 		})
 	}
 
 	if len(prep) == 0 {
-		return nil
+		return skipNotifs
 	}
 
 	inputs := make([]ArbInput, len(prep))
 	for i, p := range prep {
 		inputs[i] = ArbInput{Request: p.req, Candidates: p.candidates}
 	}
-	results := Arbitrate(inputs, expiringOwners)
+	results := Arbitrate(inputs, expiringHoldByCampsite)
 
 	outcomeChan := make(chan bookOutcome, len(results))
 	expectedBooks := 0
@@ -241,6 +284,33 @@ func (m *Manager) processCampgroundBucket(
 					slog.String("userID", p.req.UserID),
 					slog.Any("err", err))
 			}
+		}
+
+		// Record that we just told the user about each rising-edge site, so
+		// next fire's rising-edge query knows not to re-show them. Items
+		// that came from a state change in this batch already have a row
+		// inserted above with state_change_id set; skip those to avoid dupes.
+		seen := make(map[string]struct{}, len(p.changes))
+		for _, c := range p.changes {
+			if c.NewAvailable {
+				seen[c.CampsiteID+"|"+c.Date.UTC().Format("2006-01-02")] = struct{}{}
+			}
+		}
+		for _, it := range p.risingEdges {
+			k := it.CampsiteID + "|" + it.Date.UTC().Format("2006-01-02")
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			notifs = append(notifs, db.Notification{
+				RequestID:    p.req.ID,
+				UserID:       p.req.UserID,
+				Provider:     p.req.Provider,
+				CampgroundID: p.req.CampgroundID,
+				CampsiteID:   it.CampsiteID,
+				Date:         it.Date,
+				State:        "available",
+				SentAt:       now,
+			})
 		}
 
 		if r.ExpiringOwner {
@@ -294,7 +364,7 @@ func (m *Manager) processCampgroundBucket(
 		m.sendDisplacementDM(ctx, prep[i].req.UserID, successful)
 	}
 
-	return notifs
+	return append(notifs, skipNotifs...)
 }
 
 // sendAvailabilityEmbed builds the embed for a single request's currently
@@ -302,7 +372,16 @@ func (m *Manager) processCampgroundBucket(
 // nothing to show. Extracted so winners and expiring-owners share the same
 // embed format.
 func (m *Manager) sendAvailabilityEmbed(ctx context.Context, p preparedRequest) *discordgo.MessageEmbed {
-	byCampsite := groupAvailabilityByCampsite(p.allAvailable)
+	// Embed lists only the rising-edge items for this schniff: first fire
+	// gets the full matching inventory, subsequent fires only show what's
+	// newly available since we last told them. Falls back to allAvailable
+	// if the rising-edge query came back empty (defensive — shouldn't
+	// happen since we got here via a state change).
+	source := p.risingEdges
+	if len(source) == 0 {
+		source = p.allAvailable
+	}
+	byCampsite := groupAvailabilityByCampsite(source)
 	campsiteIDs := collectMapKeys(byCampsite)
 	detailsMap, derr := m.store.GetCampsiteDetailsBatch(ctx, p.req.Provider, p.req.CampgroundID, campsiteIDs)
 	if derr != nil {
