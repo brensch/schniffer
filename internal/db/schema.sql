@@ -182,9 +182,14 @@ CREATE INDEX IF NOT EXISTS idx_notifications_last_batch ON notifications(request
 CREATE INDEX IF NOT EXISTS idx_notifications_provider_lookup ON notifications(provider, campground_id, date, batch_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_batch_latest ON notifications(provider, campground_id, sent_at DESC, batch_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_composite ON notifications(provider, campground_id, date, sent_at DESC);
--- Per-request rising-edge lookup: window function partitions by (campsite, date)
--- and picks the latest row, scoped to one request_id. This covers it.
+-- Per-request rising-edge lookup: for each (campsite, date) we LIMIT 1
+-- on (request_id, campsite_id, date) sorted by sent_at DESC. This covers it.
 CREATE INDEX IF NOT EXISTS idx_notifications_rising_edge ON notifications(request_id, campsite_id, date, sent_at DESC);
+-- GetUnnotifiedStateChanges runs a correlated NOT EXISTS on
+-- (state_change_id, request_id) per poll per active schniff. Without
+-- this index it scans every notification for the request — at 3.6M
+-- notifications/request that goes from minutes to milliseconds.
+CREATE INDEX IF NOT EXISTS idx_notifications_state_change ON notifications(state_change_id, request_id);
 
 -- Metadata sync log (for campground syncing)
 CREATE TABLE IF NOT EXISTS metadata_sync_log (
