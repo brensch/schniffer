@@ -63,6 +63,65 @@ func SelectBestPartial(candidates []Candidate) (Pick, bool) {
 	return best, have
 }
 
+// SelectFirstWeekend picks the earliest Fri+Sat pair available on the same
+// campsite across the candidates. Returns a 2-night Pick (Fri checkin → Sun
+// checkout). Use this when the schniff's strategy is "full weekend" so we
+// reserve just the weekend instead of the longest contiguous run, which may
+// exceed campground max-stay or overshoot what the user wants.
+//
+// Ties (multiple campsites with the same earliest Friday) are broken by
+// higher rating, then lower CampsiteID — same as better().
+func SelectFirstWeekend(candidates []Candidate) (Pick, bool) {
+	var best Pick
+	var have bool
+	for _, c := range candidates {
+		fri, ok := earliestFridaySaturday(c.Dates)
+		if !ok {
+			continue
+		}
+		cand := Pick{
+			CampsiteID: c.CampsiteID,
+			CheckIn:    fri,
+			CheckOut:   fri.AddDate(0, 0, 2),
+			Nights:     2,
+			Rating:     c.Rating,
+		}
+		if !have || weekendBetter(cand, best) {
+			best = cand
+			have = true
+		}
+	}
+	return best, have
+}
+
+func weekendBetter(a, b Pick) bool {
+	if !a.CheckIn.Equal(b.CheckIn) {
+		return a.CheckIn.Before(b.CheckIn)
+	}
+	if a.Rating != b.Rating {
+		return a.Rating > b.Rating
+	}
+	return a.CampsiteID < b.CampsiteID
+}
+
+func earliestFridaySaturday(dates []time.Time) (time.Time, bool) {
+	set := map[time.Time]bool{}
+	for _, d := range dates {
+		set[d.UTC().Truncate(24*time.Hour)] = true
+	}
+	uniq := make([]time.Time, 0, len(set))
+	for d := range set {
+		uniq = append(uniq, d)
+	}
+	sort.Slice(uniq, func(i, j int) bool { return uniq[i].Before(uniq[j]) })
+	for _, d := range uniq {
+		if d.Weekday() == time.Friday && set[d.AddDate(0, 0, 1)] {
+			return d, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // better returns true if a is preferable to b: more nights wins; ties broken
 // by higher rating, then by lower CampsiteID lexically.
 func better(a, b Pick) bool {
