@@ -115,6 +115,52 @@ func (s *Store) InsertBooking(ctx context.Context, b Booking) (int64, error) {
 	return res.LastInsertId()
 }
 
+// RecentHoldOwner describes the user whose held booking on a given campsite
+// is the most recent within the lookup window. Used to detect cart-hold
+// expiries: when a campsite flips back to available shortly after we held
+// it, the original holder gets a "basket expired" follow-up DM instead of
+// another auto-book attempt for them.
+type RecentHoldOwner struct {
+	CampsiteID  string
+	UserID      string
+	Checkin     time.Time
+	Checkout    time.Time
+	AttemptedAt time.Time
+}
+
+// RecentHoldOwnersForCampground returns the most recent held booking per
+// campsite within the given campground that was attempted after `since`.
+// One row per campsite (latest wins on ties). Callers intersect the held
+// window with the dates that just became available.
+func (s *Store) RecentHoldOwnersForCampground(ctx context.Context, provider, campgroundID string, since time.Time) ([]RecentHoldOwner, error) {
+	rows, err := s.ReadConnection().QueryContext(ctx, `
+		SELECT campsite_id, user_id, checkin, checkout, attempted_at
+		FROM bookings
+		WHERE provider=? AND campground_id=?
+		  AND outcome='held'
+		  AND attempted_at > ?
+		ORDER BY campsite_id, attempted_at DESC
+	`, provider, campgroundID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecentHoldOwner
+	seen := map[string]bool{}
+	for rows.Next() {
+		var r RecentHoldOwner
+		if err := rows.Scan(&r.CampsiteID, &r.UserID, &r.Checkin, &r.Checkout, &r.AttemptedAt); err != nil {
+			return nil, err
+		}
+		if seen[r.CampsiteID] {
+			continue
+		}
+		seen[r.CampsiteID] = true
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListBookingsByBatch(ctx context.Context, batchID string) ([]Booking, error) {
 	rows, err := s.ReadConnection().QueryContext(ctx, `
 		SELECT id, batch_id, user_id, provider, campground_id, campsite_id, checkin, checkout, outcome, order_id, error_msg, attempted_at
