@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -28,38 +27,20 @@ func (b *Bot) handleGroupListCommand(s *discordgo.Session, i *discordgo.Interact
 	})
 
 	ctx := context.Background()
-	const maxDesc = 3800
-	desc := strings.Builder{}
-	embeds := make([]*discordgo.MessageEmbed, 0)
-	flush := func() {
-		if desc.Len() == 0 {
-			return
+	embeds := make([]*discordgo.MessageEmbed, 0, len(groups))
+	for _, g := range groups {
+		lines := make([]string, 0, len(g.Campgrounds))
+		for _, cg := range g.Campgrounds {
+			lines = append(lines, "▸ "+b.formatCampgroundWithLink(ctx, cg.Provider, cg.CampgroundID, cg.CampgroundID))
 		}
 		embeds = append(embeds, &discordgo.MessageEmbed{
-			Description: desc.String(),
-			Timestamp:   time.Now().Format(time.RFC3339),
+			Author:      &discordgo.MessageEmbedAuthor{Name: "Group: " + g.Name},
+			Description: strings.Join(lines, "\n"),
+			Color:       colorFromName(g.Name),
+			Footer:      &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("%d site%s", len(g.Campgrounds), plural(len(g.Campgrounds)))},
 		})
-		desc.Reset()
 	}
 
-	for _, g := range groups {
-		block := strings.Builder{}
-		block.WriteString(fmt.Sprintf("**%s** · `id %d` · %d site%s\n",
-			sanitizeGenericText(g.Name), g.ID, len(g.Campgrounds), plural(len(g.Campgrounds))))
-		for _, cg := range g.Campgrounds {
-			name := b.formatCampgroundWithLink(ctx, cg.Provider, cg.CampgroundID, cg.CampgroundID)
-			block.WriteString("• " + name + "\n")
-		}
-		block.WriteString("\n")
-
-		if desc.Len()+block.Len() > maxDesc {
-			flush()
-		}
-		desc.WriteString(block.String())
-	}
-	flush()
-
-	// Send in batches of up to 10 embeds per message.
 	for start := 0; start < len(embeds); start += 10 {
 		end := start + 10
 		if end > len(embeds) {

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,61 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// colorFromName maps a name to a deterministic, bright-on-dark embed color.
+// Same input always produces the same color; useful for grouping items
+// (e.g. all campgrounds in one park share a color).
+func colorFromName(s string) int {
+	h := md5.Sum([]byte(s))
+	hue := float64(uint16(h[0])|uint16(h[1])<<8) / 65535.0
+	r, g, b := hslToRGB(hue, 0.55, 0.70)
+	return r<<16 | g<<8 | b
+}
+
+// hslToRGB converts HSL (all in [0,1]) to 0-255 RGB ints, matching Python's
+// colorsys.hls_to_rgb (note: Python's order is H, L, S).
+func hslToRGB(h, l, s float64) (int, int, int) {
+	if s == 0 {
+		v := int(l * 255)
+		return v, v, v
+	}
+	var m2 float64
+	if l <= 0.5 {
+		m2 = l * (1 + s)
+	} else {
+		m2 = l + s - l*s
+	}
+	m1 := 2*l - m2
+	c := func(x float64) int {
+		if x < 0 {
+			x += 1
+		}
+		if x > 1 {
+			x -= 1
+		}
+		switch {
+		case x*6 < 1:
+			return int((m1 + (m2-m1)*6*x) * 255)
+		case x*2 < 1:
+			return int(m2 * 255)
+		case x*3 < 2:
+			return int((m1 + (m2-m1)*(2.0/3.0-x)*6) * 255)
+		default:
+			return int(m1 * 255)
+		}
+	}
+	return c(h + 1.0/3.0), c(h), c(h - 1.0/3.0)
+}
+
+// parkOf returns the parent-park prefix of a campground name
+// ("Yosemite National Park: Upper Pines" -> "Yosemite National Park"),
+// falling back to the whole name when there is no ": " separator.
+func parkOf(name string) string {
+	if i := strings.Index(name, ":"); i >= 0 {
+		return strings.TrimSpace(name[:i])
+	}
+	return strings.TrimSpace(name)
+}
 
 func parseDates(s1, s2 string) (time.Time, time.Time, error) {
 	const layout = "2006-01-02"
