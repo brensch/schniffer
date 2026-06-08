@@ -330,6 +330,9 @@ func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) s
 			return fmt.Sprintf("⚠️ Recreation.gov requires a human verification step for site **%s**. [Open the site and finish manually](%s).",
 				pick.CampsiteID, url)
 		}
+		if errors.Is(err, booker.ErrSiteUnavailable) {
+			return fmt.Sprintf("🤖 Bot-on-bot violence: someone else grabbed site **%s** before us.", pick.CampsiteID)
+		}
 		return fmt.Sprintf("❌ Couldn't hold site **%s**: %s", pick.CampsiteID, err.Error())
 	}
 	url := ""
