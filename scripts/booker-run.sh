@@ -26,4 +26,4 @@ docker run --rm \
     -e XDG_CONFIG_HOME=/work/.cache/.config \
     --env-file .env \
     "$IMAGE" \
-    bash -c 'if [ -z "${TWOCAPTCHA_API_KEY:-}" ]; then export TWOCAPTCHA_API_KEY="$(printenv 2CAPTCHA_API_KEY 2>/dev/null || true)"; fi; xvfb-run -a -s "-screen 0 1280x900x24" go run ./cmd/booker '"$*"
+    bash -c 'xvfb-run -a -s "-screen 0 1280x900x24" go run ./cmd/booker '"$*"
