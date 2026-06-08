@@ -163,6 +163,12 @@ func (b *Bot) registerCommands() {
 					{Name: "strategy", Type: discordgo.ApplicationCommandOptionString, Required: false, Description: "Extra condition before notifying/booking", Choices: strategyChoices()},
 				}},
 				{Name: "map", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Open map to create groups or quickly see availability at a site."},
+				{Name: "group", Type: discordgo.ApplicationCommandOptionSubCommandGroup, Description: "Manage saved campground groups", Options: []*discordgo.ApplicationCommandOption{
+					{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List your campground groups and their sites"},
+					{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a campground group", Options: []*discordgo.ApplicationCommandOption{
+						{Name: "group", Type: discordgo.ApplicationCommandOptionString, Required: true, Description: "Select group", Autocomplete: true},
+					}},
+				}},
 				{Name: "remove", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove a single schniff by id.", Options: []*discordgo.ApplicationCommandOption{
 					{Name: "ids", Type: discordgo.ApplicationCommandOptionInteger, Required: true, Description: "Request ID to remove", Autocomplete: true},
 				}},
@@ -214,6 +220,10 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 		return
 	}
 	sub := data.Options[0]
+	// If this is a subcommand group, descend into the inner subcommand.
+	if sub.Type == discordgo.ApplicationCommandOptionSubCommandGroup && len(sub.Options) > 0 {
+		sub = sub.Options[0]
+	}
 	focused := findFocusedOption(sub.Options)
 	if focused == nil {
 		return
@@ -260,6 +270,17 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleAddBulkCommand(s, i, sub)
 	case "map":
 		b.handleLinkMapCommand(s, i, sub)
+	case "group":
+		if len(sub.Options) == 0 {
+			return
+		}
+		inner := sub.Options[0]
+		switch inner.Name {
+		case "list":
+			b.handleGroupListCommand(s, i, inner)
+		case "remove":
+			b.handleGroupRemoveCommand(s, i, inner)
+		}
 	case "remove":
 		b.handleRemoveCommand(s, i, sub)
 	case "remove-all":

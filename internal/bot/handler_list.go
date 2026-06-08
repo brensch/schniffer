@@ -60,47 +60,63 @@ func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		Data: &discordgo.InteractionResponseData{Flags: 1 << 6},
 	})
 
-	// Build embeds (one per schniff) to ensure links render and to stay within limits
+	// Build a compact, mobile-friendly list: two lines per schniff, many per embed.
 	weekday := func(t time.Time) string { return t.Format("Mon") }
-	embeds := make([]*discordgo.MessageEmbed, 0, len(items))
-	for _, it := range items {
-		// display name with link
-		name := b.formatCampgroundWithLink(context.Background(), it.provider, it.campgroundID, it.campgroundID)
+	const maxDesc = 3800
+	desc := strings.Builder{}
+	embeds := make([]*discordgo.MessageEmbed, 0)
+	flush := func() {
+		if desc.Len() == 0 {
+			return
+		}
+		embeds = append(embeds, &discordgo.MessageEmbed{
+			Description: desc.String(),
+			Timestamp:   time.Now().Format(time.RFC3339),
+		})
+		desc.Reset()
+	}
 
+	for _, it := range items {
+		name := b.formatCampgroundWithLink(context.Background(), it.provider, it.campgroundID, it.campgroundID)
 		nights := int(it.checkout.Sub(it.checkin).Hours() / 24)
-		// total checks for this campground since the request was created
 		totalChecks, err := b.store.CountLookupsSinceTime(context.Background(), it.provider, it.campgroundID, it.created)
 		if err != nil {
 			b.logger.Warn("count request checks failed", "err", err)
 			totalChecks = 0
 		}
-		// Build description in the required format but inside an embed
-		desc := strings.Builder{}
-		desc.WriteString(name + "\n")
-		desc.WriteString(fmt.Sprintf("%s (%s) -> %s (%s) (%d nights)\n", it.checkin.Format("2006-01-02"), weekday(it.checkin), it.checkout.Format("2006-01-02"), weekday(it.checkout), nights))
+
+		block := strings.Builder{}
+		block.WriteString(fmt.Sprintf("**%s** · `#%d`\n", name, it.id))
+		// Compact details line, separator-delimited so it wraps cleanly on mobile.
+		bits := []string{
+			fmt.Sprintf("%s %s → %s %s",
+				it.checkin.Format("2006-01-02"), weekday(it.checkin),
+				it.checkout.Format("2006-01-02"), weekday(it.checkout)),
+			fmt.Sprintf("%dn", nights),
+		}
 		if it.minimumNights.Valid {
-			desc.WriteString(fmt.Sprintf("minimum nights: %d\n", it.minimumNights.Int64))
+			bits = append(bits, fmt.Sprintf("min %d", it.minimumNights.Int64))
 		}
 		if it.strategy.Valid && it.strategy.String != "" {
-			desc.WriteString(fmt.Sprintf("strategy: %s\n", it.strategy.String))
+			bits = append(bits, it.strategy.String)
 		}
-		desc.WriteString(fmt.Sprintf("total api calls: %d\n", totalChecks))
+		bits = append(bits, fmt.Sprintf("%d checks", totalChecks))
+		block.WriteString(strings.Join(bits, " · "))
+		block.WriteString("\n\n")
 
-		embeds = append(embeds, &discordgo.MessageEmbed{
-			Description: desc.String(),
-			Timestamp:   time.Now().Format(time.RFC3339),
-		})
-		// Send in batches of up to 10 embeds per message to fit Discord limits
-		if len(embeds) == 10 {
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6})
-			if err != nil {
-				b.logger.Warn("state followup send failed", "err", err)
-			}
-			embeds = nil
+		if desc.Len()+block.Len() > maxDesc {
+			flush()
 		}
+		desc.WriteString(block.String())
 	}
-	if len(embeds) > 0 {
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds, Flags: 1 << 6})
+	flush()
+
+	for start := 0; start < len(embeds); start += 10 {
+		end := start + 10
+		if end > len(embeds) {
+			end = len(embeds)
+		}
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Embeds: embeds[start:end], Flags: 1 << 6})
 		if err != nil {
 			b.logger.Warn("state followup send failed", "err", err)
 		}

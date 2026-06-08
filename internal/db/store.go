@@ -1708,6 +1708,21 @@ func (s *Store) GetGroup(ctx context.Context, groupID int64, userID string) (*Gr
 	return &group, nil
 }
 
+func (s *Store) DeleteGroup(ctx context.Context, groupID int64, userID string) error {
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM groups WHERE id = ? AND user_id = ?`, groupID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete group: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("group not found")
+	}
+	return nil
+}
+
 // GetCampgroundsByProvider retrieves all campgrounds for a specific provider
 func (s *Store) GetCampgroundsByProvider(ctx context.Context, provider string) ([]Campground, error) {
 	rows, err := s.DB.QueryContext(ctx, `
