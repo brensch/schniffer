@@ -82,7 +82,7 @@ func TestArbitrate_ExpiringOwnerExcluded(t *testing.T) {
 	b := mkReq(2, "bob")
 	cand := []booker.Candidate{{CampsiteID: "X", Dates: []time.Time{arbDay(1), arbDay(2)}}}
 	// Alice's hold on X just expired — she can't auto-book it again.
-	res := Arbitrate([]ArbInput{{a, cand}, {b, cand}}, map[string]string{"X": "alice"})
+	res := Arbitrate([]ArbInput{{a, cand}, {b, cand}}, map[string]db.RecentHoldOwner{"X": {CampsiteID: "X", UserID: "alice", Checkin: arbDay(1), Checkout: arbDay(3)}})
 	if res[0].Won {
 		t.Fatal("alice should not win — expiring owner excluded")
 	}
@@ -94,13 +94,29 @@ func TestArbitrate_ExpiringOwnerExcluded(t *testing.T) {
 	}
 }
 
+func TestArbitrate_ExpiringOwnerStillWinsNonOverlappingDates(t *testing.T) {
+	// Alice's just-expired hold on X was for July 1-3. She has a separate
+	// schniff for July 8-9 on the same site X — that's a different trip,
+	// not a re-attempt of the dates she let go. She should win it.
+	a := mkReq(1, "alice")
+	cand := []booker.Candidate{{CampsiteID: "X", Dates: []time.Time{arbDay(8), arbDay(9)}}}
+	holds := map[string]db.RecentHoldOwner{"X": {CampsiteID: "X", UserID: "alice", Checkin: arbDay(1), Checkout: arbDay(3)}}
+	res := Arbitrate([]ArbInput{{a, cand}}, holds)
+	if !res[0].Won {
+		t.Fatal("alice should win X for non-overlapping dates")
+	}
+	if res[0].ExpiringOwner {
+		t.Fatal("not flagged as expiring owner since dates do not overlap")
+	}
+}
+
 func TestArbitrate_ExpiringOwnerStillWinsDifferentSite(t *testing.T) {
 	a := mkReq(1, "alice")
 	cand := []booker.Candidate{
 		{CampsiteID: "X", Dates: []time.Time{arbDay(1), arbDay(2)}}, // alice held this
 		{CampsiteID: "Y", Dates: []time.Time{arbDay(1), arbDay(2)}}, // alice can have this
 	}
-	res := Arbitrate([]ArbInput{{a, cand}}, map[string]string{"X": "alice"})
+	res := Arbitrate([]ArbInput{{a, cand}}, map[string]db.RecentHoldOwner{"X": {CampsiteID: "X", UserID: "alice", Checkin: arbDay(1), Checkout: arbDay(3)}})
 	if !res[0].Won {
 		t.Fatal("alice should win site Y")
 	}

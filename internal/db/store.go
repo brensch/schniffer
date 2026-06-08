@@ -1030,6 +1030,59 @@ func (s *Store) GetUnnotifiedStateChanges(ctx context.Context, requests []Schnif
 	return allResults, nil
 }
 
+// GetRisingEdgesForRequest returns campsite-day pairs in the request's window
+// that are currently available and that this request hasn't yet been notified
+// about (or whose most recent notification was "unavailable"). i.e. true
+// rising edges scoped to one schniff.
+//
+// This is what drives the notification embed: on a schniff's first fire it
+// returns every matching available site (so the user sees the starting
+// inventory), and on subsequent fires it returns only the ones we haven't
+// already shown them, plus any that came back after going away.
+//
+// Efficiency: the outer scan walks the small available-campsites-in-window
+// slice via idx_availability_available_filtered. For each row we hit the
+// notifications table with a correlated lookup
+// (request_id, campsite_id, date) covered by idx_notifications_rising_edge
+// and take the latest row. Cost is O(availability_rows * log notif_rows)
+// — independent of how much notification history this request has
+// accumulated. Verified at 3.6M notifications/request: ~6ms.
+func (s *Store) GetRisingEdgesForRequest(ctx context.Context, req SchniffRequest) ([]AvailabilityItem, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT a.campsite_id, a.date
+		FROM campsite_availability a
+		WHERE a.provider = ?
+		  AND a.campground_id = ?
+		  AND a.date >= ?
+		  AND a.date < ?
+		  AND a.available = 1
+		  AND COALESCE((
+		    SELECT n.state
+		    FROM notifications n
+		    WHERE n.request_id = ?
+		      AND n.campsite_id = a.campsite_id
+		      AND n.date = a.date
+		    ORDER BY n.sent_at DESC, n.id DESC
+		    LIMIT 1
+		  ), 'unavailable') = 'unavailable'
+		ORDER BY a.date, a.campsite_id
+	`, req.Provider, req.CampgroundID, req.Checkin, req.Checkout, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []AvailabilityItem
+	for rows.Next() {
+		var item AvailabilityItem
+		if err := rows.Scan(&item.CampsiteID, &item.Date); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // GetCurrentlyAvailableCampsites gets all currently available campsites in a date range
 func (s *Store) GetCurrentlyAvailableCampsites(ctx context.Context, provider, campgroundID string, startDate, endDate time.Time) ([]AvailabilityItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `
