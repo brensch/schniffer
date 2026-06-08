@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,13 +29,24 @@ func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		campgroundID      string
 		checkin, checkout time.Time
 		created           time.Time
+		minimumNights     sql.NullInt64
+		strategy          sql.NullString
 	}
 	items := make([]item, 0)
 	for _, r := range reqs {
 		if r.UserID != uid || !r.Active {
 			continue
 		}
-		items = append(items, item{id: r.ID, provider: r.Provider, campgroundID: r.CampgroundID, checkin: r.Checkin, checkout: r.Checkout, created: r.CreatedAt})
+		items = append(items, item{
+			id:            r.ID,
+			provider:      r.Provider,
+			campgroundID:  r.CampgroundID,
+			checkin:       r.Checkin,
+			checkout:      r.Checkout,
+			created:       r.CreatedAt,
+			minimumNights: r.MinimumNights,
+			strategy:      r.Strategy,
+		})
 	}
 	if len(items) == 0 {
 		respond(s, i, "no active schniffs")
@@ -66,6 +78,12 @@ func (b *Bot) handleListCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		desc := strings.Builder{}
 		desc.WriteString(name + "\n")
 		desc.WriteString(fmt.Sprintf("%s (%s) -> %s (%s) (%d nights)\n", it.checkin.Format("2006-01-02"), weekday(it.checkin), it.checkout.Format("2006-01-02"), weekday(it.checkout), nights))
+		if it.minimumNights.Valid {
+			desc.WriteString(fmt.Sprintf("minimum nights: %d\n", it.minimumNights.Int64))
+		}
+		if it.strategy.Valid && it.strategy.String != "" {
+			desc.WriteString(fmt.Sprintf("strategy: %s\n", it.strategy.String))
+		}
 		desc.WriteString(fmt.Sprintf("total api calls: %d\n", totalChecks))
 
 		embeds = append(embeds, &discordgo.MessageEmbed{
