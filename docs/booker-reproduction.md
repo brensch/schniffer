@@ -1,7 +1,9 @@
 # Booker prototype — how the working flow runs today
 
-Snapshot of the current end-to-end flow, taken after the 2026-06-07 round of
-testing. Two successful holds were placed during that session:
+Snapshot of the current end-to-end flow, taken after the 2026-06-08
+cleanup that removed the (non-functional) 2captcha fallback path. The
+earlier 2026-06-07 testing round placed two successful holds via the
+in-page reCAPTCHA Enterprise path:
 
 - Campsite **10085607** (Baker Dam), 2026-10-15 → 2026-10-16. Order
   `13c48a05-cb69-4642-9254-f025fcdc35e6`. Took ~1.5s booking time.
@@ -46,7 +48,7 @@ container that had a different hostname), `booker.Open` deletes
 ### 3. Booker library — `internal/booker`
 
 - `Session` (booker.go): owns one Chrome instance via chromedp; exposes
-  `Login`, `HoldCampsite`, `HoldCampsiteWithToken`, `Refresh`, `Close`.
+  `Login`, `HoldCampsite`, `Refresh`, `Close`.
 - `Pool` (pool.go): per-user warm sessions for the production bot path.
 - `selection.go`: pure selection algorithm (longest contiguous stretch,
   tie-break by rating).
@@ -64,7 +66,6 @@ Flags worth knowing:
 | `-nights`        | `1`                              | Length of stay.                                         |
 | `-profile`       | `$CHROME_PROFILE`                | Chrome user-data-dir.                                   |
 | `-login-only`    | `false`                          | Just warm cookies + JWT, don't book.                    |
-| `-use-2captcha`  | `false`                          | Force the 2captcha fallback path (see "What 2captcha did" below). |
 | `-debug-dir`     | `/work/.cache/debug`             | Last response JSON + (on failure) screenshot/html.      |
 | `-timeout`       | `5m`                             | Overall context timeout.                                |
 
@@ -83,13 +84,7 @@ Flags worth knowing:
 ```
 REC_GOV_EMAIL=you@example.com
 REC_GOV_PASSWORD=...
-2CAPTCHA_API_KEY=...               # only needed for -use-2captcha
 ```
-
-`scripts/booker-run.sh` aliases `2CAPTCHA_API_KEY` → `TWOCAPTCHA_API_KEY`
-inside the container because `xvfb-run` strips env vars with POSIX-invalid
-names (any var starting with a digit). The Go code reads
-`TWOCAPTCHA_API_KEY` first, falls back to `2CAPTCHA_API_KEY`.
 
 ## Step-by-step: what one successful booking actually does
 
@@ -219,7 +214,7 @@ What happens, in order:
 
 ```
 time=… level=INFO msg="logging in"
-time=… level=INFO msg=booking campsite=89223 campground=233907 arrival=2026-07-07 depart=2026-07-08 use_2captcha=false
+time=… level=INFO msg=booking campsite=89223 campground=233907 arrival=2026-07-07 depart=2026-07-08
 
 Reservation held: https://www.recreation.gov/camping/reservations/orderdetails?id=21f8a377-c371-4202-b5b1-b6b668969fb0
 ```
@@ -257,9 +252,9 @@ every run, success or failure.
 - **`fatal: book: human verification required: Our system has detected
   abnormal activity from your computer network`** — risk score dropped.
   Causes seen: VPN/datacenter IP, fresh profile dir with no
-  `r1s-fingerprint` history, using `--headless`, using a 2captcha-minted
-  token (see below). Cures: slow down, run from residential IP, warm a
-  profile with manual browsing first, never use `--headless`.
+  `r1s-fingerprint` history, using `--headless`. Cures: slow down, run
+  from residential IP, warm a profile with manual browsing first, never
+  use `--headless`.
 - **`fatal: login: bad credentials`** — wrong password, MFA enabled on
   account, or rec.gov is rejecting the login challenge. The form-fill
   path doesn't yet handle the latter two; you'd need to log in manually
@@ -278,36 +273,28 @@ every run, success or failure.
   helper has not been ported into the library. If you need it, copy
   `dumpDebug` from the git history of `cmd/booker/main.go` pre-refactor.
 
-## What the 2captcha test showed (2026-06-07)
+## Why 2captcha was ripped out (2026-06-08)
 
-We added a `-use-2captcha` flag and ran the same booking flow but had
-2captcha mint the reCAPTCHA Enterprise v3 token instead of letting the
-page do it. Result:
-
-| Path                                       | Outcome                                                                 | Time            |
-| ------------------------------------------ | ----------------------------------------------------------------------- | --------------- |
-| In-page `grecaptcha.enterprise.execute()`  | ✅ Held                                                                  | ~1.5s           |
-| 2captcha-minted token spliced into `gate_a`| ❌ "abnormal activity" (mapped to `ErrHumanVerification`)                | ~16s + rejection|
-
-reCAPTCHA Enterprise v3 tokens are silently bound to the issuing browser's
-fingerprint (IP, UA, cookie state). 2captcha mints from their farm; when
-our session POSTs that token, Google's risk engine sees the mismatch and
-returns a near-zero score, which rec.gov surfaces as the abnormal-activity
-rejection. The flag is left in place as a kill-switch but should be
-considered non-functional until we find a captcha provider that supports
-Enterprise v3 with proper fingerprint binding.
+We previously had a `-use-2captcha` flag that minted the reCAPTCHA
+Enterprise v3 token via the 2captcha API and spliced it into `gate_a`.
+The 2026-06-07 test showed it doesn't work: reCAPTCHA Enterprise v3 tokens
+are silently bound to the issuing browser's fingerprint (IP, UA, cookie
+state). 2captcha mints from their farm; when our session POSTs that
+token, Google's risk engine sees the mismatch, returns a near-zero score,
+and rec.gov surfaces it as `ErrHumanVerification` ("abnormal activity").
+Only the in-page `grecaptcha.enterprise.execute()` path holds. The flag,
+solver, and `HoldCampsiteWithToken` entry point have been removed.
 
 ## Files that matter
 
 | Path                                | Role                                                              |
 | ----------------------------------- | ----------------------------------------------------------------- |
 | `docker/Dockerfile.booker`          | Container image: golang:1.26-bookworm + Chrome + Xvfb + tini.     |
-| `scripts/booker-run.sh`             | Build-and-run wrapper. Handles `2CAPTCHA_API_KEY` aliasing.       |
+| `scripts/booker-run.sh`             | Build-and-run wrapper.                                            |
 | `scripts/booker-shell.sh`           | Interactive shell in the dev container.                           |
 | `cmd/booker/main.go`                | CLI; parses flags, calls the library.                             |
-| `internal/booker/booker.go`         | `Session`: launch Chrome, `Login`, `HoldCampsite[WithToken]`.     |
+| `internal/booker/booker.go`         | `Session`: launch Chrome, `Login`, `HoldCampsite`.                |
 | `internal/booker/pool.go`           | Per-user warm pool (for production bot integration).              |
 | `internal/booker/selection.go`      | Pure selection algorithm + tests.                                 |
-| `internal/booker/captcha.go`        | (planned — 2captcha solver wrapper; currently inline in `cmd/booker/main.go`.) |
 | `.cache/recgov-profile/`            | Persistent Chrome user-data-dir.                                  |
 | `.cache/debug/last-response.json`   | Most recent rec.gov response body.                                |

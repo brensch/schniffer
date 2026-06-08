@@ -216,19 +216,6 @@ type HoldResult struct {
 // HoldCampsite navigates to the campsite page, mints a fresh reCAPTCHA
 // Enterprise token in-page, and POSTs to the multi-reservation endpoint.
 func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
-	return s.holdCampsiteWithToken(ctx, campsiteID, campgroundID, checkIn, checkOut, "")
-}
-
-// HoldCampsiteWithToken does the same but uses presetToken (e.g. from
-// 2captcha) instead of calling grecaptcha.enterprise.execute() in-page.
-func (s *Session) HoldCampsiteWithToken(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time, presetToken string) (*HoldResult, error) {
-	if presetToken == "" {
-		return nil, errors.New("presetToken required")
-	}
-	return s.holdCampsiteWithToken(ctx, campsiteID, campgroundID, checkIn, checkOut, presetToken)
-}
-
-func (s *Session) holdCampsiteWithToken(ctx context.Context, campsiteID, campgroundID string, checkIn, checkOut time.Time, presetToken string) (*HoldResult, error) {
 	const iso = "2006-01-02T00:00:00.000Z"
 	if !checkIn.Before(checkOut) {
 		return nil, errors.New("check-in must be before check-out")
@@ -239,13 +226,11 @@ func (s *Session) holdCampsiteWithToken(ctx context.Context, campsiteID, campgro
 	); err != nil {
 		return nil, fmt.Errorf("nav: %w", err)
 	}
-	if presetToken == "" {
-		if err := chromedp.Run(ctx, chromedp.Poll(
-			`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
-			nil, chromedp.WithPollingTimeout(30*time.Second),
-		)); err != nil {
-			return nil, fmt.Errorf("wait recaptcha: %w", err)
-		}
+	if err := chromedp.Run(ctx, chromedp.Poll(
+		`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
+		nil, chromedp.WithPollingTimeout(30*time.Second),
+	)); err != nil {
+		return nil, fmt.Errorf("wait recaptcha: %w", err)
 	}
 	nightMap := map[string]map[string]string{}
 	for day := checkIn; day.Before(checkOut); day = day.AddDate(0, 0, 1) {
@@ -263,13 +248,10 @@ func (s *Session) holdCampsiteWithToken(ctx context.Context, campsiteID, campgro
 		"nightMap":     nightMap,
 		"siteKey":      RecaptchaSiteKey,
 		"action":       RecaptchaAction,
-		"presetToken":  presetToken,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 	script := `(async (p) => {
-		const token = p.presetToken && p.presetToken.length > 0
-			? p.presetToken
-			: await grecaptcha.enterprise.execute(p.siteKey, {action: p.action});
+		const token = await grecaptcha.enterprise.execute(p.siteKey, {action: p.action});
 		const recRaw = window.localStorage.getItem('recaccount');
 		if (!recRaw) throw new Error('no recaccount in localStorage');
 		const rec = JSON.parse(recRaw);
