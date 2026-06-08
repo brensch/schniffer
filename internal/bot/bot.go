@@ -182,17 +182,30 @@ func (b *Bot) registerCommands() {
 		},
 	}
 	appID := b.session.State.Application.ID
-	guildID := ""
+	activeScope := ""
+	inactiveScope := b.guildID
 	if b.useGuild {
-		guildID = b.guildID
-		b.logger.Info("registering commands for guild", slog.String("guild", guildID))
+		activeScope = b.guildID
+		inactiveScope = ""
+		b.logger.Info("registering commands for guild", slog.String("guild", activeScope))
 	} else {
 		b.logger.Info("registering commands globally")
 	}
-	for _, c := range cmds {
-		_, err := b.session.ApplicationCommandCreate(appID, guildID, c)
+
+	// Bulk-overwrite atomically replaces the entire command set for the scope,
+	// so any commands no longer in `cmds` (renames, removals) disappear from
+	// the Discord slash menu instead of lingering.
+	_, err := b.session.ApplicationCommandBulkOverwrite(appID, activeScope, cmds)
+	if err != nil {
+		b.logger.Warn("command bulk overwrite failed", slog.String("scope", activeScope), slog.Any("err", err))
+	}
+
+	// Also clear the other scope so commands left over from a previous run
+	// in the wrong mode (guild ↔ global) don't show up alongside the live set.
+	if inactiveScope != activeScope {
+		_, err := b.session.ApplicationCommandBulkOverwrite(appID, inactiveScope, nil)
 		if err != nil {
-			b.logger.Warn("command registration failed", slog.Any("err", err))
+			b.logger.Warn("inactive-scope clear failed", slog.String("scope", inactiveScope), slog.Any("err", err))
 		}
 	}
 }
