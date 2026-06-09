@@ -1,0 +1,73 @@
+name: Deploy proxy (Cloudflare Worker)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proxy-cf/**'
+      - '.github/workflows/deploy-proxy-cf.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-proxy-cf
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  WORKER_NAME: schniffer-proxy
+  # The workers.dev subdomain for this account. Public (it's in the URL),
+  # not a secret. Change if the account's subdomain ever moves.
+  CF_WORKERS_SUBDOMAIN: schniffer-rec
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy-cf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Push secret to worker (always before deploy in case it rotated)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROXY_SECRET: ${{ secrets.PROXY_SECRET }}
+        run: |
+          # Wrangler reads PROXY_SECRET from stdin for `secret put`. We use the
+          # API directly here so the workflow doesn't depend on wrangler's
+          # interactive prompts. Idempotent — overwrites the existing secret.
+          curl -sS --fail -X PUT \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/secrets" \
+            -d "{\"name\":\"PROXY_SECRET\",\"text\":\"$PROXY_SECRET\",\"type\":\"secret_text\"}" \
+            | jq -e '.success' > /dev/null
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@latest deploy
+
+      - name: Smoke test /healthz
+        run: |
+          # The workers.dev subdomain takes a few seconds to propagate on a
+          # first deploy; poll briefly before failing the workflow.
+          URL="https://${WORKER_NAME}.${CF_WORKERS_SUBDOMAIN}.workers.dev/healthz"
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)
+            if [ "$code" = "200" ]; then
+              echo "healthz ok"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "healthz never returned 200; last code=$code"
+          exit 1

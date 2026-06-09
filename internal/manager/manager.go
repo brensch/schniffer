@@ -131,34 +131,44 @@ func (m *Manager) runExpiryReaper(ctx context.Context) {
 // inside the GCP Cloud Run free tier (see docs/auto-booking.md "Polling
 // cost analysis") and roughly halves the latency from rec.gov flipping
 // availability to schniffer noticing.
-const fastestPoll = 5 * time.Second
-const pollIncrement = 10 * time.Second
+const fastestPoll = 2 * time.Second
+
+// pollBackoffStep is added to the interval each time a cycle returns an
+// error; the next success resets to fastestPoll. Keeps backoff linear so
+// recovery is quick after a transient.
+const pollBackoffStep = 10 * time.Second
 
 func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 	interval := fastestPoll
-
 	m.logger.Info("Starting provider loop", "provider", providerName, "interval", interval)
+
+	// Ticker, not time.After: cycles fire at a fixed cadence even when a
+	// cycle runs longer than the interval. The old time.After paid
+	// interval + cycle_duration between cycles; the ticker decouples the
+	// two so a slow cycle doesn't push the next one out.
+	t := time.NewTicker(interval)
+	defer t.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-t.C:
 			err := m.PollProvider(ctx, providerName)
 			if err != nil {
-				// Double the interval on errors
-				interval += pollIncrement
+				interval += pollBackoffStep
 				m.logger.Warn("Rate limited, increasing interval", "provider", providerName, "new_interval", interval)
 				if interval > 60*time.Second {
 					msg := fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval)
-					_, err = m.notifier.ChannelMessageSend(m.summaryChannelID, msg)
-					if err != nil {
-						m.logger.Warn("failed to send rate limit notification", slog.Any("err", err))
+					_, sendErr := m.notifier.ChannelMessageSend(m.summaryChannelID, msg)
+					if sendErr != nil {
+						m.logger.Warn("failed to send rate limit notification", slog.Any("err", sendErr))
 					}
 				}
-
-			} else {
-				interval = fastestPoll // Reset to fastest poll on success
+				t.Reset(interval)
+			} else if interval != fastestPoll {
+				interval = fastestPoll
+				t.Reset(interval)
 			}
 		}
 	}
