@@ -162,6 +162,20 @@ func (p *Pool) Close() {
 // underlying Chrome has died (chromedp ctx cancelled), the session is
 // transparently relaunched and the booking proceeds on the fresh session.
 func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
+	res, err := p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+	if !errors.Is(err, ErrNotLoggedIn) {
+		return res, err
+	}
+	// Session JWT expired silently. Force a full relaunch (login) and try
+	// once more on the fresh session.
+	p.cfg.Logger.Warn("hold: session not logged in; relaunching and retrying", "user", userID)
+	if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
+		return nil, fmt.Errorf("relaunch after session expiry: %w", relaunchErr)
+	}
+	return p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+}
+
+func (p *Pool) holdOnce(ctx context.Context, userID, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
 	e, err := p.ensureAlive(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -289,17 +303,25 @@ func (p *Pool) watchdogSweep(ctx context.Context) {
 		pa.e.mu.Unlock()
 		if !dead {
 			// Also do a quick liveness ping so we catch hung browsers
-			// (chromedp ctx not yet cancelled but Chrome unresponsive).
+			// (chromedp ctx not yet cancelled but Chrome unresponsive),
+			// and verify the JWT is still in localStorage so we catch
+			// silent server-side session expiry before the next booking.
 			pa.e.mu.Lock()
 			pingCtx, pingCancel := context.WithTimeout(pa.e.session.Ctx(), 3*time.Second)
-			var v bool
-			perr := chromedp.Run(pingCtx, chromedp.Evaluate(`true`, &v))
+			var loggedIn bool
+			perr := chromedp.Run(pingCtx, chromedp.Evaluate(
+				`!!(window.localStorage.getItem('recaccount'))`, &loggedIn,
+			))
 			pingCancel()
 			pa.e.mu.Unlock()
-			if perr == nil {
+			if perr == nil && loggedIn {
 				continue
 			}
-			p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
+			if perr != nil {
+				p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
+			} else {
+				p.cfg.Logger.Warn("watchdog: session not logged in; will relaunch", "user", pa.id)
+			}
 		} else {
 			p.cfg.Logger.Warn("watchdog: session dead; will relaunch", "user", pa.id)
 		}
