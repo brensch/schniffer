@@ -127,11 +127,12 @@ func (m *Manager) runExpiryReaper(ctx context.Context) {
 	}
 }
 
-// fastestPoll is the floor for the provider poll cadence. 5s lands well
-// inside the GCP Cloud Run free tier (see docs/auto-booking.md "Polling
-// cost analysis") and roughly halves the latency from rec.gov flipping
-// availability to schniffer noticing.
-const fastestPoll = 2 * time.Second
+// fastestPoll is the floor for the provider poll cadence. 5s keeps us
+// safely under recreation.gov's per-IP throttle — at 2s we saw immediate
+// 100% 429s when traffic was funnelled through a single CF Worker egress
+// pool (see PR #32 revert). The ticker change still gives a tighter
+// effective cadence than the old time.After loop at the same value.
+const fastestPoll = 5 * time.Second
 
 // pollBackoffStep is added to the interval each time a cycle returns an
 // error; the next success resets to fastestPoll. Keeps backoff linear so
