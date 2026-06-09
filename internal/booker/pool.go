@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/chromedp/chromedp"
 )
 
@@ -164,15 +165,48 @@ func (p *Pool) Close() {
 func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
 	res, err := p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
 	if !errors.Is(err, ErrNotLoggedIn) {
+		observeHoldMetrics(res, err)
 		return res, err
 	}
 	// Session JWT expired silently. Force a full relaunch (login) and try
 	// once more on the fresh session.
 	p.cfg.Logger.Warn("hold: session not logged in; relaunching and retrying", "user", userID)
+	metrics.BookerRelaunchTotal.WithLabelValues("session_expired").Inc()
 	if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
 		return nil, fmt.Errorf("relaunch after session expiry: %w", relaunchErr)
 	}
-	return p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+	res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+	observeHoldMetrics(res, err)
+	return res, err
+}
+
+// observeHoldMetrics emits per-phase histograms for one HoldCampsite call.
+// Skipped phases (zero duration) are still recorded so a sequence of zeros
+// is visible in the histogram and easy to filter in Grafana.
+func observeHoldMetrics(res *HoldResult, err error) {
+	if res == nil {
+		return
+	}
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	t := res.Timings
+	obs := func(phase string, d time.Duration) {
+		if d <= 0 {
+			return
+		}
+		metrics.BookerHoldDuration.
+			WithLabelValues(phase, outcome).
+			Observe(d.Seconds())
+	}
+	obs("nav", t.Nav)
+	obs("recaptcha_wait", t.RecaptchaWait)
+	obs("session_check", t.SessionCheck)
+	obs("script_eval", t.ScriptEval)
+	obs("recaptcha_token", t.RecaptchaToken)
+	obs("recgov_post", t.RecGovPost)
+	obs("total", t.Total)
 }
 
 func (p *Pool) holdOnce(ctx context.Context, userID, campsiteID, campgroundID string, checkIn, checkOut time.Time) (*HoldResult, error) {
@@ -180,7 +214,9 @@ func (p *Pool) holdOnce(ctx context.Context, userID, campsiteID, campgroundID st
 	if err != nil {
 		return nil, err
 	}
+	waitStart := time.Now()
 	e.mu.Lock()
+	metrics.BookerSessionWait.Observe(time.Since(waitStart).Seconds())
 	defer e.mu.Unlock()
 	if e.disabled {
 		return nil, errors.New("session disabled")
@@ -317,13 +353,17 @@ func (p *Pool) watchdogSweep(ctx context.Context) {
 			if perr == nil && loggedIn {
 				continue
 			}
+			reason := "watchdog_jwt_missing"
 			if perr != nil {
+				reason = "watchdog_ping_failed"
 				p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
 			} else {
 				p.cfg.Logger.Warn("watchdog: session not logged in; will relaunch", "user", pa.id)
 			}
+			metrics.BookerRelaunchTotal.WithLabelValues(reason).Inc()
 		} else {
 			p.cfg.Logger.Warn("watchdog: session dead; will relaunch", "user", pa.id)
+			metrics.BookerRelaunchTotal.WithLabelValues("watchdog_dead").Inc()
 		}
 		if err := p.launchUser(ctx, pa.id); err != nil {
 			p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)

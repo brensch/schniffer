@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
+	"github.com/brensch/schniffer/internal/metrics"
 )
 
 type RecreationGov struct {
@@ -111,11 +112,17 @@ func (r *RecreationGov) fetchOneMonth(ctx context.Context, campgroundID string, 
 	slog.Info("Fetching availability", slog.String("url", u.String()))
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	httpx.SpoofChromeHeaders(req)
+	fetchStart := time.Now()
 	resp, err := r.client.Do(req)
+	metrics.ProviderFetchTotal.WithLabelValues("recreation_gov", metrics.BoolLabel(err == nil)).Inc()
+	metrics.ProviderFetchDuration.
+		WithLabelValues("recreation_gov", metrics.BoolLabel(err == nil)).
+		Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
 		mr.err = fmt.Errorf("availability GET failed: %w", err)
 		return
 	}
+	observeUpstream("recreation_gov", resp)
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
@@ -187,10 +194,16 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			return nil, err
 		}
 		httpx.SpoofChromeHeaders(req)
+		searchStart := time.Now()
 		resp, err := r.client.Do(req)
+		metrics.ProviderFetchTotal.WithLabelValues("recreation_gov_search", metrics.BoolLabel(err == nil)).Inc()
+		metrics.ProviderFetchDuration.
+			WithLabelValues("recreation_gov_search", metrics.BoolLabel(err == nil)).
+			Observe(time.Since(searchStart).Seconds())
 		if err != nil {
 			return nil, fmt.Errorf("search GET failed: %w", err)
 		}
+		observeUpstream("recreation_gov", resp)
 		body, rerr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if rerr != nil {
@@ -324,11 +337,17 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 	}
 	httpx.SpoofChromeHeaders(req)
 
+	metaStart := time.Now()
 	resp, err := r.client.Do(req)
+	metrics.ProviderFetchTotal.WithLabelValues("recreation_gov_campsites", metrics.BoolLabel(err == nil)).Inc()
+	metrics.ProviderFetchDuration.
+		WithLabelValues("recreation_gov_campsites", metrics.BoolLabel(err == nil)).
+		Observe(time.Since(metaStart).Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch campsite metadata: %w", err)
 	}
 	defer resp.Body.Close()
+	observeUpstream("recreation_gov", resp)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("campsite metadata request failed with status %d", resp.StatusCode)
