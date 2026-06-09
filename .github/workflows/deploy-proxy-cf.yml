@@ -32,7 +32,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Verify required secrets exist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROXY_SECRET: ${{ secrets.PROXY_SECRET }}
+        run: |
+          missing=()
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing+=(CLOUDFLARE_API_TOKEN)
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ -n "$PROXY_SECRET" ] || missing+=(PROXY_SECRET)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing required GH secrets: ${missing[*]} — add them via repo Settings → Secrets → Actions"
+            exit 1
+          fi
 
       - name: Push secret to worker (always before deploy in case it rotated)
         env:
