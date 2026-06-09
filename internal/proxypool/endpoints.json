@@ -3,15 +3,35 @@
     "purpose": "Round-robin proxy endpoints used by schniffer to fan out outbound HTTP requests across many egress IPs, to avoid per-IP rate limiting from upstream APIs (recreation.gov, reservecalifornia, etc).",
     "request_contract": "Each endpoint MUST accept POST /fetch with header 'Authorization: Bearer <PROXY_SECRET>' and JSON body {\"requests\":[{\"url\":\"...\",\"method\":\"GET|POST|...\",\"headers\":{\"K\":\"V\"},\"body\":\"...\"}]}. It MUST respond 200 with {\"responses\":[{\"status\":200,\"headers\":{...},\"body\":\"...\",\"error\":\"\",\"elapsed_ms\":123}],\"region\":\"...\"} — same length as requests, same order. See proxy/main.go (Go/Cloud Run) and proxy-cf/worker.js (Cloudflare Worker) for reference implementations.",
     "auth_secret": "All endpoints share one PROXY_SECRET, sourced from Secret Manager (or equivalent) at deploy time and baked in as an env var; never committed to this repo.",
-    "active_target": "Cloudflare Workers (proxy-cf/). Bills CPU time, not wall time — the long await on rec.gov is free — so we can poll at 2s cadence for ~$5/mo. Cloud Run deployment (proxy/, .github/workflows/deploy-proxy.yml) is kept in-tree for emergency reactivation but not currently rotated in.",
-    "how_to_reactivate_cloud_run": "Re-add the five gcp entries from the git history (see commit history for endpoints.json) and redeploy schniffer. The Cloud Run services remain deployed and will respond to traffic the moment they're in this list again.",
+    "active_target": "Cloud Run — five GCP regions. We previously moved everything to a single Cloudflare Worker but rec.gov rate-limited the CF egress IP pool to 100% 429s within minutes. CF's outbound IPs are too few per-colo for this workload. The Worker (proxy-cf/) is kept deployed as a future fallback; revisit only after we have multi-colo / multi-IP coverage.",
+    "how_to_swap_to_cloudflare": "Replace these entries with the single cloudflare entry — see git history of this file for the exact form. Worker is at https://schniffer-proxy.schniffer-rec.workers.dev and stays warm via CI.",
     "how_to_add_an_endpoint": "Append a JSON object to 'endpoints' with {url, provider, region}. Schniffer loads this file at startup (via go:embed) and rotates round-robin across all entries. Provider/region fields are informational — used for metrics labels and per-endpoint cooldown bookkeeping, not for routing."
   },
   "endpoints": [
     {
-      "url": "https://schniffer-proxy.schniffer-rec.workers.dev",
-      "provider": "cloudflare",
-      "region": "edge"
+      "url": "https://proxyrequest-ri77demp7a-uc.a.run.app",
+      "provider": "gcp",
+      "region": "us-central1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-uw.a.run.app",
+      "provider": "gcp",
+      "region": "us-west1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-wl.a.run.app",
+      "provider": "gcp",
+      "region": "us-west2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-wn.a.run.app",
+      "provider": "gcp",
+      "region": "us-west4"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-vp.a.run.app",
+      "provider": "gcp",
+      "region": "us-south1"
     }
   ]
 }
