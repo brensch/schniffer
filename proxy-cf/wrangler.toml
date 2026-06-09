@@ -1,0 +1,24 @@
+# Wrangler config for the Cloudflare Worker schniffer proxy.
+#
+# The worker handles ALL outbound rec.gov / reservecalifornia fetches. It's
+# CPU-billed (cheap during I/O wait) and serves directly from CF's edge with
+# auto gzip/br/zstd, giving us lower latency than the Cloud Run proxy at
+# ~1/6 the cost.
+#
+# Deploy: GitHub Actions (.github/workflows/deploy-proxy-cf.yml) on push
+# to main with proxy-cf/** changed. Manual: `npx wrangler deploy` after
+# `wrangler secret put PROXY_SECRET` (one-time).
+
+name = "schniffer-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-15"
+
+# Auto-route to <name>.<account-subdomain>.workers.dev — no custom domain.
+# Saves us from managing a zone for this.
+workers_dev = true
+
+# PROXY_SECRET is provisioned out-of-band via `wrangler secret put` (or the
+# Cloudflare API in CI). Not in this file — secrets must never be committed.
+
+[observability]
+enabled = true

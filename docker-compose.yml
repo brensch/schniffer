@@ -35,6 +35,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # metrics-init makes prom + grafana persist alongside schniffer.sqlite under
+  # ${SCHNIFFER_DATA}/. Docker auto-creates bind-mount host paths as root,
+  # but Prometheus runs as UID 65534 and Grafana as 472 — without this fixup
+  # the containers crashloop on first boot of a fresh deploy. Idempotent;
+  # re-runs on every `up`. Backing up ${SCHNIFFER_DATA} covers metrics too.
+  metrics-init:
+    image: alpine:3.20
+    container_name: schniffer-metrics-init
+    command: >
+      sh -c "
+        mkdir -p /data/prometheus /data/grafana &&
+        chown -R 65534:65534 /data/prometheus &&
+        chown -R 472:472 /data/grafana
+      "
+    volumes:
+      - ${SCHNIFFER_DATA:-./data}:/data
+    restart: "no"
+    networks:
+      - default
+
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: schniffer-prometheus
@@ -45,12 +65,15 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./docker/prometheus:/etc/prometheus:ro
-      - ${SCHNIFFER_PROM_DATA:-./data/prometheus}:/prometheus
+      - ${SCHNIFFER_DATA:-./data}/prometheus:/prometheus
     ports:
       - "9091:9090"
     restart: unless-stopped
     depends_on:
-      - schniffer
+      schniffer:
+        condition: service_started
+      metrics-init:
+        condition: service_completed_successfully
     networks:
       - default
 
@@ -66,12 +89,15 @@ services:
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - ${SCHNIFFER_GRAFANA_DATA:-./data/grafana}:/var/lib/grafana
+      - ${SCHNIFFER_DATA:-./data}/grafana:/var/lib/grafana
     ports:
       - "3000:3000"
     restart: unless-stopped
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      metrics-init:
+        condition: service_completed_successfully
     networks:
       - default
 

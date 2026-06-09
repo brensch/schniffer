@@ -110,10 +110,16 @@ func New(secret string) (*Pool, error) {
 		return nil, nil
 	}
 	return &Pool{
-		endpoints:   f.Endpoints,
-		secret:      secret,
-		client:      &http.Client{Timeout: 35 * time.Second},
-		flushAfter:  10 * time.Millisecond,
+		endpoints: f.Endpoints,
+		secret:    secret,
+		client:    &http.Client{Timeout: 35 * time.Second},
+		// flushAfter is the upper bound on how long we'll wait for more
+		// requests to arrive before firing a batch. Measured batches max
+		// out around 8 per cycle (well under maxBatch=50), so longer
+		// waits would just be tax. 2ms is enough for the cycle's
+		// concurrent goroutines to all enqueue without losing a full
+		// network roundtrip to the wait.
+		flushAfter:  2 * time.Millisecond,
 		maxBatch:    50,
 		cooldown:    60 * time.Second,
 		endpointBad: map[string]time.Time{},
