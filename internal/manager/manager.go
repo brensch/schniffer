@@ -10,6 +10,7 @@ import (
 
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/bwmarrin/discordgo"
 	"github.com/robfig/cron/v3"
@@ -175,6 +176,12 @@ const maxConcurrentCampgrounds = 32
 // same cycle (treated as a global upstream problem worth backing off for).
 // Individual fetch errors are logged but do not abort the cycle.
 func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error {
+	cycleStart := time.Now()
+	defer func() {
+		metrics.PollCycleDuration.
+			WithLabelValues(targetProvider).
+			Observe(time.Since(cycleStart).Seconds())
+	}()
 	requests, err := m.store.ListActiveRequests(ctx)
 	if err != nil {
 		m.logger.Error("list requests failed", slog.Any("err", err))
@@ -229,6 +236,10 @@ func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error
 		if r.failed {
 			failedCG++
 		}
+	}
+	metrics.PollCycleCampgrounds.WithLabelValues(targetProvider).Observe(float64(totalCG))
+	if failedCG > 0 {
+		metrics.PollCycleFailed.WithLabelValues(targetProvider).Add(float64(failedCG))
 	}
 
 	// One batched insert at end of cycle instead of N writes through the writer.

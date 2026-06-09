@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
+	"github.com/brensch/schniffer/internal/metrics"
 )
 
 // ReserveCalifornia implements the Provider interface using the UseDirect endpoints.
@@ -155,12 +156,18 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		time.Sleep(time.Duration(i) * 500 * time.Millisecond) // small per-retry backoff; proxy pool handles per-IP throttle
 
 		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
+		fetchStart := time.Now()
 		resp, err := r.client.Do(req)
+		metrics.ProviderFetchTotal.WithLabelValues("reservecalifornia", metrics.BoolLabel(err == nil)).Inc()
+		metrics.ProviderFetchDuration.
+			WithLabelValues("reservecalifornia", metrics.BoolLabel(err == nil)).
+			Observe(time.Since(fetchStart).Seconds())
 		if err != nil {
 			slog.Warn("grid POST failed", slog.Any("err", err), slog.String("facility", campgroundID))
 			intErr = err
 			continue
 		}
+		observeUpstream("reservecalifornia", resp)
 		b, rerr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if rerr != nil {

@@ -8,11 +8,24 @@ import (
 	"log/slog"
 	"net/http"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/brensch/schniffer/internal/metrics"
 )
+
+// UpstreamElapsedHeader carries the proxy worker's reported upstream
+// duration (ms) on each demultiplexed response. Providers read this to
+// observe ProviderUpstreamDuration. Set internally; never trust an
+// incoming request to set it.
+const UpstreamElapsedHeader = "X-Proxy-Upstream-Ms"
+
+// ProxyRegionHeader echoes the region that served the request, for the
+// same reason as above.
+const ProxyRegionHeader = "X-Proxy-Region"
 
 //go:embed endpoints.json
 var endpointsRaw []byte
@@ -202,7 +215,13 @@ func (p *Pool) dispatch(batch []*pendingReq) {
 			break
 		}
 		tried[ep.URL] = true
+		dispatchStart := time.Now()
 		resp, err := p.sendBatch(ep, payload)
+		dispatchSecs := time.Since(dispatchStart).Seconds()
+		metrics.ProxyBatchSize.WithLabelValues(ep.URL, ep.Region).Observe(float64(len(batch)))
+		metrics.ProxyDispatchDuration.
+			WithLabelValues(ep.URL, ep.Region, metrics.BoolLabel(err == nil)).
+			Observe(dispatchSecs)
 		if err == nil {
 			p.demux(batch, resp, ep)
 			return
@@ -267,8 +286,11 @@ func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint) {
 				hdr.Add(ck, v)
 			}
 		}
-		hdr.Set("X-Proxy-Region", ep.Region)
+		hdr.Set(ProxyRegionHeader, ep.Region)
 		hdr.Set("X-Proxy-Provider", ep.Provider)
+		if wr.Elapsed > 0 {
+			hdr.Set(UpstreamElapsedHeader, strconv.FormatInt(wr.Elapsed, 10))
+		}
 		resp := &http.Response{
 			StatusCode: wr.Status,
 			Status:     http.StatusText(wr.Status),
@@ -321,4 +343,5 @@ func (p *Pool) markBad(url string) {
 	p.mu.Lock()
 	p.endpointBad[url] = time.Now().Add(p.cooldown)
 	p.mu.Unlock()
+	metrics.ProxyEndpointBadTotal.WithLabelValues(url).Inc()
 }

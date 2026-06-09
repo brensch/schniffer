@@ -9,12 +9,63 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
+	"github.com/brensch/schniffer/internal/metrics"
 )
+
+// instrumentedWriter wraps http.ResponseWriter so middleware can capture
+// the eventual status code and response size for metrics. Default status
+// is 200 — matches what net/http does when a handler writes a body
+// without calling WriteHeader.
+type instrumentedWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *instrumentedWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *instrumentedWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += n
+	return n, err
+}
+
+// instrument returns h wrapped with request/duration/in-flight/response-size
+// observers. The route label is supplied by the caller so we don't end up
+// with a high-cardinality label set from path parameters
+// (/api/campground/{provider}/{id} would otherwise explode).
+func instrument(route string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metrics.WebRequestsInFlight.Inc()
+		defer metrics.WebRequestsInFlight.Dec()
+		start := time.Now()
+		iw := &instrumentedWriter{ResponseWriter: w}
+		h.ServeHTTP(iw, r)
+		status := iw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		statusLbl := strconv.Itoa(status)
+		dur := time.Since(start).Seconds()
+		metrics.WebRequestDuration.WithLabelValues(route, r.Method, statusLbl).Observe(dur)
+		metrics.WebRequestsTotal.WithLabelValues(route, r.Method, statusLbl).Inc()
+		if iw.bytes > 0 {
+			metrics.WebResponseBytes.WithLabelValues(route).Observe(float64(iw.bytes))
+		}
+	})
+}
 
 type Server struct {
 	store *db.Store
@@ -72,31 +123,19 @@ func NewServer(store *db.Store, mgr *manager.Manager, addr string) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// Campground detail ASCII page (must be before catch-all static)
-	mux.HandleFunc("/campground/", s.handleCampgroundPage)
-
-	// Serve static files from the static directory
+	// Each route is registered with a stable label so /metrics doesn't
+	// explode with one series per path parameter. Static files all share
+	// the "static" label.
+	mux.Handle("/campground/", instrument("campground_page", http.HandlerFunc(s.handleCampgroundPage)))
 	fs := http.FileServer(http.Dir("./static/"))
-	mux.Handle("/", fs)
-
-	// API endpoint to get all campgrounds as JSON (for initial load/fallback)
-	mux.HandleFunc("/api/campgrounds", s.handleCampgroundsAPI)
-
-	// API endpoint to get campgrounds in viewport with clustering
-	mux.HandleFunc("/api/viewport", s.handleViewportAPI)
-
-	// API endpoint to get filter options
-	mux.HandleFunc("/api/filter-options", s.handleFilterOptionsAPI)
-
-	// API endpoint to get campground details
-	mux.HandleFunc("/api/campground/", s.handleCampgroundDetail)
-
-	// API endpoint to get campground ASCII state (availability grid)
-	mux.HandleFunc("/api/campground_state/", s.handleCampgroundState)
-
-	// Group API endpoints
-	mux.HandleFunc("/api/groups", s.handleGroups)
-	mux.HandleFunc("/api/groups/create", s.handleCreateGroup)
+	mux.Handle("/", instrument("static", fs))
+	mux.Handle("/api/campgrounds", instrument("api_campgrounds", http.HandlerFunc(s.handleCampgroundsAPI)))
+	mux.Handle("/api/viewport", instrument("api_viewport", http.HandlerFunc(s.handleViewportAPI)))
+	mux.Handle("/api/filter-options", instrument("api_filter_options", http.HandlerFunc(s.handleFilterOptionsAPI)))
+	mux.Handle("/api/campground/", instrument("api_campground_detail", http.HandlerFunc(s.handleCampgroundDetail)))
+	mux.Handle("/api/campground_state/", instrument("api_campground_state", http.HandlerFunc(s.handleCampgroundState)))
+	mux.Handle("/api/groups", instrument("api_groups", http.HandlerFunc(s.handleGroups)))
+	mux.Handle("/api/groups/create", instrument("api_groups_create", http.HandlerFunc(s.handleCreateGroup)))
 
 	server := &http.Server{
 		Addr:    s.addr,

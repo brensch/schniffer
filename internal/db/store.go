@@ -12,6 +12,7 @@ import (
 
 	"strings"
 
+	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
@@ -20,6 +21,38 @@ import (
 
 //go:embed schema.sql
 var schemaFS embed.FS
+
+// normalizeQueryLabel collapses a SQL query into a low-cardinality label
+// for the schniffer_db_query_duration_seconds histogram. We keep just the
+// first verb + first table-ish identifier and truncate hard; this stays
+// bounded by the small set of distinct queries in the codebase rather
+// than ballooning with WHERE-clause variation.
+func normalizeQueryLabel(query string) string {
+	q := strings.TrimSpace(query)
+	// Collapse whitespace so multi-line queries hash the same.
+	fields := strings.Fields(q)
+	if len(fields) == 0 {
+		return "unknown"
+	}
+	verb := strings.ToLower(fields[0])
+	// Look for the first identifier after FROM / INTO / UPDATE / TABLE.
+	var target string
+	for i, f := range fields {
+		fl := strings.ToLower(f)
+		if (fl == "from" || fl == "into" || fl == "update" || fl == "table") && i+1 < len(fields) {
+			target = strings.Trim(fields[i+1], "(,;`\"")
+			break
+		}
+	}
+	label := verb
+	if target != "" {
+		label = verb + ":" + target
+	}
+	if len(label) > 64 {
+		label = label[:64]
+	}
+	return label
+}
 
 type Store struct {
 	DB     *sql.DB // Read-write connection (single connection)
@@ -30,6 +63,9 @@ func Open(path string) (*Store, error) {
 	// Register the wrapped SQLite driver with query logging
 	driverName, err := querypulse.Register("sqlite3", querypulse.Options{
 		OnSuccess: func(ctx context.Context, query string, args []any, duration time.Duration) {
+			metrics.DBQueryDuration.
+				WithLabelValues(normalizeQueryLabel(query)).
+				Observe(duration.Seconds())
 			if duration > 500*time.Millisecond {
 				slog.Info("slow query succeeded", slog.Any("args", args), slog.String("query", query), slog.Duration("took", duration))
 			}

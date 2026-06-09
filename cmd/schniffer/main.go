@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/brensch/schniffer/internal/bot"
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
+	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/brensch/schniffer/internal/secrets"
 	"github.com/brensch/schniffer/internal/web"
@@ -46,6 +48,18 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+
+	// Start the metrics server first so /metrics is up even if a later
+	// dependency (Discord, DB) blows up — makes debug-by-scrape possible
+	// during startup failures. Bind synchronously so the port is ready
+	// before we return; serve in the background.
+	metricsAddr := os.Getenv("METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":9090"
+	}
+	if err := startMetricsServer(ctx, metricsAddr); err != nil {
+		slog.Error("metrics server failed to bind", slog.Any("err", err))
+	}
 
 	provRegistry := providers.NewRegistry()
 	provRegistry.Register("recreation_gov", providers.NewRecreationGov())
@@ -122,6 +136,37 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("night night")
+}
+
+// startMetricsServer binds /metrics on addr synchronously and serves it in
+// a background goroutine. Returns immediately once the listener is bound —
+// or an error if the bind itself failed. We bind early in main() so a
+// later startup panic (Discord auth, etc.) still leaves /metrics
+// reachable for debugging.
+func startMetricsServer(ctx context.Context, addr string) error {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	slog.Info("starting metrics server", slog.String("addr", ln.Addr().String()))
+	go func() {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("metrics server failed", slog.Any("err", err))
+		}
+	}()
+	return nil
 }
 
 // runHealthcheckPinger fires a GET at url every interval to signal liveness to

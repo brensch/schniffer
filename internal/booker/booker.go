@@ -218,6 +218,26 @@ func (s *Session) Refresh(ctx context.Context) error {
 type HoldResult struct {
 	OrderID string
 	Raw     map[string]any
+	// Timings record per-phase wall-clock so the caller can feed
+	// Prometheus histograms without re-instrumenting the chromedp internals.
+	// Each duration is zero if the corresponding phase never started (e.g.
+	// nav failed before recaptcha wait).
+	Timings HoldTimings
+}
+
+// HoldTimings carries fine-grained latency breakdown for one HoldCampsite call.
+// In-page durations (RecaptchaToken, RecGovPost) come from performance.now()
+// markers inside the injected script — they isolate the recaptcha enterprise
+// token mint and the actual booking POST from script-eval overhead, which
+// otherwise all collapse into ScriptEval.
+type HoldTimings struct {
+	Nav            time.Duration // chromedp.Navigate + WaitReady
+	RecaptchaWait  time.Duration // Poll waiting for grecaptcha.enterprise.execute to be defined
+	SessionCheck   time.Duration // Read recaccount from localStorage
+	ScriptEval     time.Duration // Full Evaluate(script) round trip (includes RecaptchaToken+RecGovPost)
+	RecaptchaToken time.Duration // grecaptcha.enterprise.execute alone (from in-page perf.now)
+	RecGovPost     time.Duration // fetch(...) + body read alone (from in-page perf.now)
+	Total          time.Duration // Nav + RecaptchaWait + SessionCheck + ScriptEval
 }
 
 // HoldCampsite navigates to the campsite page, mints a fresh reCAPTCHA
@@ -227,31 +247,48 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 	if !checkIn.Before(checkOut) {
 		return nil, errors.New("check-in must be before check-out")
 	}
+	var t HoldTimings
+	totalStart := time.Now()
+	defer func() {
+		t.Total = time.Since(totalStart)
+	}()
+
+	navStart := time.Now()
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(fmt.Sprintf("%s/camping/campsites/%s", SiteOrigin, campsiteID)),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
-		return nil, fmt.Errorf("nav: %w", err)
+		t.Nav = time.Since(navStart)
+		return &HoldResult{Timings: t}, fmt.Errorf("nav: %w", err)
 	}
+	t.Nav = time.Since(navStart)
+
+	recaptchaStart := time.Now()
 	if err := chromedp.Run(ctx, chromedp.Poll(
 		`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
 		nil, chromedp.WithPollingTimeout(30*time.Second),
 	)); err != nil {
-		return nil, fmt.Errorf("wait recaptcha: %w", err)
+		t.RecaptchaWait = time.Since(recaptchaStart)
+		return &HoldResult{Timings: t}, fmt.Errorf("wait recaptcha: %w", err)
 	}
+	t.RecaptchaWait = time.Since(recaptchaStart)
+
 	// Verify the JWT is still in localStorage before we burn a reCAPTCHA
 	// token. rec.gov silently clears 'recaccount' on session expiry while
 	// Chrome stays alive, so the chromedp ctx check in the pool is not
 	// sufficient — surface this as ErrNotLoggedIn so the pool can re-login
 	// and retry.
+	sessionStart := time.Now()
 	var hasAccount bool
 	if err := chromedp.Run(ctx, chromedp.Evaluate(
 		`!!(window.localStorage.getItem('recaccount'))`, &hasAccount,
 	)); err != nil {
-		return nil, fmt.Errorf("check session: %w", err)
+		t.SessionCheck = time.Since(sessionStart)
+		return &HoldResult{Timings: t}, fmt.Errorf("check session: %w", err)
 	}
+	t.SessionCheck = time.Since(sessionStart)
 	if !hasAccount {
-		return nil, ErrNotLoggedIn
+		return &HoldResult{Timings: t}, ErrNotLoggedIn
 	}
 	nightMap := map[string]map[string]string{}
 	for day := checkIn; day.Before(checkOut); day = day.AddDate(0, 0, 1) {
@@ -272,7 +309,9 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 	}
 	payloadJSON, _ := json.Marshal(payload)
 	script := `(async (p) => {
+		const _t0 = performance.now();
 		const token = await grecaptcha.enterprise.execute(p.siteKey, {action: p.action});
+		const _tokenMs = performance.now() - _t0;
 		const recRaw = window.localStorage.getItem('recaccount');
 		if (!recRaw) throw new Error('no recaccount in localStorage');
 		const rec = JSON.parse(recRaw);
@@ -297,6 +336,7 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 				terminal: 'east',
 			},
 		};
+		const _postStart = performance.now();
 		const response = await fetch('/api/camps/reservations/campgrounds/' + p.campgroundID + '/multi', {
 			method: 'POST',
 			headers: {
@@ -307,20 +347,41 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 			credentials: 'include',
 		});
 		const text = await response.text();
+		const _postMs = performance.now() - _postStart;
 		let parsed;
 		try { parsed = JSON.parse(text); } catch (_) { parsed = {raw: text}; }
-		return {status: response.status, ...parsed};
+		return {status: response.status, _recaptcha_token_ms: _tokenMs, _recgov_post_ms: _postMs, ...parsed};
 	})(` + string(payloadJSON) + `)`
 	var out map[string]any
 	awaitOpt := func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }
+	scriptStart := time.Now()
 	if err := chromedp.Run(ctx, chromedp.Evaluate(script, &out, awaitOpt)); err != nil {
-		return nil, fmt.Errorf("exec booking: %w", err)
+		t.ScriptEval = time.Since(scriptStart)
+		return &HoldResult{Timings: t}, fmt.Errorf("exec booking: %w", err)
 	}
-	result := &HoldResult{OrderID: ExtractOrderID(out), Raw: out}
+	t.ScriptEval = time.Since(scriptStart)
+	t.RecaptchaToken = readMillis(out, "_recaptcha_token_ms")
+	t.RecGovPost = readMillis(out, "_recgov_post_ms")
+	result := &HoldResult{OrderID: ExtractOrderID(out), Raw: out, Timings: t}
 	if err := bookingResponseError(out, result.OrderID); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// readMillis pulls a duration off the in-page perf markers our injected
+// script returns. Missing/garbage values return 0 — observers treat 0 as
+// "didn't reach this phase" rather than "phase took 0s".
+func readMillis(m map[string]any, key string) time.Duration {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	f, ok := v.(float64)
+	if !ok || f < 0 {
+		return 0
+	}
+	return time.Duration(f * float64(time.Millisecond))
 }
 
 func bookingResponseError(response map[string]any, orderID string) error {

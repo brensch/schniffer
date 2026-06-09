@@ -1,0 +1,143 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "schemaVersion": 39,
+  "tags": ["schniffer"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Schniffer Latency",
+  "uid": "schniffer-latency",
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Provider fetch p50/p95/p99 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(schniffer_provider_fetch_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "p50 {{provider}}"},
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_provider_fetch_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "p95 {{provider}}"},
+        {"expr": "histogram_quantile(0.99, sum(rate(schniffer_provider_fetch_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "p99 {{provider}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Upstream (proxy worker) p95 by region (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_provider_upstream_duration_seconds_bucket[5m])) by (le, region))", "legendFormat": "p95 {{region}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider fetch error rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "sum(rate(schniffer_provider_fetch_total{success=\"false\"}[5m])) by (provider) / sum(rate(schniffer_provider_fetch_total[5m])) by (provider)", "legendFormat": "{{provider}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Poll cycle p95 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_poll_cycle_duration_seconds_bucket[5m])) by (le, provider))", "legendFormat": "p95 {{provider}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy batch size p50/p95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(schniffer_proxy_batch_size_bucket[5m])) by (le, region))", "legendFormat": "p50 {{region}}"},
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_proxy_batch_size_bucket[5m])) by (le, region))", "legendFormat": "p95 {{region}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy dispatch p95 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_proxy_dispatch_duration_seconds_bucket[5m])) by (le, region, success))", "legendFormat": "{{region}} success={{success}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booker hold phase p95 (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_booker_hold_duration_seconds_bucket[15m])) by (le, phase))", "legendFormat": "p95 {{phase}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booker hold total p50/p95 (s) by outcome",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum(rate(schniffer_booker_hold_duration_seconds_bucket{phase=\"total\"}[15m])) by (le, outcome))", "legendFormat": "p50 {{outcome}}"},
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_booker_hold_duration_seconds_bucket{phase=\"total\"}[15m])) by (le, outcome))", "legendFormat": "p95 {{outcome}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booker relaunches (rate /min)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {"expr": "sum(rate(schniffer_booker_relaunch_total[5m])) by (reason) * 60", "legendFormat": "{{reason}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DB query p95 by name (s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {"expr": "topk(10, histogram_quantile(0.95, sum(rate(schniffer_db_query_duration_seconds_bucket[5m])) by (le, query)))", "legendFormat": "p95 {{query}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Web requests / sec by route",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {"expr": "sum(rate(schniffer_web_requests_total[5m])) by (route)", "legendFormat": "{{route}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Web request p95 (s) by route",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_web_request_duration_seconds_bucket[5m])) by (le, route))", "legendFormat": "p95 {{route}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Web error rate (5xx) by route",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
+      "targets": [
+        {"expr": "sum(rate(schniffer_web_requests_total{status=~\"5..\"}[5m])) by (route) / sum(rate(schniffer_web_requests_total[5m])) by (route)", "legendFormat": "{{route}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Web in-flight requests",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 48},
+      "targets": [
+        {"expr": "schniffer_web_requests_in_flight", "legendFormat": "in flight"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Web response size p95 (bytes) by route",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 48},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum(rate(schniffer_web_response_bytes_bucket[5m])) by (le, route))", "legendFormat": "p95 {{route}}"}
+      ]
+    }
+  ]
+}
