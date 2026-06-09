@@ -39,6 +39,13 @@ var ErrBadCredentials = errors.New("bad credentials")
 // reCAPTCHA score and requires its visible human-verification challenge.
 var ErrHumanVerification = errors.New("human verification required")
 
+// ErrNotLoggedIn is returned by HoldCampsite when the session's JWT
+// ('recaccount' in localStorage) has been cleared by rec.gov — typically a
+// silent server-side session expiry. Chrome is still alive, but a fresh
+// Login is required before the booking script will succeed. The pool catches
+// this, relaunches, and retries once.
+var ErrNotLoggedIn = errors.New("not logged in")
+
 type Config struct {
 	ProfileDir string
 	ChromePath string // empty = autodetect
@@ -231,6 +238,20 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 		nil, chromedp.WithPollingTimeout(30*time.Second),
 	)); err != nil {
 		return nil, fmt.Errorf("wait recaptcha: %w", err)
+	}
+	// Verify the JWT is still in localStorage before we burn a reCAPTCHA
+	// token. rec.gov silently clears 'recaccount' on session expiry while
+	// Chrome stays alive, so the chromedp ctx check in the pool is not
+	// sufficient — surface this as ErrNotLoggedIn so the pool can re-login
+	// and retry.
+	var hasAccount bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(
+		`!!(window.localStorage.getItem('recaccount'))`, &hasAccount,
+	)); err != nil {
+		return nil, fmt.Errorf("check session: %w", err)
+	}
+	if !hasAccount {
+		return nil, ErrNotLoggedIn
 	}
 	nightMap := map[string]map[string]string{}
 	for day := checkIn; day.Before(checkOut); day = day.AddDate(0, 0, 1) {
