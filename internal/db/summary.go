@@ -51,8 +51,8 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 	// Build the summary message
 	var summary strings.Builder
 	summary.WriteString("24 Hour Schniff roundup:\n")
-	summary.WriteString("Available campsites found\n")
-	summary.WriteString(fmt.Sprintf("%d\n", stats.Notifications24h))
+	summary.WriteString("Notifications sent\n")
+	summary.WriteString(fmt.Sprintf("%d\n", stats.UserDMs24h))
 	summary.WriteString("Checks made\n")
 	summary.WriteString(fmt.Sprintf("%d\n", stats.Lookups24h))
 	summary.WriteString("Active Schniffs\n")
@@ -193,8 +193,8 @@ func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
 		Timestamp: time.Now().Format(time.RFC3339),
 		Fields: []*discordgo.MessageEmbedField{
 			{
-				Name:   "🎯 Available Campsites Found",
-				Value:  fmt.Sprintf("%d", summaryData.Stats.Notifications24h),
+				Name:   "📬 Notifications Sent",
+				Value:  fmt.Sprintf("%d", summaryData.Stats.UserDMs24h),
 				Inline: true,
 			},
 			{

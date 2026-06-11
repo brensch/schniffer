@@ -137,10 +137,8 @@ func (m *Manager) processCampgroundBucket(
 			slog.String("campground", campgroundID),
 			slog.Any("err", err))
 	}
-	recentHeldSet := make(map[string]struct{}, len(recentHolds))
 	expiringHoldByCampsite := make(map[string]db.RecentHoldOwner, len(recentHolds))
 	for _, h := range recentHolds {
-		recentHeldSet[h.CampsiteID] = struct{}{}
 		expiringHoldByCampsite[h.CampsiteID] = h
 	}
 
@@ -332,13 +330,6 @@ func (m *Manager) processCampgroundBucket(
 			}
 		}
 
-		// Channel broadcast (silly public message) — only for winners on
-		// truly new sites (not cycle-back from an expired hold).
-		if r.Won {
-			if _, recyc := recentHeldSet[r.Pick.CampsiteID]; !recyc {
-				m.maybeChannelBroadcast(p.req.UserID)
-			}
-		}
 	}
 
 	outcomesByReq := make(map[int64]bookOutcome, expectedBooks)
@@ -411,18 +402,6 @@ func (m *Manager) sendAvailabilityEmbed(ctx context.Context, p preparedRequest) 
 		}
 	}
 	return nil
-}
-
-// maybeChannelBroadcast posts the silly broadcast to the public summary
-// channel; isolated so the bucket coordinator can suppress it when the
-// triggering availability is one of our own recent holds expiring.
-func (m *Manager) maybeChannelBroadcast(userID string) {
-	if m.summaryChannelID == "" {
-		return
-	}
-	if _, err := m.notifier.ChannelMessageSend(m.summaryChannelID, nonsense.RandomSillyBroadcast(userID)); err != nil {
-		m.logger.Warn("send channel broadcast failed", slog.Any("err", err))
-	}
 }
 
 // attemptHoldAndReport runs one HoldCampsite call synchronously and reports

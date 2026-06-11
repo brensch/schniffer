@@ -462,10 +462,20 @@ type NotificationData struct {
 }
 
 type DetailedSummaryStats struct {
+	// Notifications24h is the raw count of available-state rows in the
+	// notifications table over the last 24 hours — one row per
+	// (campsite × date). Useful internally for tracking how many distinct
+	// site/date openings the system observed, NOT how many DMs went out
+	// (one DM typically covers many rows). Not surfaced in the embed.
 	Notifications24h int64
-	Lookups24h       int64
-	ActiveRequests   int64
-	RequestsPerHour  float64
+	// UserDMs24h is the count of distinct Discord DMs sent to users in
+	// the last 24 hours = count(distinct (user_id, batch_id)) over
+	// available-state notifications. This is what the summary embed
+	// shows: how many actual messages users saw.
+	UserDMs24h      int64
+	Lookups24h      int64
+	ActiveRequests  int64
+	RequestsPerHour float64
 }
 
 // CRUD
@@ -1550,28 +1560,34 @@ func (s *Store) GetLastSuccessfulMetadataSync(ctx context.Context, syncType Meta
 
 // GetDetailedSummaryStats returns comprehensive stats for the detailed summary
 func (s *Store) GetDetailedSummaryStats(ctx context.Context) (DetailedSummaryStats, error) {
-	// Get basic stats for last 24 hours
+	// All five numbers in one round-trip. user_dms_24h counts distinct
+	// (user_id, batch_id) pairs since the manager sends at most one
+	// availability DM per (user, batch) — that's the count of Discord
+	// messages users actually saw, vs notifications_24h which counts
+	// rows-per-site-per-date.
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT 
-			coalesce((SELECT count(*) FROM notifications WHERE sent_at >= datetime('now', '-1 day') AND state = 'available'), 0) as notifications_24h,
-			coalesce((SELECT count(*) FROM lookup_log WHERE checked_at >= datetime('now', '-1 day')), 0) as lookups_24h,
-			coalesce((SELECT count(*) FROM schniff_requests WHERE active=true), 0) as active_requests
+		SELECT
+			coalesce((SELECT count(*) FROM notifications WHERE sent_at >= datetime('now', '-1 day') AND state = 'available'), 0) AS notifications_24h,
+			coalesce((SELECT count(*) FROM (
+				SELECT 1 FROM notifications
+				WHERE sent_at >= datetime('now', '-1 day') AND state = 'available'
+				GROUP BY user_id, batch_id
+			)), 0) AS user_dms_24h,
+			coalesce((SELECT count(*) FROM lookup_log WHERE checked_at >= datetime('now', '-1 day')), 0) AS lookups_24h,
+			coalesce((SELECT count(*) FROM schniff_requests WHERE active=true), 0) AS active_requests
 	`)
 
-	var notifications24h, lookups24h, activeRequests int64
-	err := row.Scan(&notifications24h, &lookups24h, &activeRequests)
-	if err != nil {
+	var notifications24h, userDMs24h, lookups24h, activeRequests int64
+	if err := row.Scan(&notifications24h, &userDMs24h, &lookups24h, &activeRequests); err != nil {
 		return DetailedSummaryStats{}, err
 	}
 
-	// Calculate requests per hour (last 24h lookups / 24)
-	requestsPerHour := float64(lookups24h) / 24.0
-
 	return DetailedSummaryStats{
 		Notifications24h: notifications24h,
+		UserDMs24h:       userDMs24h,
 		Lookups24h:       lookups24h,
 		ActiveRequests:   activeRequests,
-		RequestsPerHour:  requestsPerHour,
+		RequestsPerHour:  float64(lookups24h) / 24.0,
 	}, nil
 }
 

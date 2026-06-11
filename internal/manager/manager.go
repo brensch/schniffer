@@ -493,6 +493,7 @@ func (m *Manager) fireDailySummary(ctx context.Context) {
 	summary.UserNames = m.resolveUserNames(summary)
 	embed := db.MakeSummaryEmbed(summary)
 	m.logger.Info("daily summary firing",
+		slog.Int64("user_dms_24h", summary.Stats.UserDMs24h),
 		slog.Int64("notifications_24h", summary.Stats.Notifications24h),
 		slog.Int64("lookups_24h", summary.Stats.Lookups24h),
 		slog.Int64("active_requests", summary.Stats.ActiveRequests),

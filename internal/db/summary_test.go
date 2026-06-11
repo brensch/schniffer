@@ -159,6 +159,29 @@ func TestMakeSummaryEmbed_CombinedActiveAndFired(t *testing.T) {
 	}
 }
 
+func TestMakeSummaryEmbed_NotificationsSentShowsUserDMs(t *testing.T) {
+	// The "Notifications Sent" field reflects the count of Discord
+	// messages users actually received (UserDMs24h = distinct user×batch
+	// state-changes), NOT the raw notifications-table row count
+	// (Notifications24h). Verifies the embed wires the right field.
+	data := SummaryData{
+		Stats: DetailedSummaryStats{
+			Notifications24h: 200, // many site×date rows
+			UserDMs24h:       7,   // but only 7 actual DMs went out
+		},
+	}
+	embed := MakeSummaryEmbed(data)
+	var got string
+	for _, f := range embed.Fields {
+		if f.Name == "📬 Notifications Sent" {
+			got = f.Value
+		}
+	}
+	if got != "7" {
+		t.Errorf("Notifications Sent should reflect UserDMs24h (7); got %q", got)
+	}
+}
+
 func TestMakeSummaryEmbed_EmptyStates(t *testing.T) {
 	embed := MakeSummaryEmbed(SummaryData{})
 	var got string
