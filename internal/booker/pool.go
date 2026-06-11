@@ -305,6 +305,81 @@ func (p *Pool) holdOnce(ctx context.Context, userID, campsiteID, campgroundID st
 	return e.session.HoldCampsite(opCtx, campsiteID, campgroundID, checkIn, checkOut)
 }
 
+// OpenWarmTabForRequestAsync claims the warm-tab slot for (userID,
+// requestID) synchronously (publishing wt into the pool map with wt.mu
+// locked) and kicks the chromedp navigation in a background goroutine.
+// Returns once the slot is published — typically <1ms.
+//
+// Any HoldOnRequestTab that arrives between the synchronous publish and
+// the background nav completing will find wt in the map, queue on wt.mu,
+// and block until the nav goroutine releases it. So a fresh schniff
+// cannot race a booking into the main_session fallback: by the time the
+// caller's next instruction runs, the slot is reserved.
+//
+// No-op if a slot already exists for this requestID — the reconcile
+// loop or another caller is already managing it.
+//
+// Errors only on ensureAlive failure (session dead and re-launch
+// failed). Nav failures inside the background goroutine are logged via
+// pool.Logger; the next reconcile-loop tick will retry.
+func (p *Pool) OpenWarmTabForRequestAsync(ctx context.Context, userID string, requestID int64, campgroundID string) error {
+	e, err := p.ensureAlive(ctx, userID)
+	if err != nil {
+		return err
+	}
+	e.tabsMu.Lock()
+	if e.tabs == nil {
+		e.tabs = map[int64]*warmTab{}
+	}
+	if _, ok := e.tabs[requestID]; ok {
+		// Already claimed (likely by the reconcile loop firing right
+		// before us, or a previous OpenWarmTabForRequestAsync call).
+		// Nothing to do — that other path will navigate.
+		e.tabsMu.Unlock()
+		return nil
+	}
+	t, err := e.session.NewTab()
+	if err != nil {
+		e.tabsMu.Unlock()
+		return fmt.Errorf("open tab for request %d: %w", requestID, err)
+	}
+	wt := &warmTab{tab: t}
+	wt.mu.Lock() // held until the background goroutine finishes the nav.
+	e.tabs[requestID] = wt
+	e.tabsMu.Unlock()
+
+	bgLogger := p.cfg.Logger.With(
+		"correlation_id", newCorrelationID(),
+		"user_id", userID,
+		"request_id", requestID,
+		"campground_id", campgroundID,
+		"op", "open_warm_tab_async",
+	)
+	go func() {
+		defer wt.mu.Unlock()
+		navCtx, cancel := context.WithTimeout(wt.tab.Ctx(), 60*time.Second)
+		defer cancel()
+		opCtx, opcancel := sessionOperationContext(navCtx, WithLogger(context.Background(), bgLogger))
+		defer opcancel()
+		if _, err := PrewarmCampground(opCtx, campgroundID); err != nil {
+			bgLogger.Warn("async warm-tab prewarm failed; removing slot", "err", err)
+			// Drop the failed slot so HoldOnRequestTab falls back to
+			// main_session and the reconcile loop retries on its tick.
+			e.tabsMu.Lock()
+			if e.tabs[requestID] == wt {
+				delete(e.tabs, requestID)
+			}
+			e.tabsMu.Unlock()
+			wt.closed = true
+			wt.tab.Close()
+			return
+		}
+		wt.campground = campgroundID
+		bgLogger.Info("async warm-tab ready")
+	}()
+	return nil
+}
+
 // EnsureWarmTabForRequest guarantees there is a dedicated Chrome tab open
 // for this (userID, requestID) tuple, parked on the schniff's campground
 // overview page (/camping/campgrounds/{campgroundID}) with grecaptcha
@@ -328,23 +403,34 @@ func (p *Pool) EnsureWarmTabForRequest(ctx context.Context, userID string, reque
 	if err != nil {
 		return err
 	}
+	// Critical ordering: we must take wt.mu BEFORE publishing wt to
+	// e.tabs, otherwise a concurrent HoldOnRequestTab can find wt via
+	// the map, race ahead of us for wt.mu, and run HoldFast on a tab
+	// whose grecaptcha hasn't been loaded yet. Holding wt.mu across the
+	// publish + nav means any consumer that finds wt and tries to lock
+	// it will wait for our nav to complete (success or failure).
 	e.tabsMu.Lock()
 	if e.tabs == nil {
 		e.tabs = map[int64]*warmTab{}
 	}
-	wt, ok := e.tabs[requestID]
-	if !ok {
+	wt, existed := e.tabs[requestID]
+	if !existed {
 		t, err := e.session.NewTab()
 		if err != nil {
 			e.tabsMu.Unlock()
 			return fmt.Errorf("open tab for request %d: %w", requestID, err)
 		}
 		wt = &warmTab{tab: t}
+		wt.mu.Lock() // hold the slot's mutex BEFORE making it visible to consumers.
 		e.tabs[requestID] = wt
+		e.tabsMu.Unlock()
+	} else {
+		// Existing slot — release tabsMu first, then queue at wt.mu like
+		// any other consumer. (Avoids deadlock if a concurrent
+		// HoldOnRequestTab is mid-call on this same wt.)
+		e.tabsMu.Unlock()
+		wt.mu.Lock()
 	}
-	e.tabsMu.Unlock()
-
-	wt.mu.Lock()
 	defer wt.mu.Unlock()
 	if wt.closed {
 		return errors.New("warm tab closed")
@@ -359,6 +445,21 @@ func (p *Pool) EnsureWarmTabForRequest(ctx context.Context, userID string, reque
 	opCtx, opcancel := sessionOperationContext(pctx, ctx)
 	defer opcancel()
 	if _, err := PrewarmCampground(opCtx, campgroundID); err != nil {
+		// Nav failed. Remove the slot from the map so future calls get a
+		// fresh tab attempt — leaving a wt with empty campground in the
+		// map would make subsequent HoldOnRequestTab calls find it,
+		// pass the campground=="" guard below, and crash on an
+		// un-navigated tab. Close the tab too so we don't leak chromedp
+		// targets across retries.
+		if !existed {
+			e.tabsMu.Lock()
+			if e.tabs[requestID] == wt {
+				delete(e.tabs, requestID)
+			}
+			e.tabsMu.Unlock()
+			wt.closed = true
+			wt.tab.Close()
+		}
 		return fmt.Errorf("prewarm tab: %w", err)
 	}
 	wt.campground = campgroundID
@@ -477,7 +578,18 @@ func (p *Pool) holdOnRequestTabOnce(ctx context.Context, e *entry, wt *warmTab, 
 	if wt.closed {
 		return nil, HoldPathMainSession, errors.New("warm tab closed")
 	}
-	if wt.campground != "" && wt.campground != campgroundID {
+	if wt.campground == "" {
+		// EnsureWarmTabForRequest is supposed to clear failed-nav slots
+		// from the map, so this should be unreachable. If we ever get
+		// here it means the tab exists but never finished prewarming —
+		// safest to fall back rather than HoldFast on a tab without
+		// grecaptcha loaded.
+		p.cfg.Logger.Warn("warm tab not yet navigated; falling back to main session",
+			"user_id", userID, "request_id", requestID, "wanted_campground", campgroundID)
+		res, err := p.HoldCampsite(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+		return res, HoldPathMainSession, err
+	}
+	if wt.campground != campgroundID {
 		p.cfg.Logger.Warn("warm tab campground mismatch; falling back to main session",
 			"user_id", userID, "request_id", requestID,
 			"tab_campground", wt.campground, "wanted_campground", campgroundID)
