@@ -11,32 +11,34 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// warmTabOpenTimeout caps how long the immediate post-creation warm-tab
-// open is allowed to take. 60s matches the chromedp Poll budget inside
-// PrewarmCampground; if nav stalls longer than that we move on and let
-// the 30s reconcile loop pick it up.
-const warmTabOpenTimeout = 60 * time.Second
+// warmTabRegisterTimeout caps how long the synchronous slot-claim is
+// allowed to take. The slot publish itself is ~microseconds; we only
+// time out if ensureAlive has to relaunch a dead session, which is rare.
+const warmTabRegisterTimeout = 10 * time.Second
 
-// kickWarmTabOpen fires Pool.EnsureWarmTabForRequest in the background as
-// soon as a new schniff is created, so the user doesn't have to wait for
-// the next reconcile-loop tick (up to 30s) before their tab is ready. If
-// this fails, no problem — the reconcile loop will retry on its cadence.
-// Skipped if the user has no warm pool session yet.
+// kickWarmTabOpen synchronously claims a warm-tab slot for the new
+// schniff and kicks the actual chromedp nav in the background. Returns
+// once the slot is published — guarantees that any booking goroutine
+// arriving after this point will find the slot and queue on its mutex
+// instead of falling back to main_session.
+//
+// Skipped if the user has no warm pool session (not auto-book linked
+// yet). Errors from the synchronous claim are logged; the 30s
+// reconcile loop will retry. Errors from the background nav are
+// logged inside the Pool.
 func (b *Bot) kickWarmTabOpen(userID string, requestID int64, campgroundID string) {
 	if b.pool == nil || !b.pool.HasUser(userID) {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), warmTabOpenTimeout)
-		defer cancel()
-		if err := b.pool.EnsureWarmTabForRequest(ctx, userID, requestID, campgroundID); err != nil {
-			b.logger.Warn("immediate warm-tab open failed; reconcile loop will retry",
-				slog.String("user_id", userID),
-				slog.Int64("request_id", requestID),
-				slog.String("campground_id", campgroundID),
-				slog.Any("err", err))
-		}
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), warmTabRegisterTimeout)
+	defer cancel()
+	if err := b.pool.OpenWarmTabForRequestAsync(ctx, userID, requestID, campgroundID); err != nil {
+		b.logger.Warn("warm-tab slot claim failed; reconcile loop will retry",
+			slog.String("user_id", userID),
+			slog.Int64("request_id", requestID),
+			slog.String("campground_id", campgroundID),
+			slog.Any("err", err))
+	}
 }
 
 func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {

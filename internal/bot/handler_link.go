@@ -164,17 +164,15 @@ func (b *Bot) kickUserWarmTabsAllActive(userID string) {
 		return
 	}
 	for _, r := range reqs {
-		go func(reqID int64, cgID string) {
-			ctx, cancel := context.WithTimeout(context.Background(), warmTabOpenTimeout)
-			defer cancel()
-			if err := b.pool.EnsureWarmTabForRequest(ctx, userID, reqID, cgID); err != nil {
-				b.logger.Warn("post-link warm-tab open failed",
-					slog.String("user_id", userID),
-					slog.Int64("request_id", reqID),
-					slog.String("campground_id", cgID),
-					slog.Any("err", err))
-			}
-		}(r.ID, r.CampgroundID)
+		ctx, cancel := context.WithTimeout(context.Background(), warmTabRegisterTimeout)
+		if err := b.pool.OpenWarmTabForRequestAsync(ctx, userID, r.ID, r.CampgroundID); err != nil {
+			b.logger.Warn("post-link warm-tab slot claim failed",
+				slog.String("user_id", userID),
+				slog.Int64("request_id", r.ID),
+				slog.String("campground_id", r.CampgroundID),
+				slog.Any("err", err))
+		}
+		cancel()
 	}
 }
 
