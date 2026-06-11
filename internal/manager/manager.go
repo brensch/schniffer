@@ -16,12 +16,6 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// dbWriteRequest represents a database write operation to be serialized
-type dbWriteRequest struct {
-	operation func() error
-	result    chan error
-}
-
 type Manager struct {
 	store            *db.Store
 	reg              *providers.Registry
@@ -29,7 +23,6 @@ type Manager struct {
 	notifier         *discordgo.Session
 	summaryChannelID string
 	logger           *slog.Logger
-	dbWriteChan      chan dbWriteRequest
 
 	// Optional auto-booking. Nil when SCHNIFFER_ENC_KEY is unset or pool
 	// isn't wired; notification path falls back to plain DM in that case.
@@ -43,43 +36,17 @@ func (m *Manager) SetAutoBooking(pool *booker.Pool) {
 }
 
 func NewManager(store *db.Store, reg *providers.Registry, notifier *discordgo.Session, summaryChannelID string) *Manager {
-	m := &Manager{
+	return &Manager{
 		store:            store,
 		reg:              reg,
 		notifier:         notifier,
 		summaryChannelID: summaryChannelID,
 		logger:           slog.Default(),
-		dbWriteChan:      make(chan dbWriteRequest, 100), // Buffer to prevent blocking
 	}
-	// Start database writer goroutine
-	go m.dbWriter()
-	return m
 }
 
 func (m *Manager) GetSummaryChannel() string {
 	return m.summaryChannelID
-}
-
-// dbWriter processes database write operations sequentially to avoid lock contention
-func (m *Manager) dbWriter() {
-	for req := range m.dbWriteChan {
-		req.result <- req.operation()
-		close(req.result)
-	}
-}
-
-// executeDBOperation queues a database operation for sequential execution
-func (m *Manager) executeDBOperation(operation func() error) error {
-	result := make(chan error, 1)
-	req := dbWriteRequest{
-		operation: operation,
-		result:    result,
-	}
-
-	// This will block and wait if the channel is full,
-	// guaranteeing sequential execution.
-	m.dbWriteChan <- req
-	return <-result
 }
 
 // Run polls providers at dynamic intervals based on their rate limit status
@@ -260,11 +227,9 @@ func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error
 		metrics.PollCycleFailed.WithLabelValues(targetProvider).Add(float64(failedCG))
 	}
 
-	// One batched insert at end of cycle instead of N writes through the writer.
+	// One batched insert at end of cycle.
 	if len(allLookups) > 0 {
-		if err := m.executeDBOperation(func() error {
-			return m.store.RecordLookupBatch(ctx, allLookups)
-		}); err != nil {
+		if err := m.store.RecordLookupBatch(ctx, allLookups); err != nil {
 			m.logger.Warn("record lookup batch failed", slog.Any("err", err))
 		}
 	}
@@ -357,9 +322,7 @@ func (m *Manager) pollOneCampground(ctx context.Context, prov providers.Provider
 		})
 	}
 	start := time.Now()
-	if err := m.executeDBOperation(func() error {
-		return m.store.UpsertCampsiteAvailabilityBatch(ctx, batch)
-	}); err != nil {
+	if err := m.store.UpsertCampsiteAvailabilityBatch(ctx, batch); err != nil {
 		m.logger.Error("upsert states failed", slog.String("provider", k.prov), slog.String("campground", k.cg), slog.Any("err", err))
 	} else {
 		m.logger.Info("persisted campsite states",
@@ -642,12 +605,9 @@ func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocSc
 		})
 	}
 
-	// Store results in database using the serialized writer
+	// Store results in database.
 	if len(availabilityStates) > 0 {
-		err = m.executeDBOperation(func() error {
-			return m.store.UpsertCampsiteAvailabilityBatch(ctx, availabilityStates)
-		})
-		if err != nil {
+		if err := m.store.UpsertCampsiteAvailabilityBatch(ctx, availabilityStates); err != nil {
 			return fmt.Errorf("failed to store availability results: %w", err)
 		}
 	}

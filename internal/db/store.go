@@ -91,9 +91,14 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	// Configure write connection for single connection
-	writeDB.SetMaxOpenConns(1)
-	writeDB.SetMaxIdleConns(1)
+	// Configure write connection pool. Multiple writers are fine —
+	// SQLite serializes at the WAL write lock with _busy_timeout=5000
+	// from the DSN, and Go's connection pool reuses each conn safely.
+	// Previously this was MaxOpenConns=1 because callers also went
+	// through a manager-side dbWriter goroutine queue; we deleted that
+	// queue, so this pool size is now the actual concurrency bound.
+	writeDB.SetMaxOpenConns(4)
+	writeDB.SetMaxIdleConns(4)
 	writeDB.SetConnMaxLifetime(0) // No limit for write connection
 
 	// Read-only connection (multiple connections for reads)
@@ -304,6 +309,14 @@ func migrate(db *sql.DB) error {
 				return fmt.Errorf("apply migration %q: %w", alter, aerr)
 			}
 		}
+	}
+	// Idempotent index drops. idx_availability_stale was originally
+	// created for a never-implemented "last verified" query path; the
+	// column it indexes is write-only in the app, so the index is pure
+	// write-amplification cost. Dropping reclaims its disk + checkpoint
+	// budget. DROP INDEX IF EXISTS is a no-op on a fresh DB.
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_availability_stale`); err != nil {
+		return fmt.Errorf("drop idx_availability_stale: %w", err)
 	}
 	return nil
 }
@@ -643,13 +656,15 @@ func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []Ca
 	}
 	defer tx.Rollback()
 
-	// Fixed temp-table name. The write pool is single-connection
-	// (MaxOpenConns=1) so two upserts never run concurrently on the
-	// same conn, and SQLite TEMP tables are connection-scoped. We DROP
-	// first to clear any leftover from a previously rolled-back tx on
-	// this connection. Using a UUID-suffixed name here previously
-	// generated unbounded `query` label values on the DB query
-	// histogram and OOM-killed Prometheus.
+	// Fixed temp-table name. SQLite TEMP tables are *connection*-scoped,
+	// so concurrent upserts on different write-pool connections each
+	// see their own `temp_new_states` and never collide. Within a
+	// single connection a transaction guarantees the previous use is
+	// fully committed or rolled back before we re-enter — we still DROP
+	// IF EXISTS first to clear any leftover from a rolled-back tx that
+	// committed the CREATE but reverted the DROP. Using a UUID-suffixed
+	// name here previously generated unbounded `query` label values on
+	// the DB query histogram and OOM-killed Prometheus.
 	const tableName = "temp_new_states"
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp_new_states;`); err != nil {
 		return fmt.Errorf("drop stale temp table: %w", err)
@@ -705,12 +720,28 @@ func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []Ca
 		return fmt.Errorf("insert state_changes from temp table: %w", err)
 	}
 
-	// 4. Upsert into the main availability table.
+	// 4. Upsert into the main availability table — but only rows whose
+	// value differs from what's already there (or that are brand-new).
+	// At ~7000 sites × every-5-second polling, the vast majority of
+	// polls return identical availability for every row; writing those
+	// no-op rows just to refresh last_checked was costing ~80% of the
+	// persist wall time and inflating WAL between checkpoints. The WHERE
+	// clause mirrors step 3's state-change filter, so anything that
+	// generated a state_changes row also gets upserted here, and
+	// anything filtered out here was already a no-op for change
+	// detection. (last_checked therefore only advances on actual value
+	// changes; the column is never read in conditional logic anywhere
+	// in the app, so this is a behaviour-preserving optimization.)
 	sqlUpsert := fmt.Sprintf(`
         INSERT INTO campsite_availability (provider, campground_id, campsite_id, date, available, last_checked)
-        SELECT provider, campground_id, campsite_id, date, available, last_checked
-        FROM %s
-        WHERE true
+        SELECT ns.provider, ns.campground_id, ns.campsite_id, ns.date, ns.available, ns.last_checked
+        FROM %s AS ns
+        LEFT JOIN campsite_availability AS ca
+            ON  ca.provider = ns.provider
+            AND ca.campground_id = ns.campground_id
+            AND ca.campsite_id = ns.campsite_id
+            AND ca.date = ns.date
+        WHERE ca.provider IS NULL OR ca.available != ns.available
         ON CONFLICT (provider, campground_id, campsite_id, date)
         DO UPDATE SET
             available = excluded.available,
