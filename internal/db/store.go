@@ -8,13 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
-
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
-	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stephennancekivell/querypulse"
 )
@@ -22,11 +21,18 @@ import (
 //go:embed schema.sql
 var schemaFS embed.FS
 
+// dynamicIdentSuffix matches a trailing `_<hex-or-digits>` of length >= 8.
+// Strips UUIDs, sqlite_temp_master rowids, and similar dynamic suffixes from
+// table/identifier names so the schniffer_db_query_duration_seconds `query`
+// label stays bounded if anyone ever (re)introduces a per-call identifier.
+var dynamicIdentSuffix = regexp.MustCompile(`_[0-9a-fA-F]{8,}$`)
+
 // normalizeQueryLabel collapses a SQL query into a low-cardinality label
 // for the schniffer_db_query_duration_seconds histogram. We keep just the
-// first verb + first table-ish identifier and truncate hard; this stays
-// bounded by the small set of distinct queries in the codebase rather
-// than ballooning with WHERE-clause variation.
+// first verb + first table-ish identifier, strip any dynamic-looking
+// suffix, and truncate hard. The cardinality of this label MUST stay
+// bounded by the (small) set of distinct queries in the codebase — a
+// runaway label here OOM-kills Prometheus. See cardinality_test.go.
 func normalizeQueryLabel(query string) string {
 	q := strings.TrimSpace(query)
 	// Collapse whitespace so multi-line queries hash the same.
@@ -44,6 +50,10 @@ func normalizeQueryLabel(query string) string {
 			break
 		}
 	}
+	// Defence-in-depth: strip dynamic-looking hex/digit suffixes
+	// (e.g. uuid-named temp tables) so a stray dynamic identifier
+	// can't blow up cardinality.
+	target = dynamicIdentSuffix.ReplaceAllString(target, "")
 	label := verb
 	if target != "" {
 		label = verb + ":" + target
@@ -623,13 +633,19 @@ func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []Ca
 	}
 	defer tx.Rollback()
 
-	id := uuid.NewString()
-	cleanID := strings.ReplaceAll(id, "-", "")
-	tableName := fmt.Sprintf("temp_new_states_%s", cleanID)
-
-	// 1. Create the uniquely named temporary table.
-	createSQL := fmt.Sprintf(`
-        CREATE TEMP TABLE %s (
+	// Fixed temp-table name. The write pool is single-connection
+	// (MaxOpenConns=1) so two upserts never run concurrently on the
+	// same conn, and SQLite TEMP tables are connection-scoped. We DROP
+	// first to clear any leftover from a previously rolled-back tx on
+	// this connection. Using a UUID-suffixed name here previously
+	// generated unbounded `query` label values on the DB query
+	// histogram and OOM-killed Prometheus.
+	const tableName = "temp_new_states"
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp_new_states;`); err != nil {
+		return fmt.Errorf("drop stale temp table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+        CREATE TEMP TABLE temp_new_states (
             provider TEXT,
             campground_id TEXT,
             campsite_id TEXT,
@@ -637,19 +653,9 @@ func (s *Store) upsertCampsiteAvailabilityChunk(ctx context.Context, states []Ca
             available INTEGER,
             last_checked TEXT
         );
-    `, tableName)
-
-	_, err = tx.ExecContext(ctx, createSQL)
-	if err != nil {
+    `); err != nil {
 		return fmt.Errorf("create temp table: %w", err)
 	}
-
-	// Drop the table when the function exits to ensure cleanup.
-	// Using s.DB.Exec runs it on the connection outside the transaction,
-	// which is safer after the transaction is committed/rolled back.
-	defer func() {
-		_, _ = s.DB.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s;`, tableName))
-	}()
 
 	// Prepare the insert statement with the unique table name.
 	insertSQL := fmt.Sprintf(`
