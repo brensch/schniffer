@@ -84,7 +84,7 @@ func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.Interactio
 	var errors []string
 
 	for _, campgroundRef := range group.Campgrounds {
-		_, err := b.store.AddRequest(context.Background(), db.SchniffRequest{
+		reqID, err := b.store.AddRequest(context.Background(), db.SchniffRequest{
 			UserID:        uid,
 			Provider:      campgroundRef.Provider,
 			CampgroundID:  campgroundRef.CampgroundID,
@@ -96,9 +96,13 @@ func (b *Bot) handleAddBulkCommand(s *discordgo.Session, i *discordgo.Interactio
 
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to add %s/%s: %s", campgroundRef.Provider, campgroundRef.CampgroundID, err.Error()))
-		} else {
-			successCount++
+			continue
 		}
+		successCount++
+		// Open the warm tab right now (one per schniff in the bulk add).
+		// Each goroutine inside kickWarmTabOpen is independent and bounded
+		// by warmTabOpenTimeout, so a bulk of 20 campgrounds fans out fine.
+		b.kickWarmTabOpen(uid, reqID, campgroundRef.CampgroundID)
 	}
 
 	// Calculate stay duration

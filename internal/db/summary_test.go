@@ -147,15 +147,38 @@ func TestMakeSummaryEmbed_CombinedActiveAndFired(t *testing.T) {
 	if got == "" {
 		t.Fatalf("Schniffists field missing")
 	}
-	// u2 has the most fires → first row.
-	if !strings.HasPrefix(got, "<@u2> — 0 active / 5 fired") {
-		t.Errorf("expected u2 first (most fires); got %q", got)
+	// u2 has the most schniffs sent → first row.
+	if !strings.HasPrefix(got, "<@u2> — 0 active / 5 schniffs sent") {
+		t.Errorf("expected u2 first (most schniffs sent); got %q", got)
 	}
-	if !strings.Contains(got, "hulio — 4 active / 2 fired") {
+	if !strings.Contains(got, "hulio — 4 active / 2 schniffs sent") {
 		t.Errorf("expected hulio row; got %q", got)
 	}
-	if !strings.Contains(got, "<@u3> — 1 active / 0 fired") {
+	if !strings.Contains(got, "<@u3> — 1 active / 0 schniffs sent") {
 		t.Errorf("expected u3 row (active-only); got %q", got)
+	}
+}
+
+func TestMakeSummaryEmbed_SchniffsSentShowsUserDMs(t *testing.T) {
+	// The "Schniffs Sent" field reflects the count of Discord messages
+	// users actually received (UserDMs24h = distinct user×batch
+	// state-changes), NOT the raw notifications-table row count
+	// (Notifications24h). Verifies the embed wires the right field.
+	data := SummaryData{
+		Stats: DetailedSummaryStats{
+			Notifications24h: 200, // many site×date rows
+			UserDMs24h:       7,   // but only 7 actual DMs went out
+		},
+	}
+	embed := MakeSummaryEmbed(data)
+	var got string
+	for _, f := range embed.Fields {
+		if f.Name == "📬 Schniffs Sent" {
+			got = f.Value
+		}
+	}
+	if got != "7" {
+		t.Errorf("Schniffs Sent should reflect UserDMs24h (7); got %q", got)
 	}
 }
 

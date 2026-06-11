@@ -3,11 +3,43 @@ package bot
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/bwmarrin/discordgo"
 )
+
+// warmTabRegisterTimeout caps how long the synchronous slot-claim is
+// allowed to take. The slot publish itself is ~microseconds; we only
+// time out if ensureAlive has to relaunch a dead session, which is rare.
+const warmTabRegisterTimeout = 10 * time.Second
+
+// kickWarmTabOpen synchronously claims a warm-tab slot for the new
+// schniff and kicks the actual chromedp nav in the background. Returns
+// once the slot is published — guarantees that any booking goroutine
+// arriving after this point will find the slot and queue on its mutex
+// instead of falling back to main_session.
+//
+// Skipped if the user has no warm pool session (not auto-book linked
+// yet). Errors from the synchronous claim are logged; the 30s
+// reconcile loop will retry. Errors from the background nav are
+// logged inside the Pool.
+func (b *Bot) kickWarmTabOpen(userID string, requestID int64, campgroundID string) {
+	if b.pool == nil || !b.pool.HasUser(userID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), warmTabRegisterTimeout)
+	defer cancel()
+	if err := b.pool.OpenWarmTabForRequestAsync(ctx, userID, requestID, campgroundID); err != nil {
+		b.logger.Warn("warm-tab slot claim failed; reconcile loop will retry",
+			slog.String("user_id", userID),
+			slog.Int64("request_id", requestID),
+			slog.String("campground_id", campgroundID),
+			slog.Any("err", err))
+	}
+}
 
 func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCreate, sub *discordgo.ApplicationCommandInteractionDataOption) {
 	opts := optMap(sub.Options)
@@ -56,7 +88,7 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	uid := getUserID(i)
-	_, err = b.store.AddRequest(context.Background(), db.SchniffRequest{
+	reqID, err := b.store.AddRequest(context.Background(), db.SchniffRequest{
 		UserID:        uid,
 		Provider:      campgroundProvider,
 		CampgroundID:  campgroundID,
@@ -69,6 +101,10 @@ func (b *Bot) handleAddCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		respond(s, i, "error: "+err.Error())
 		return
 	}
+	// Open the warm tab right now so the first booking on this schniff
+	// hits the fast path (~1.4s) instead of waiting up to 30s for the
+	// reconcile loop and paying the cold-start tax (~4s).
+	b.kickWarmTabOpen(uid, reqID, campgroundID)
 
 	// get the length of the stay
 	stayDuration := end.Sub(start)

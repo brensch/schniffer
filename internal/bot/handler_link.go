@@ -138,7 +138,42 @@ func (b *Bot) handleModalSubmit(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 
+	// Open warm tabs for every active schniff this user already has, so
+	// after linking they're immediately ready for fast-path bookings —
+	// not waiting up to 30s for the reconcile loop's first tick.
+	go b.kickUserWarmTabsAllActive(userID)
+
 	b.editFollowup(s, i, linkSuccessMessage(email))
+}
+
+// kickUserWarmTabsAllActive scans the user's active schniffs and fires
+// EnsureWarmTabForRequest for each, in parallel. Called right after
+// /schniff link succeeds so the existing schniff set goes warm without
+// waiting for the next reconcile-loop tick. Errors are logged; the
+// reconcile loop will retry on its cadence.
+func (b *Bot) kickUserWarmTabsAllActive(userID string) {
+	if b.pool == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	reqs, err := b.store.ListUserActiveRequests(ctx, userID)
+	cancel()
+	if err != nil {
+		b.logger.Warn("list user active requests for warm-tab kick failed",
+			slog.String("user_id", userID), slog.Any("err", err))
+		return
+	}
+	for _, r := range reqs {
+		ctx, cancel := context.WithTimeout(context.Background(), warmTabRegisterTimeout)
+		if err := b.pool.OpenWarmTabForRequestAsync(ctx, userID, r.ID, r.CampgroundID); err != nil {
+			b.logger.Warn("post-link warm-tab slot claim failed",
+				slog.String("user_id", userID),
+				slog.Int64("request_id", r.ID),
+				slog.String("campground_id", r.CampgroundID),
+				slog.Any("err", err))
+		}
+		cancel()
+	}
 }
 
 func extractModalCreds(rows []discordgo.MessageComponent) (email, password string) {

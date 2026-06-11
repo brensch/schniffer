@@ -51,8 +51,8 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 	// Build the summary message
 	var summary strings.Builder
 	summary.WriteString("24 Hour Schniff roundup:\n")
-	summary.WriteString("Available campsites found\n")
-	summary.WriteString(fmt.Sprintf("%d\n", stats.Notifications24h))
+	summary.WriteString("Schniffs sent\n")
+	summary.WriteString(fmt.Sprintf("%d\n", stats.UserDMs24h))
 	summary.WriteString("Checks made\n")
 	summary.WriteString(fmt.Sprintf("%d\n", stats.Lookups24h))
 	summary.WriteString("Active Schniffs\n")
@@ -65,8 +65,8 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 		summary.WriteString("No schniffists yet.\n")
 	} else {
 		for _, r := range rows {
-			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d fired\n",
-				r.UserID, r.Active, r.Fired))
+			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d schniffs sent\n",
+				r.UserID, r.Active, r.Sent))
 		}
 	}
 
@@ -119,10 +119,10 @@ func userLabel(userID string, names map[string]string) string {
 	return fmt.Sprintf("<@%s>", userID)
 }
 
-// mergeSchniffistRows combines active + notification counts per user into
-// one row each, sorted by (fired desc, active desc, userID asc). Users
-// who only appear in one of the two inputs are still included.
-func mergeSchniffistRows(active, fired []UserCount) []schniffistRow {
+// mergeSchniffistRows combines active + sent-schniff counts per user
+// into one row each, sorted by (sent desc, active desc, userID asc).
+// Users who only appear in one of the two inputs are still included.
+func mergeSchniffistRows(active, sent []UserCount) []schniffistRow {
 	byID := map[string]*schniffistRow{}
 	order := []string{}
 	get := func(id string) *schniffistRow {
@@ -137,16 +137,16 @@ func mergeSchniffistRows(active, fired []UserCount) []schniffistRow {
 	for _, uc := range active {
 		get(uc.UserID).Active = uc.Count
 	}
-	for _, uc := range fired {
-		get(uc.UserID).Fired = uc.Count
+	for _, uc := range sent {
+		get(uc.UserID).Sent = uc.Count
 	}
 	rows := make([]schniffistRow, 0, len(order))
 	for _, id := range order {
 		rows = append(rows, *byID[id])
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Fired != rows[j].Fired {
-			return rows[i].Fired > rows[j].Fired
+		if rows[i].Sent != rows[j].Sent {
+			return rows[i].Sent > rows[j].Sent
 		}
 		if rows[i].Active != rows[j].Active {
 			return rows[i].Active > rows[j].Active
@@ -159,12 +159,15 @@ func mergeSchniffistRows(active, fired []UserCount) []schniffistRow {
 type schniffistRow struct {
 	UserID string
 	Active int64
-	Fired  int64
+	// Sent is the per-user count of schniffs delivered as DMs in the
+	// window. Sorted on this descending so heaviest recipients land at
+	// the top of the schniffists field.
+	Sent int64
 }
 
 // formatSchniffistRows renders one line per user:
 //
-//	<name> — <active> active / <fired> fired
+//	<name> — <active> active / <sent> schniffs sent
 func formatSchniffistRows(rows []schniffistRow, names map[string]string) string {
 	if len(rows) == 0 {
 		return ""
@@ -174,8 +177,8 @@ func formatSchniffistRows(rows []schniffistRow, names map[string]string) string 
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%s — %d active / %d fired",
-			userLabel(r.UserID, names), r.Active, r.Fired)
+		fmt.Fprintf(&b, "%s — %d active / %d schniffs sent",
+			userLabel(r.UserID, names), r.Active, r.Sent)
 	}
 	return b.String()
 }
@@ -193,8 +196,8 @@ func MakeSummaryEmbed(summaryData SummaryData) *discordgo.MessageEmbed {
 		Timestamp: time.Now().Format(time.RFC3339),
 		Fields: []*discordgo.MessageEmbedField{
 			{
-				Name:   "🎯 Available Campsites Found",
-				Value:  fmt.Sprintf("%d", summaryData.Stats.Notifications24h),
+				Name:   "📬 Schniffs Sent",
+				Value:  fmt.Sprintf("%d", summaryData.Stats.UserDMs24h),
 				Inline: true,
 			},
 			{
