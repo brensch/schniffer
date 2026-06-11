@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS campsite_availability (
 );
 
 CREATE INDEX IF NOT EXISTS idx_availability_lookup ON campsite_availability(provider, campground_id, date);
-CREATE INDEX IF NOT EXISTS idx_availability_stale ON campsite_availability(last_checked);
 CREATE INDEX IF NOT EXISTS idx_availability_available_filtered ON campsite_availability(provider, campground_id, available, date) WHERE available=1;
 CREATE INDEX IF NOT EXISTS idx_availability_date_range ON campsite_availability(provider, campground_id, date, available);
 

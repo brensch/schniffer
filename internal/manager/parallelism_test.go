@@ -82,12 +82,10 @@ func TestPollProviderCampgroundsRunConcurrently(t *testing.T) {
 	reg.Register(prov.Name(), prov)
 
 	m := &Manager{
-		store:       store,
-		reg:         reg,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dbWriteChan: make(chan dbWriteRequest, 100),
+		store:  store,
+		reg:    reg,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	go m.dbWriter()
 
 	ctx := context.Background()
 	checkin := time.Now().Add(24 * time.Hour).UTC().Truncate(24 * time.Hour)
@@ -156,12 +154,10 @@ func TestPollProviderContinuesPastErrors(t *testing.T) {
 	reg.Register(prov.Name(), prov)
 
 	m := &Manager{
-		store:       store,
-		reg:         reg,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dbWriteChan: make(chan dbWriteRequest, 100),
+		store:  store,
+		reg:    reg,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	go m.dbWriter()
 
 	ctx := context.Background()
 	checkin := time.Now().Add(24 * time.Hour).UTC().Truncate(24 * time.Hour)
