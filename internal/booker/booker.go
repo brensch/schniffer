@@ -237,22 +237,20 @@ type HoldResult struct {
 type HoldPath string
 
 const (
-	// HoldPathWarmTabFast: dedicated warm tab was on the exact campsite —
-	// HoldFast skipped Nav + recaptcha wait. Floor case (~1.15s).
+	// HoldPathWarmTabFast: dedicated warm tab was parked on the schniff's
+	// campground page; HoldFast skipped Nav + recaptcha wait entirely.
+	// Floor case (~1.15s = recaptcha mint + rec.gov POST).
 	HoldPathWarmTabFast HoldPath = "warm_tab_fast"
-	// HoldPathWarmTabNav: dedicated warm tab existed but was parked on a
-	// different campsite than the one we needed; we navigated and ran
-	// the full HoldCampsite on the same warm Chrome. Saves browser
-	// boot/login cost vs main session, not Nav itself.
-	HoldPathWarmTabNav HoldPath = "warm_tab_nav"
 	// HoldPathMainSession: no warm tab was registered for this schniff
-	// (e.g. the reconcile loop hasn't ticked yet, or the user has no
-	// active auto-book schniffs). Fell through to the all-in-one
-	// HoldCampsite on the main session.
+	// (e.g. the reconcile loop hasn't ticked yet, the user has no active
+	// auto-book schniffs, or — rare — the schniff's campground changed
+	// mid-flight). Fell through to the all-in-one HoldCampsite on the
+	// main session.
 	HoldPathMainSession HoldPath = "main_session"
 	// HoldPathRelaunchRetry: the warm tab's session JWT silently
 	// expired; Pool relaunched (re-login) and replayed the hold against
-	// the fresh session.
+	// the fresh session. Warm tabs are rebuilt by the reconcile loop on
+	// its next tick.
 	HoldPathRelaunchRetry HoldPath = "relaunch_retry"
 )
 
@@ -261,8 +259,6 @@ func (h HoldPath) Human() string {
 	switch h {
 	case HoldPathWarmTabFast:
 		return "⚡ warm tab (fast path)"
-	case HoldPathWarmTabNav:
-		return "🟡 warm tab + re-nav"
 	case HoldPathMainSession:
 		return "🐌 cold start (no warm tab)"
 	case HoldPathRelaunchRetry:

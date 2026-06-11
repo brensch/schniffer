@@ -1,16 +1,16 @@
 // booker-warmtab-test exercises the per-schniff warm-tab path end-to-end
 // against real rec.gov so we can confirm:
 //
-//  1. Pool.EnsureWarmTabForRequest opens + navigates a dedicated tab.
-//  2. Pool.HoldOnRequestTab on the same campsiteID hits the fast path
-//     (HoldFast) and a 400 with the in-page perf markers is still a
-//     successful round-trip from the latency perspective.
-//  3. A second HoldOnRequestTab with a different campsiteID navigates the
-//     tab and still completes.
-//  4. CloseRequestTab leaves the underlying session healthy for a
+//  1. Pool.EnsureWarmTabForRequest opens + navigates a dedicated tab on
+//     the campground page.
+//  2. Pool.HoldOnRequestTab hits the fast path (HoldFast) for one campsite,
+//     and crucially ALSO hits the fast path for a DIFFERENT campsite in
+//     the same campground — no re-navigation required because the tab is
+//     parked at the campground level.
+//  3. CloseRequestTab leaves the underlying session healthy for a
 //     follow-up call that uses the main tab (HoldCampsite fallback).
 //
-// It picks two fresh (site, date) tuples from Baker Dam to avoid colliding
+// Picks two fresh (site, date) tuples from Baker Dam to avoid colliding
 // with the user's accumulated cart holds. Output is the booking_phase log
 // stream — grep on correlation_id to read one booking at a time.
 package main
@@ -36,7 +36,7 @@ import (
 func main() {
 	var (
 		campground = flag.String("campground", "10085599", "test campground ID (Baker Dam default)")
-		monthStart = flag.String("month", "2026-08-01", "month YYYY-MM-01")
+		monthStart = flag.String("month", "2026-09-01", "month YYYY-MM-01")
 		nights     = flag.Int("nights", 1, "nights per hold")
 		profileDir = flag.String("profile", "", "Chrome profile dir (default ~/.cache/recgov-booker)")
 		chromePath = flag.String("chrome", "", "Chrome binary")
@@ -67,7 +67,6 @@ func main() {
 	}
 	rand.Shuffle(len(slots), func(i, j int) { slots[i], slots[j] = slots[j], slots[i] })
 
-	// Find two distinct campsites that each have at least one available date.
 	siteA := slots[0]
 	var siteB slotInfo
 	for _, s := range slots[1:] {
@@ -81,7 +80,6 @@ func main() {
 	}
 	slog.Info("selected test sites", "site_a", siteA.siteID, "site_b", siteB.siteID)
 
-	// Pool with one user (us). Credentials are looked up via env.
 	const fakeUserID = "warmtab-test"
 	pool := booker.NewPool(booker.PoolConfig{
 		BaseProfileDir: filepath.Dir(*profileDir),
@@ -91,16 +89,6 @@ func main() {
 		},
 		Logger: slog.Default(),
 	})
-	// Profile-dir layout: pool keys per-user-id, so we need our env profile
-	// to land at <BaseProfileDir>/<userID>.
-	src := *profileDir
-	dst := filepath.Join(filepath.Dir(*profileDir), fakeUserID)
-	if src != dst {
-		// Best-effort: if the user already pointed BaseProfileDir to the
-		// right parent, src==dst and there's nothing to do. Otherwise
-		// just warn — we don't move user dirs around silently.
-		slog.Info("pool will look up profile at", "path", dst, "you passed", src)
-	}
 	if err := pool.StartUser(context.Background(), fakeUserID); err != nil {
 		fatal("pool warmup: %v", err)
 	}
@@ -109,40 +97,55 @@ func main() {
 
 	const reqID = int64(424242)
 
-	// Step 1: ensure warm tab on siteA.
+	// Step 1: ensure warm tab on the CAMPGROUND page (not a campsite).
 	ectx, ecancel := context.WithTimeout(context.Background(), 60*time.Second)
-	if err := pool.EnsureWarmTabForRequest(ectx, fakeUserID, reqID, siteA.siteID); err != nil {
+	if err := pool.EnsureWarmTabForRequest(ectx, fakeUserID, reqID, *campground); err != nil {
 		ecancel()
-		fatal("ensure warm tab (siteA): %v", err)
+		fatal("ensure warm tab on campground: %v", err)
 	}
 	ecancel()
-	slog.Info("=== step 1 ok: warm tab on siteA ===", "site", siteA.siteID)
+	slog.Info("=== step 1 ok: warm tab on campground page ===", "campground", *campground)
 
-	// Step 2: HoldOnRequestTab on siteA → fast path.
+	// Step 2: HoldOnRequestTab for siteA → fast path.
 	bctx, bcancel := context.WithTimeout(context.Background(), 60*time.Second)
 	res, err := pool.HoldOnRequestTab(bctx, fakeUserID, reqID, siteA.siteID, *campground, siteA.date, siteA.date.AddDate(0, 0, *nights))
 	bcancel()
-	slog.Info("=== step 2 result ===", "wall", durationFromRaw(res), "err", errString(err), "order", orderID(res))
+	slog.Info("=== step 2 result (siteA on warm tab) ===",
+		"path", pathOf(res), "wall", wallOf(res), "err", errString(err), "order", orderID(res))
 
-	// Step 3: HoldOnRequestTab on siteB → mismatch path (tab navigates).
-	bctx2, bcancel2 := context.WithTimeout(context.Background(), 90*time.Second)
+	// Step 3: HoldOnRequestTab for siteB → ALSO fast path (no re-nav).
+	// This is the critical assertion: the warm tab is on the campground
+	// page, so it serves any campsite in the campground equally well.
+	bctx2, bcancel2 := context.WithTimeout(context.Background(), 60*time.Second)
 	res2, err2 := pool.HoldOnRequestTab(bctx2, fakeUserID, reqID, siteB.siteID, *campground, siteB.date, siteB.date.AddDate(0, 0, *nights))
 	bcancel2()
-	slog.Info("=== step 3 result ===", "wall", durationFromRaw(res2), "err", errString(err2), "order", orderID(res2))
+	slog.Info("=== step 3 result (siteB on SAME warm tab) ===",
+		"path", pathOf(res2), "wall", wallOf(res2), "err", errString(err2), "order", orderID(res2))
+	if pathOf(res2) != "warm_tab_fast" {
+		slog.Error("REGRESSION: step 3 took the slow path despite warm tab being parked on the campground",
+			"path", pathOf(res2))
+	}
 
 	// Step 4: close the warm tab.
 	pool.CloseRequestTab(fakeUserID, reqID)
 	slog.Info("=== step 4 ok: warm tab closed ===")
 
-	// Step 5: a normal HoldCampsite on the main session still works (we
-	// fall back to the same path the legacy code used).
+	// Step 5: a fallback HoldOnRequestTab without warm tab still works.
 	bctx3, bcancel3 := context.WithTimeout(context.Background(), 90*time.Second)
 	res3, err3 := pool.HoldOnRequestTab(bctx3, fakeUserID, reqID, siteA.siteID, *campground, siteA.date.AddDate(0, 0, 7), siteA.date.AddDate(0, 0, 7+*nights))
 	bcancel3()
-	slog.Info("=== step 5 result (fallback path; no warm tab) ===", "wall", durationFromRaw(res3), "err", errString(err3), "order", orderID(res3))
+	slog.Info("=== step 5 result (fallback path; no warm tab) ===",
+		"path", pathOf(res3), "wall", wallOf(res3), "err", errString(err3), "order", orderID(res3))
 }
 
-func durationFromRaw(r *booker.HoldResult) time.Duration {
+func pathOf(r *booker.HoldResult) string {
+	if r == nil {
+		return ""
+	}
+	return string(r.Path)
+}
+
+func wallOf(r *booker.HoldResult) time.Duration {
 	if r == nil {
 		return 0
 	}

@@ -62,12 +62,52 @@ func logPhase(ctx context.Context, phase string, started time.Time, d time.Durat
 	lg.Info("booking_phase", attrs...)
 }
 
-// PrewarmCampsite navigates to the campsite page and waits until
-// grecaptcha.enterprise.execute is callable. After this returns, a follow-up
-// HoldFast on the same chromedp ctx skips Nav + RecaptchaWait entirely.
+// PrewarmCampground navigates to the campground overview page and waits
+// until grecaptcha.enterprise.execute is callable. After this returns, a
+// follow-up HoldFast on this tab can book *any* campsite in this
+// campground — the booking POST URL is keyed by campgroundID, and the
+// recaptcha token is bound to the action ("campsiteListBooking") not the
+// URL. Verified empirically: hold POSTs from /camping/campgrounds/{id}
+// succeed against rec.gov with STATUS=200 + order_id.
+//
+// This is the parking strategy for per-schniff warm tabs: one tab per
+// schniff, parked on its campground page once, never re-navigated. When
+// arbitration picks any campsite in that campground we HoldFast on the
+// same tab.
 //
 // Safe to call repeatedly; if the tab is already on the right page and
 // recaptcha is loaded, the second call only re-checks the readiness probe.
+func PrewarmCampground(ctx context.Context, campgroundID string) (PrewarmTimings, error) {
+	var t PrewarmTimings
+	navStart := time.Now()
+	navErr := chromedp.Run(ctx,
+		chromedp.Navigate(fmt.Sprintf("%s/camping/campgrounds/%s", SiteOrigin, campgroundID)),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+	)
+	t.Nav = time.Since(navStart)
+	logPhase(ctx, "prewarm_nav", navStart, t.Nav, navErr)
+	if navErr != nil {
+		return t, fmt.Errorf("nav: %w", navErr)
+	}
+
+	recStart := time.Now()
+	recErr := chromedp.Run(ctx, chromedp.Poll(
+		`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
+		nil, chromedp.WithPollingTimeout(30*time.Second),
+	))
+	t.RecaptchaWait = time.Since(recStart)
+	logPhase(ctx, "prewarm_recaptcha_wait", recStart, t.RecaptchaWait, recErr)
+	if recErr != nil {
+		return t, fmt.Errorf("wait recaptcha: %w", recErr)
+	}
+	return t, nil
+}
+
+// PrewarmCampsite is retained for callers (cmd/booker-bench) that want to
+// park on a specific campsite page. New code should prefer
+// PrewarmCampground — booking POSTs work the same from either page, and
+// the campground page lets one tab serve every campsite in the campground
+// without re-navigating.
 func PrewarmCampsite(ctx context.Context, campsiteID string) (PrewarmTimings, error) {
 	var t PrewarmTimings
 	navStart := time.Now()

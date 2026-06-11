@@ -61,15 +61,19 @@ type entry struct {
 	tabs   map[int64]*warmTab // keyed by schniff_request.id
 }
 
-// warmTab is a dedicated Chrome tab pre-navigated to a specific campsite
-// page for one active schniff request. The tab stays alive for the
-// schniff's lifetime so HoldCampsite on this tab pays no Nav or recaptcha
-// load cost — just session_check + script_eval.
+// warmTab is a dedicated Chrome tab pre-navigated to the schniff's
+// campground overview page (/camping/campgrounds/{id}) for one active
+// schniff request. The tab stays alive for the schniff's lifetime.
+// Empirically verified: a hold POST minted from the campground page is
+// accepted by rec.gov (STATUS=200) for any campsite in that campground —
+// the booking POST URL is keyed by campgroundID and the recaptcha token
+// is action-bound, not URL-bound. So one tab serves every candidate
+// campsite in the schniff's campground without ever re-navigating.
 type warmTab struct {
-	mu     sync.Mutex // serializes Prewarm + Hold on this tab
-	tab    *Tab
-	site   string // last campsite the tab was navigated to
-	closed bool
+	mu         sync.Mutex // serializes Prewarm + Hold on this tab
+	tab        *Tab
+	campground string // last campground the tab was navigated to ("" until first Prewarm)
+	closed     bool
 }
 
 func NewPool(cfg PoolConfig) *Pool {
@@ -302,21 +306,22 @@ func (p *Pool) holdOnce(ctx context.Context, userID, campsiteID, campgroundID st
 }
 
 // EnsureWarmTabForRequest guarantees there is a dedicated Chrome tab open
-// for this (userID, requestID) tuple, navigated to campsiteID and with the
-// grecaptcha enterprise script loaded. Idempotent: re-navigates the
-// existing tab if campsiteID changes (e.g. the schniff's chosen candidate
-// rotated), no-ops if the tab is already on the right page.
+// for this (userID, requestID) tuple, parked on the schniff's campground
+// overview page (/camping/campgrounds/{campgroundID}) with grecaptcha
+// loaded. From that tab a follow-up HoldOnRequestTab can book *any*
+// campsite in the campground via HoldFast (no re-navigation needed).
+// Idempotent: no-ops if the tab is already on this campground.
 //
 // One-tab-per-schniff is intentional. The manager keeps the tabs alive
-// across poll cycles so HoldCampsiteFor pays only the script_eval cost
-// (~1.15s = recaptcha mint + rec.gov POST), not Nav or the recaptcha JS
-// load. Tab is closed via CloseRequestTab when the schniff is deactivated.
-func (p *Pool) EnsureWarmTabForRequest(ctx context.Context, userID string, requestID int64, campsiteID string) error {
+// across poll cycles so HoldOnRequestTab pays only the script_eval cost
+// (~1.15s = recaptcha mint + rec.gov POST). Tab is closed via
+// CloseRequestTab when the schniff is deactivated.
+func (p *Pool) EnsureWarmTabForRequest(ctx context.Context, userID string, requestID int64, campgroundID string) error {
 	ctx = WithLogger(ctx, p.cfg.Logger.With(
 		"correlation_id", newCorrelationID(),
 		"user_id", userID,
 		"request_id", requestID,
-		"campsite_id", campsiteID,
+		"campground_id", campgroundID,
 		"op", "ensure_warm_tab",
 	))
 	e, err := p.ensureAlive(ctx, userID)
@@ -344,19 +349,19 @@ func (p *Pool) EnsureWarmTabForRequest(ctx context.Context, userID string, reque
 	if wt.closed {
 		return errors.New("warm tab closed")
 	}
-	if wt.site == campsiteID {
+	if wt.campground == campgroundID {
 		return nil
 	}
 	// Bound the prewarm so a stuck nav can't block the background loop
-	// forever. 60s matches the chromedp Poll budget inside PrewarmCampsite.
+	// forever. 60s matches the chromedp Poll budget inside PrewarmCampground.
 	pctx, pcancel := context.WithTimeout(wt.tab.Ctx(), 60*time.Second)
 	defer pcancel()
 	opCtx, opcancel := sessionOperationContext(pctx, ctx)
 	defer opcancel()
-	if _, err := PrewarmCampsite(opCtx, campsiteID); err != nil {
+	if _, err := PrewarmCampground(opCtx, campgroundID); err != nil {
 		return fmt.Errorf("prewarm tab: %w", err)
 	}
-	wt.site = campsiteID
+	wt.campground = campgroundID
 	return nil
 }
 
@@ -454,34 +459,33 @@ func (p *Pool) logHoldPath(path HoldPath, userID string, requestID int64, campsi
 	p.cfg.Logger.Info("auto_book_path", attrs...)
 }
 
-// holdOnRequestTabOnce returns the hold result + which warm-tab subpath
-// produced it (fast vs nav). The outer HoldOnRequestTab uses the subpath
-// label to tag the HoldResult; on ErrNotLoggedIn it discards the label
-// and re-runs as a relaunch_retry.
+// holdOnRequestTabOnce runs HoldFast on the schniff's warm tab. Because
+// the tab is parked on the campground overview page (not a specific
+// campsite), any campsite_id in this campground works without a
+// re-navigation. The mismatched-campsite branch from earlier iterations
+// is gone; there is no scenario where this tab needs to navigate during
+// a hold.
+//
+// If the warm tab's campground doesn't match the requested one (would
+// happen only if a schniff was migrated between campgrounds, which is
+// not currently supported), we fall back to the main-session
+// HoldCampsite path rather than navigating the warm tab — keeping this
+// function on the strict fast path.
 func (p *Pool) holdOnRequestTabOnce(ctx context.Context, e *entry, wt *warmTab, campsiteID, campgroundID string, checkIn, checkOut time.Time, requestID int64, userID string) (*HoldResult, HoldPath, error) {
 	wt.mu.Lock()
 	defer wt.mu.Unlock()
 	if wt.closed {
 		return nil, HoldPathMainSession, errors.New("warm tab closed")
 	}
+	if wt.campground != "" && wt.campground != campgroundID {
+		p.cfg.Logger.Warn("warm tab campground mismatch; falling back to main session",
+			"user_id", userID, "request_id", requestID,
+			"tab_campground", wt.campground, "wanted_campground", campgroundID)
+		res, err := p.HoldCampsite(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+		return res, HoldPathMainSession, err
+	}
 	opCtx, cancel := sessionOperationContext(wt.tab.Ctx(), ctx)
 	defer cancel()
-	if wt.site != campsiteID {
-		// Different candidate this time. Pay the Nav cost on this tab and
-		// fall through to the full HoldCampsite. Same warm Chrome window
-		// with the SPA already loaded — typically faster than a cold
-		// session, but still slower than the fast path.
-		p.cfg.Logger.Info("warm tab campsite mismatch; navigating",
-			"user_id", userID, "request_id", requestID,
-			"from", wt.site, "to", campsiteID)
-		res, err := e.session.HoldCampsite(opCtx, campsiteID, campgroundID, checkIn, checkOut)
-		if err == nil && res != nil {
-			wt.site = campsiteID
-		}
-		observeHoldMetrics(res, err)
-		return res, HoldPathWarmTabNav, err
-	}
-	// Fast path: tab is already on the right page.
 	res, err := HoldFast(opCtx, campsiteID, campgroundID, checkIn, checkOut)
 	observeHoldMetrics(res, err)
 	return res, HoldPathWarmTabFast, err

@@ -2014,29 +2014,6 @@ func (s *Store) GetCampsiteDetails(ctx context.Context, provider, campgroundID, 
 	return details, nil
 }
 
-// PickParkingCampsite returns a stable campsite_id for the given campground
-// that the booker pool can park a warm tab on. Highest rating first,
-// alphabetical tie-break (so the choice is deterministic across calls and
-// the warm tab doesn't churn). Returns "" if no campsite metadata exists
-// for that campground yet.
-func (s *Store) PickParkingCampsite(ctx context.Context, provider, campgroundID string) (string, error) {
-	row := s.DB.QueryRowContext(ctx, `
-		SELECT campsite_id
-		FROM campsite_metadata
-		WHERE provider=? AND campground_id=?
-		ORDER BY rating DESC, campsite_id ASC
-		LIMIT 1
-	`, provider, campgroundID)
-	var id string
-	if err := row.Scan(&id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", fmt.Errorf("pick parking campsite: %w", err)
-	}
-	return id, nil
-}
-
 // GetCampsiteDetailsBatch retrieves detailed information for multiple campsites efficiently
 func (s *Store) GetCampsiteDetailsBatch(ctx context.Context, provider, campgroundID string, campsiteIDs []string) (map[string]CampsiteDetails, error) {
 	if len(campsiteIDs) == 0 {

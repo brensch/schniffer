@@ -16,11 +16,12 @@ import (
 const warmTabReconcileInterval = 30 * time.Second
 
 // runWarmTabReconciler keeps one warm Chrome tab open per active auto-book
-// schniff request. For each active request whose owning user has a warm
-// Pool session, the loop calls Pool.EnsureWarmTabForRequest with a stable
-// campsite_id (chosen via Store.PickParkingCampsite) so the tab is parked
-// on a page where grecaptcha enterprise is already loaded. When a schniff
-// deactivates, its tab is closed.
+// schniff request. Each tab is parked on the schniff's campground overview
+// page (/camping/campgrounds/{id}), where grecaptcha enterprise is loaded
+// — empirically that page accepts hold POSTs for any campsite in the
+// campground, so one tab serves every candidate site without re-navigating.
+//
+// When a schniff deactivates, its tab is closed.
 //
 // Idempotent + crash-safe: every cycle re-derives desired state from the DB
 // and applies it. No in-memory state to drift.
@@ -50,13 +51,12 @@ func (m *Manager) reconcileWarmTabsOnce(ctx context.Context) error {
 		return err
 	}
 
-	// desiredByUser maps userID → requestID → campsite_id we want parked.
+	// desiredByUser maps userID → requestID → campground_id we want parked.
 	// We only consider requests whose owner has a warm pool session; the
 	// rest aren't auto-book candidates.
 	type want struct {
-		requestID  int64
-		campsiteID string
-		provider   string
+		requestID    int64
+		campgroundID string
 	}
 	desiredByUser := map[string][]want{}
 	for _, r := range requests {
@@ -66,20 +66,7 @@ func (m *Manager) reconcileWarmTabsOnce(ctx context.Context) error {
 		if !m.pool.HasUser(r.UserID) {
 			continue
 		}
-		site, perr := m.store.PickParkingCampsite(ctx, r.Provider, r.CampgroundID)
-		if perr != nil {
-			m.logger.Warn("pick parking campsite failed",
-				slog.Int64("request_id", r.ID),
-				slog.String("campground", r.CampgroundID),
-				slog.Any("err", perr))
-			continue
-		}
-		if site == "" {
-			// No campsite metadata for this campground yet — skip until
-			// the next cycle so a fresh schniff doesn't churn.
-			continue
-		}
-		desiredByUser[r.UserID] = append(desiredByUser[r.UserID], want{r.ID, site, r.Provider})
+		desiredByUser[r.UserID] = append(desiredByUser[r.UserID], want{r.ID, r.CampgroundID})
 	}
 
 	// Apply desired set per user; close any extra tabs.
@@ -88,13 +75,13 @@ func (m *Manager) reconcileWarmTabsOnce(ctx context.Context) error {
 		for _, w := range wants {
 			desiredIDs[w.requestID] = struct{}{}
 			ectx, ecancel := context.WithTimeout(ctx, 90*time.Second)
-			err := m.pool.EnsureWarmTabForRequest(ectx, userID, w.requestID, w.campsiteID)
+			err := m.pool.EnsureWarmTabForRequest(ectx, userID, w.requestID, w.campgroundID)
 			ecancel()
 			if err != nil {
 				m.logger.Warn("ensure warm tab failed",
 					slog.String("user_id", userID),
 					slog.Int64("request_id", w.requestID),
-					slog.String("campsite_id", w.campsiteID),
+					slog.String("campground_id", w.campgroundID),
 					slog.Any("err", err))
 				continue
 			}
