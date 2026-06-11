@@ -92,6 +92,13 @@ func (m *Manager) Run(ctx context.Context) {
 	// Expire deactivation runs on its own cadence (used to run every poll cycle).
 	go m.runExpiryReaper(ctx)
 
+	// Warm-tab reconcile loop: keep one Chrome tab open per active
+	// auto-book schniff, parked on a recaptcha-loaded campsite page so
+	// hold POSTs skip the ~1.1s Nav + recaptcha load.
+	if m.pool != nil {
+		go m.runWarmTabReconciler(ctx)
+	}
+
 	// Start a goroutine for each provider
 	for _, providerName := range m.reg.GetProviderNames() {
 		go m.runProviderLoop(ctx, providerName)

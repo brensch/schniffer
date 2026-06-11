@@ -267,6 +267,15 @@ func (m *Manager) processCampgroundBucket(
 			continue
 		}
 
+		// CRITICAL PATH: fire the booking goroutine first, before any
+		// Discord work. UserChannelCreate + embed send adds ~500ms-1s of
+		// blocking time that the booking shouldn't wait on — every ms
+		// matters when racing competitor bots to the same site.
+		if r.Won && m.pool != nil && m.pool.HasUser(p.req.UserID) {
+			expectedBooks++
+			go m.attemptHoldAndReport(ctx, p.req, r.Pick, batchID, outcomeChan)
+		}
+
 		channel, cerr := m.notifier.UserChannelCreate(p.req.UserID)
 		if cerr != nil {
 			m.logger.Warn("user channel create failed",
@@ -323,17 +332,11 @@ func (m *Manager) processCampgroundBucket(
 			}
 		}
 
-		// Auto-book + channel ping only when the user actually won a site in
-		// arbitration. An ExpiringOwner who didn't also win something else
-		// skips both. Channel is suppressed when the won site is one we
-		// recently held (i.e. the "new" availability is a cycle, not news).
+		// Channel broadcast (silly public message) — only for winners on
+		// truly new sites (not cycle-back from an expired hold).
 		if r.Won {
 			if _, recyc := recentHeldSet[r.Pick.CampsiteID]; !recyc {
 				m.maybeChannelBroadcast(p.req.UserID)
-			}
-			if m.pool != nil && m.pool.HasUser(p.req.UserID) {
-				expectedBooks++
-				go m.attemptHoldAndReport(ctx, p.req, r.Pick, batchID, channel.ID, outcomeChan)
 			}
 		}
 	}
@@ -423,16 +426,15 @@ func (m *Manager) maybeChannelBroadcast(userID string) {
 }
 
 // attemptHoldAndReport runs one HoldCampsite call synchronously and reports
-// the result back to the bucket coordinator via outcomeChan. It also sends
-// the user-facing "attempting" + result DMs directly to channelID, and
-// records the booking row to the DB — same side effects as the old
-// startBookingAttempt, just structured to return its outcome upward.
+// the result back to the bucket coordinator via outcomeChan. The booking POST
+// is the hot path — every step before m.pool.HoldCampsite is shoved off the
+// critical path: the "attempting" DM goes in a goroutine, and the user-DM
+// channel is resolved concurrently with the chromedp call.
 func (m *Manager) attemptHoldAndReport(
 	ctx context.Context,
 	req db.SchniffRequest,
 	pick booker.Pick,
 	batchID string,
-	channelID string,
 	outcomeChan chan<- bookOutcome,
 ) {
 	m.logger.Info("auto-booking attempt",
@@ -447,21 +449,37 @@ func (m *Manager) attemptHoldAndReport(
 		slog.String("batch_id", batchID),
 	)
 
+	// Resolve the DM channel concurrently with the booking POST. Discord
+	// caches DMs so this is usually instant, but we don't want the chromedp
+	// nav waiting on it — only the result-send needs the channel.
+	channelCh := make(chan string, 1)
 	go func() {
+		channel, err := m.notifier.UserChannelCreate(req.UserID)
+		if err != nil {
+			m.logger.Warn("auto-book: user channel create failed", slog.String("userID", req.UserID), slog.Any("err", err))
+			channelCh <- ""
+			return
+		}
+		channelCh <- channel.ID
 		msg := fmt.Sprintf("🛒 I'm attempting to hold site **%s** for you right now (%s → %s, %d night%s). I'll let you know how I go.",
 			pick.CampsiteID,
 			pick.CheckIn.Format("Mon Jan 2"),
 			pick.CheckOut.Format("Mon Jan 2"),
 			pick.Nights, pluralS(pick.Nights),
 		)
-		if _, err := m.notifier.ChannelMessageSend(channelID, msg); err != nil {
+		if _, err := m.notifier.ChannelMessageSend(channel.ID, msg); err != nil {
 			m.logger.Warn("send attempting message failed", slog.Any("err", err))
 		}
 	}()
 
 	bctx, bcancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer bcancel()
-	res, err := m.pool.HoldCampsite(bctx, req.UserID, pick.CampsiteID, req.CampgroundID, pick.CheckIn, pick.CheckOut)
+	// HoldOnRequestTab uses the warm tab dedicated to this schniff
+	// (parked + recaptcha-loaded by the reconcile loop). If the tab is on
+	// the right campsite, this runs HoldFast (~1.15s on prod); if it's on
+	// a different campsite or no tab exists yet, it falls back to the
+	// equivalent of the old HoldCampsite path so the booking still fires.
+	res, err := m.pool.HoldOnRequestTab(bctx, req.UserID, req.ID, pick.CampsiteID, req.CampgroundID, pick.CheckIn, pick.CheckOut)
 
 	booking := db.Booking{
 		BatchID:      batchID,
@@ -489,10 +507,19 @@ func (m *Manager) attemptHoldAndReport(
 	}
 	recCancel()
 
+	path := ""
+	wall := time.Duration(0)
+	if res != nil {
+		path = string(res.Path)
+		wall = res.Timings.Total
+	}
 	if err != nil {
 		m.logger.Warn("auto-booking failed",
 			slog.String("user", req.UserID),
+			slog.Int64("request_id", req.ID),
 			slog.String("campsite", pick.CampsiteID),
+			slog.String("path", path),
+			slog.Duration("wall", wall),
 			slog.Any("err", err))
 	} else {
 		oid := ""
@@ -501,12 +528,18 @@ func (m *Manager) attemptHoldAndReport(
 		}
 		m.logger.Info("auto-booking held",
 			slog.String("user", req.UserID),
+			slog.Int64("request_id", req.ID),
 			slog.String("campsite", pick.CampsiteID),
+			slog.String("path", path),
+			slog.Duration("wall", wall),
 			slog.String("order_id", oid))
 	}
 
 	result := formatBookingOutcome(pick, res, err)
-	if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
+	channelID := <-channelCh
+	if channelID == "" {
+		m.logger.Warn("no DM channel; skipping booking result message", slog.String("userID", req.UserID))
+	} else if _, derr := m.notifier.ChannelMessageSend(channelID, result); derr != nil {
 		m.logger.Warn("send booking result message failed", slog.Any("err", derr))
 	}
 
@@ -564,10 +597,10 @@ func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) s
 	if err != nil {
 		if errors.Is(err, booker.ErrHumanVerification) {
 			url := booker.CampsiteBookingURL(pick.CampsiteID, pick.CheckIn, pick.CheckOut)
-			return fmt.Sprintf("⚠️ Recreation.gov requires a human verification step for site **%s**. [Open the site and finish manually](%s).",
-				pick.CampsiteID, url)
+			return appendBookingDiag(fmt.Sprintf("⚠️ Recreation.gov requires a human verification step for site **%s**. [Open the site and finish manually](%s).",
+				pick.CampsiteID, url), res)
 		}
-		return fmt.Sprintf("❌ Couldn't hold site **%s**: %s", pick.CampsiteID, err.Error())
+		return appendBookingDiag(fmt.Sprintf("❌ Couldn't hold site **%s**: %s", pick.CampsiteID, err.Error()), res)
 	}
 	url := ""
 	if res != nil && res.OrderID != "" {
@@ -582,7 +615,31 @@ func formatBookingOutcome(pick booker.Pick, res *booker.HoldResult, err error) s
 	if url != "" {
 		line += " [Finish checkout](" + url + ")"
 	}
-	return line
+	return appendBookingDiag(line, res)
+}
+
+// appendBookingDiag appends a one-line diagnostic showing which Pool path
+// produced this hold + the wall-clock total. Helps the user (and us)
+// notice immediately when the warm-tab fast path didn't kick in — that's
+// the strongest signal that the reconcile loop is misbehaving or the
+// chosen parking campsite was wrong.
+func appendBookingDiag(line string, res *booker.HoldResult) string {
+	if res == nil {
+		return line
+	}
+	pathTag := res.Path.Human()
+	wall := res.Timings.Total
+	if pathTag == "" && wall == 0 {
+		return line
+	}
+	var extras []string
+	if pathTag != "" {
+		extras = append(extras, pathTag)
+	}
+	if wall > 0 {
+		extras = append(extras, "wall "+wall.Round(time.Millisecond).String())
+	}
+	return line + "\n_" + strings.Join(extras, " · ") + "_"
 }
 
 func pluralS(n int) string {
