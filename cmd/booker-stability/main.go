@@ -164,7 +164,9 @@ func main() {
 			rec.Err = err.Error()
 			slog.Info("iter ok (server rejected w/ benign 400)", "iter", iter, "wall", wall, "err", err)
 			records = append(records, rec)
-			select { case <-time.After(*interval): }
+			select {
+			case <-time.After(*interval):
+			}
 			continue
 		}
 		if err != nil {

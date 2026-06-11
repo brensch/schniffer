@@ -131,14 +131,14 @@ func main() {
 }
 
 type iterRecord struct {
-	Scenario string                 `json:"scenario"`
-	SiteID   string                 `json:"site_id"`
-	Date     string                 `json:"date"`
-	Wall     time.Duration          `json:"wall_ns"` // wall clock for the on-demand portion only (no prewarm)
-	Timings  booker.HoldTimings     `json:"timings"`
-	OrderID  string                 `json:"order_id,omitempty"`
-	Err      string                 `json:"err,omitempty"`
-	Raw      map[string]any         `json:"-"`
+	Scenario string             `json:"scenario"`
+	SiteID   string             `json:"site_id"`
+	Date     string             `json:"date"`
+	Wall     time.Duration      `json:"wall_ns"` // wall clock for the on-demand portion only (no prewarm)
+	Timings  booker.HoldTimings `json:"timings"`
+	OrderID  string             `json:"order_id,omitempty"`
+	Err      string             `json:"err,omitempty"`
+	Raw      map[string]any     `json:"-"`
 }
 
 func runCold(sess *booker.Session, cg string, n, nights int, pause time.Duration, slot func() (string, time.Time)) []iterRecord {
@@ -213,9 +213,9 @@ func runWarm1(sess *booker.Session, cg string, n, nights int, pause time.Duratio
 func runWarmN(sess *booker.Session, cg string, tabs, n, nights int, pause time.Duration, slot func() (string, time.Time)) ([]iterRecord, error) {
 	// Open N tabs, each prewarmed on a distinct site. Reuse slots round-robin.
 	type tabState struct {
-		tab     *booker.Tab
-		siteID  string
-		date    time.Time
+		tab    *booker.Tab
+		siteID string
+		date   time.Time
 	}
 	states := make([]*tabState, 0, tabs)
 	for i := 0; i < tabs; i++ {

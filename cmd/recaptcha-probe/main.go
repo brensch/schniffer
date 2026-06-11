@@ -143,21 +143,55 @@ func probeWithRealHold(ctx context.Context, label, u, campsiteID, campgroundID s
 	fmt.Println()
 }
 
-func truncate(s string, n int) string { if len(s) > n { return s[:n] + "…" }; return s }
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
 
-type slotInfo struct{ siteID string; date time.Time }
+type slotInfo struct {
+	siteID string
+	date   time.Time
+}
+
 func fetchAvailableSlots(ctx context.Context, cg string, month time.Time) ([]slotInfo, error) {
 	base, _ := url.Parse(fmt.Sprintf("https://www.recreation.gov/api/camps/availability/campground/%s/month", cg))
-	q := base.Query(); q.Set("start_date", month.UTC().Format("2006-01-02T15:04:05.000Z")); base.RawQuery = q.Encode()
+	q := base.Query()
+	q.Set("start_date", month.UTC().Format("2006-01-02T15:04:05.000Z"))
+	base.RawQuery = q.Encode()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := http.DefaultClient.Do(req); if err != nil { return nil, err }; defer resp.Body.Close()
-	if resp.StatusCode != 200 { body, _ := io.ReadAll(resp.Body); return nil, fmt.Errorf("%d %s", resp.StatusCode, body) }
-	var parsed struct{ Campsites map[string]struct{ Availabilities map[string]string `json:"availabilities"` } `json:"campsites"` }
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil { return nil, err }
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%d %s", resp.StatusCode, body)
+	}
+	var parsed struct {
+		Campsites map[string]struct {
+			Availabilities map[string]string `json:"availabilities"`
+		} `json:"campsites"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
 	var out []slotInfo
-	for s, d := range parsed.Campsites { for dt, st := range d.Availabilities { if st == "Available" { t, _ := time.Parse(time.RFC3339, dt); out = append(out, slotInfo{s, t}) } } }
+	for s, d := range parsed.Campsites {
+		for dt, st := range d.Availabilities {
+			if st == "Available" {
+				t, _ := time.Parse(time.RFC3339, dt)
+				out = append(out, slotInfo{s, t})
+			}
+		}
+	}
 	return out, nil
 }
 
-func die(format string, args ...any) { fmt.Fprintf(os.Stderr, "fatal: "+format+"\n", args...); os.Exit(1) }
+func die(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "fatal: "+format+"\n", args...)
+	os.Exit(1)
+}

@@ -277,4 +277,4 @@ func (s *Session) NewTab() (*Tab, error) {
 }
 
 func (t *Tab) Ctx() context.Context { return t.ctx }
-func (t *Tab) Close()                { t.cancel() }
+func (t *Tab) Close()               { t.cancel() }
