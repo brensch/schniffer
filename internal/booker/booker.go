@@ -223,6 +223,54 @@ type HoldResult struct {
 	// Each duration is zero if the corresponding phase never started (e.g.
 	// nav failed before recaptcha wait).
 	Timings HoldTimings
+	// Path names which Pool execution branch produced this result. Set by
+	// Pool.HoldOnRequestTab so the manager can tell the user (and the log
+	// stream) whether the fast warm-tab path won the race or we had to
+	// fall back to a full nav.
+	Path HoldPath
+}
+
+// HoldPath enumerates which Pool branch ran the hold. The manager surfaces
+// this in the booking result DM and in the auto-booking log line so an
+// operator can tell at a glance whether the warm-tab plumbing actually
+// kicked in for this attempt.
+type HoldPath string
+
+const (
+	// HoldPathWarmTabFast: dedicated warm tab was on the exact campsite —
+	// HoldFast skipped Nav + recaptcha wait. Floor case (~1.15s).
+	HoldPathWarmTabFast HoldPath = "warm_tab_fast"
+	// HoldPathWarmTabNav: dedicated warm tab existed but was parked on a
+	// different campsite than the one we needed; we navigated and ran
+	// the full HoldCampsite on the same warm Chrome. Saves browser
+	// boot/login cost vs main session, not Nav itself.
+	HoldPathWarmTabNav HoldPath = "warm_tab_nav"
+	// HoldPathMainSession: no warm tab was registered for this schniff
+	// (e.g. the reconcile loop hasn't ticked yet, or the user has no
+	// active auto-book schniffs). Fell through to the all-in-one
+	// HoldCampsite on the main session.
+	HoldPathMainSession HoldPath = "main_session"
+	// HoldPathRelaunchRetry: the warm tab's session JWT silently
+	// expired; Pool relaunched (re-login) and replayed the hold against
+	// the fresh session.
+	HoldPathRelaunchRetry HoldPath = "relaunch_retry"
+)
+
+// Human returns a short tag suitable for the user-facing booking DM.
+func (h HoldPath) Human() string {
+	switch h {
+	case HoldPathWarmTabFast:
+		return "⚡ warm tab (fast path)"
+	case HoldPathWarmTabNav:
+		return "🟡 warm tab + re-nav"
+	case HoldPathMainSession:
+		return "🐌 cold start (no warm tab)"
+	case HoldPathRelaunchRetry:
+		return "♻️ relaunch + retry"
+	case "":
+		return ""
+	}
+	return string(h)
 }
 
 // HoldTimings carries fine-grained latency breakdown for one HoldCampsite call.
@@ -247,31 +295,38 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 	if !checkIn.Before(checkOut) {
 		return nil, errors.New("check-in must be before check-out")
 	}
-	var t HoldTimings
+	t := &HoldTimings{}
 	totalStart := time.Now()
-	defer func() {
+	// finalize: must run before each return that builds a HoldResult, so
+	// the embedded Timings.Total is meaningful (value copy at return time).
+	finalize := func() {
 		t.Total = time.Since(totalStart)
-	}()
+		logPhase(ctx, "hold_total", totalStart, t.Total, nil)
+	}
 
 	navStart := time.Now()
-	if err := chromedp.Run(ctx,
+	navErr := chromedp.Run(ctx,
 		chromedp.Navigate(fmt.Sprintf("%s/camping/campsites/%s", SiteOrigin, campsiteID)),
 		chromedp.WaitReady("body", chromedp.ByQuery),
-	); err != nil {
-		t.Nav = time.Since(navStart)
-		return &HoldResult{Timings: t}, fmt.Errorf("nav: %w", err)
-	}
+	)
 	t.Nav = time.Since(navStart)
+	logPhase(ctx, "nav", navStart, t.Nav, navErr)
+	if navErr != nil {
+		finalize()
+		return &HoldResult{Timings: *t}, fmt.Errorf("nav: %w", navErr)
+	}
 
 	recaptchaStart := time.Now()
-	if err := chromedp.Run(ctx, chromedp.Poll(
+	recErr := chromedp.Run(ctx, chromedp.Poll(
 		`typeof grecaptcha !== 'undefined' && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'`,
 		nil, chromedp.WithPollingTimeout(30*time.Second),
-	)); err != nil {
-		t.RecaptchaWait = time.Since(recaptchaStart)
-		return &HoldResult{Timings: t}, fmt.Errorf("wait recaptcha: %w", err)
-	}
+	))
 	t.RecaptchaWait = time.Since(recaptchaStart)
+	logPhase(ctx, "recaptcha_wait", recaptchaStart, t.RecaptchaWait, recErr)
+	if recErr != nil {
+		finalize()
+		return &HoldResult{Timings: *t}, fmt.Errorf("wait recaptcha: %w", recErr)
+	}
 
 	// Verify the JWT is still in localStorage before we burn a reCAPTCHA
 	// token. rec.gov silently clears 'recaccount' on session expiry while
@@ -280,15 +335,18 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 	// and retry.
 	sessionStart := time.Now()
 	var hasAccount bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(
+	sErr := chromedp.Run(ctx, chromedp.Evaluate(
 		`!!(window.localStorage.getItem('recaccount'))`, &hasAccount,
-	)); err != nil {
-		t.SessionCheck = time.Since(sessionStart)
-		return &HoldResult{Timings: t}, fmt.Errorf("check session: %w", err)
-	}
+	))
 	t.SessionCheck = time.Since(sessionStart)
+	logPhase(ctx, "session_check", sessionStart, t.SessionCheck, sErr)
+	if sErr != nil {
+		finalize()
+		return &HoldResult{Timings: *t}, fmt.Errorf("check session: %w", sErr)
+	}
 	if !hasAccount {
-		return &HoldResult{Timings: t}, ErrNotLoggedIn
+		finalize()
+		return &HoldResult{Timings: *t}, ErrNotLoggedIn
 	}
 	nightMap := map[string]map[string]string{}
 	for day := checkIn; day.Before(checkOut); day = day.AddDate(0, 0, 1) {
@@ -355,14 +413,23 @@ func (s *Session) HoldCampsite(ctx context.Context, campsiteID, campgroundID str
 	var out map[string]any
 	awaitOpt := func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }
 	scriptStart := time.Now()
-	if err := chromedp.Run(ctx, chromedp.Evaluate(script, &out, awaitOpt)); err != nil {
-		t.ScriptEval = time.Since(scriptStart)
-		return &HoldResult{Timings: t}, fmt.Errorf("exec booking: %w", err)
-	}
+	scriptErr := chromedp.Run(ctx, chromedp.Evaluate(script, &out, awaitOpt))
 	t.ScriptEval = time.Since(scriptStart)
+	logPhase(ctx, "script_eval", scriptStart, t.ScriptEval, scriptErr)
+	if scriptErr != nil {
+		finalize()
+		return &HoldResult{Timings: *t}, fmt.Errorf("exec booking: %w", scriptErr)
+	}
 	t.RecaptchaToken = readMillis(out, "_recaptcha_token_ms")
 	t.RecGovPost = readMillis(out, "_recgov_post_ms")
-	result := &HoldResult{OrderID: ExtractOrderID(out), Raw: out, Timings: t}
+	if t.RecaptchaToken > 0 {
+		logPhase(ctx, "recaptcha_token_mint", scriptStart, t.RecaptchaToken, nil)
+	}
+	if t.RecGovPost > 0 {
+		logPhase(ctx, "recgov_post", scriptStart.Add(t.RecaptchaToken), t.RecGovPost, nil)
+	}
+	finalize()
+	result := &HoldResult{OrderID: ExtractOrderID(out), Raw: out, Timings: *t}
 	if err := bookingResponseError(out, result.OrderID); err != nil {
 		return result, err
 	}
