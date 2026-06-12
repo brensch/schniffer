@@ -26,7 +26,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +167,87 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("  ✓ sess.RefreshAccessToken rotated the token in %s wall\n", wall.Round(time.Millisecond))
+
+	// === The actual end-to-end test: book a campsite using the
+	// refreshed token. If rec.gov accepts the new token on
+	// /api/camps/reservations/.../multi, the silent refresh fix is
+	// fully proven for production.
+	fmt.Println("\n=== Real HoldFast booking with the refreshed token (Baker Dam) ===")
+	bookSite, bookDate, err := pickAvailableSlot(ctx)
+	if err != nil {
+		fmt.Printf("  ✗ couldn't find an available slot: %v\n", err)
+		os.Exit(1)
+	}
+	checkOut := bookDate.AddDate(0, 0, 1)
+	fmt.Printf("  target: site=%s date=%s\n", bookSite, bookDate.Format("2006-01-02"))
+
+	// HoldFast requires the tab to already be on a page with
+	// grecaptcha loaded. Navigate the main tab to the campground page.
+	if _, err := booker.PrewarmCampground(ctx, "10085599"); err != nil {
+		fmt.Printf("  ✗ prewarm campground: %v\n", err)
+		os.Exit(1)
+	}
+	holdStart := time.Now()
+	holdRes, holdErr := booker.HoldFast(ctx, bookSite, "10085599", bookDate, checkOut)
+	holdWall := time.Since(holdStart)
+	if holdErr != nil {
+		fmt.Printf("  ✗ HoldFast failed (wall=%s): %v\n", holdWall.Round(time.Millisecond), holdErr)
+		os.Exit(1)
+	}
+	if holdRes == nil || holdRes.OrderID == "" {
+		fmt.Printf("  ✗ HoldFast returned no order_id (wall=%s)\n", holdWall.Round(time.Millisecond))
+		os.Exit(1)
+	}
+	fmt.Printf("  ✓ booking POST succeeded with refreshed token: order_id=%s wall=%s\n",
+		holdRes.OrderID, holdWall.Round(time.Millisecond))
+	fmt.Println("  → silent refresh fully validated end-to-end. The refreshed token works for bookings.")
+}
+
+// pickAvailableSlot finds any (site, date) tuple currently available
+// at Baker Dam (10085599). Used purely to feed HoldFast a target that
+// rec.gov will accept (not "modification already in cart" or "popular
+// site"). Pulls availability for the next ~3 months and returns the
+// first match.
+func pickAvailableSlot(ctx context.Context) (siteID string, date time.Time, err error) {
+	type avail struct {
+		Campsites map[string]struct {
+			Availabilities map[string]string `json:"availabilities"`
+		} `json:"campsites"`
+	}
+	month := time.Now().AddDate(0, 1, 0).UTC()
+	month = time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
+	u, _ := neturl.Parse("https://www.recreation.gov/api/camps/availability/campground/10085599/month")
+	q := u.Query()
+	q.Set("start_date", month.Format("2006-01-02T15:04:05.000Z"))
+	u.RawQuery = q.Encode()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 refresh-probe")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", time.Time{}, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+	}
+	var parsed avail
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return "", time.Time{}, err
+	}
+	for site, sd := range parsed.Campsites {
+		for d, status := range sd.Availabilities {
+			if status != "Available" {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, d)
+			if err != nil {
+				continue
+			}
+			return site, t, nil
+		}
+	}
+	return "", time.Time{}, fmt.Errorf("no available slots found at Baker Dam in %s", month.Format("2006-01"))
 }
 
 type refreshResult struct {
