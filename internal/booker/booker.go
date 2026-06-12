@@ -46,6 +46,15 @@ var ErrHumanVerification = errors.New("human verification required")
 // this, relaunches, and retries once.
 var ErrNotLoggedIn = errors.New("not logged in")
 
+// ErrAuthExpired is returned when the recaccount IS present in localStorage
+// but rec.gov rejected its access_token with HTTP 401 on the booking POST.
+// Different from ErrNotLoggedIn (where the JWT was cleared entirely): the
+// token still exists, it's just past its TTL. Recoverable by clearing the
+// stale token + re-running Login on the same Chrome instance — no full
+// browser relaunch needed. The Pool catches this, re-logins in place, and
+// retries on the warm tab.
+var ErrAuthExpired = errors.New("auth token expired")
+
 type Config struct {
 	ProfileDir string
 	ChromePath string // empty = autodetect
@@ -452,7 +461,20 @@ func bookingResponseError(response map[string]any, orderID string) error {
 	if status < 200 || status >= 300 {
 		body, _ := json.Marshal(response)
 		slog.Warn("rec.gov booking rejected", slog.Any("status", response["status"]), slog.String("body", string(body)))
-		if msg, ok := response["error"].(string); ok && msg != "" {
+		msg, _ := response["error"].(string)
+		// 401 specifically means our Bearer access_token was rejected
+		// (e.g., its TTL expired while the tab sat warm). Surface as
+		// ErrAuthExpired so the Pool can re-login in place on the same
+		// Chrome session and retry on the warm tab — much cheaper than
+		// the full ErrNotLoggedIn relaunch path (~3s vs ~10s).
+		if int(status) == 401 {
+			detail := msg
+			if detail == "" {
+				detail = string(body)
+			}
+			return fmt.Errorf("%w: %s", ErrAuthExpired, detail)
+		}
+		if msg != "" {
 			return fmt.Errorf("rec.gov %v: %s", response["status"], msg)
 		}
 		return fmt.Errorf("rec.gov returned status %v: %s", response["status"], string(body))

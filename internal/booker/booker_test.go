@@ -25,6 +25,20 @@ func TestBookingResponseErrorRequiresReservationID(t *testing.T) {
 	}
 }
 
+func TestBookingResponseErrorMaps401ToAuthExpired(t *testing.T) {
+	// rec.gov returns HTTP 401 when the recaccount's access_token TTL
+	// has expired (token still in localStorage but rejected by the
+	// backend). Surface as ErrAuthExpired so the Pool's retry layer
+	// knows to relogin-in-place rather than do a full Chrome relaunch.
+	err := bookingResponseError(map[string]any{
+		"status": float64(401),
+		"error":  "invalid auth token",
+	}, "")
+	if !errors.Is(err, ErrAuthExpired) {
+		t.Fatalf("bookingResponseError(401) = %v, want ErrAuthExpired", err)
+	}
+}
+
 func TestBookingResponseErrorAcceptsReservation(t *testing.T) {
 	if err := bookingResponseError(map[string]any{"status": float64(200)}, "reservation-123"); err != nil {
 		t.Fatalf("bookingResponseError() = %v, want nil", err)
