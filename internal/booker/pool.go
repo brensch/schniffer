@@ -148,6 +148,70 @@ func (p *Pool) launchUser(ctx context.Context, userID string) error {
 	return nil
 }
 
+// refreshOrRelogin tries the cheap path first — rec.gov's silent refresh
+// endpoint (~100ms wall, doesn't navigate, doesn't clear localStorage,
+// old token stays valid until its original exp). On non-200 (e.g.
+// refresh_id rejected), falls back to the full form-fill Login (~2-3s,
+// navigates main tab to /log-in, clears recaccount first to bypass
+// IsLoggedIn's existence-only check).
+//
+// Critical property: when the silent refresh succeeds, the OLD token
+// remains valid until its original exp. Warm tabs serving Chrome's
+// lazy cross-tab localStorage cache still pass their bookings during
+// the refresh window — so bookings *never* get a 401 just because a
+// refresh is in flight. That's the "average path is hot" guarantee:
+// silent refresh never disrupts in-flight bookings.
+//
+// Why not just always Login? Login navigates the main tab to /log-in.
+// While the main tab is loading the login page, anything that needs to
+// land on a campsite page (HoldCampsite fallback path) breaks. Silent
+// refresh avoids the navigation entirely.
+//
+// Must be called with e.mu held — both branches mutate session state
+// that would race a concurrent HoldCampsite on the main tab.
+func (p *Pool) refreshOrRelogin(ctx context.Context, userID string, e *entry) (refreshUsed bool, err error) {
+	opCtx, opcancel := sessionOperationContext(e.session.Ctx(), ctx)
+	defer opcancel()
+	refreshCtx, refreshCancel := context.WithTimeout(opCtx, 15*time.Second)
+	defer refreshCancel()
+	if err := e.session.RefreshAccessToken(refreshCtx); err == nil {
+		return true, nil
+	} else {
+		p.cfg.Logger.Info("silent refresh failed; falling back to form-fill login",
+			"user", userID, "err", err)
+	}
+	// Fall back to form-fill Login.
+	email, password, lookupErr := p.cfg.LookupCredential(ctx, userID)
+	if lookupErr != nil {
+		return false, fmt.Errorf("lookup credential: %w", lookupErr)
+	}
+	if email == "" {
+		return false, errors.New("no credential")
+	}
+	// Clear the stale token so Session.Login's IsLoggedIn early-return
+	// doesn't short-circuit (it checks for the *presence* of recaccount,
+	// not its validity).
+	if err := chromedp.Run(opCtx, chromedp.Evaluate(
+		`window.localStorage.removeItem('recaccount')`, nil,
+	)); err != nil {
+		return false, fmt.Errorf("clear stale recaccount: %w", err)
+	}
+	loginCtx, cancel := context.WithTimeout(opCtx, 60*time.Second)
+	defer cancel()
+	if err := e.session.Login(loginCtx, email, password); err != nil {
+		if errors.Is(err, ErrBadCredentials) && p.cfg.OnDisable != nil {
+			p.cfg.OnDisable(ctx, userID, "re-login after refresh failure failed")
+		}
+		return false, fmt.Errorf("re-login: %w", err)
+	}
+	// Main tab is now on /log-in (Login navigates there). For HoldCampsite
+	// callers that use the main tab, that's a problem — they expect to
+	// land HoldFast on a campsite page. So invalidate prewarmedSite so
+	// the next holdOnce takes the full nav path.
+	e.prewarmedSite = ""
+	return false, nil
+}
+
 // StartAll boots all provided users in parallel. Per-user errors are logged
 // but do not block other users; returns once every launch attempt completes.
 func (p *Pool) StartAll(ctx context.Context, userIDs []string) {
@@ -225,7 +289,49 @@ func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundI
 		"campground_id", campgroundID,
 	))
 	res, err := p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
-	if !errors.Is(err, ErrNotLoggedIn) {
+	switch {
+	case errors.Is(err, ErrAuthExpired):
+		// recaccount existed but rec.gov rejected the access_token with
+		// 401. Try silent refresh first (~100ms, no nav); fall back to
+		// form-fill Login if the refresh endpoint rejects.
+		p.cfg.Logger.Warn("hold: auth token expired; refreshing and retrying", "user", userID)
+		e, ealive := p.ensureAlive(ctx, userID)
+		if ealive != nil {
+			return res, fmt.Errorf("ensure alive for refresh: %w", ealive)
+		}
+		e.mu.Lock()
+		refreshUsed, relErr := p.refreshOrRelogin(ctx, userID, e)
+		e.mu.Unlock()
+		if refreshUsed {
+			metrics.BookerRelaunchTotal.WithLabelValues("auth_refreshed").Inc()
+		} else {
+			metrics.BookerRelaunchTotal.WithLabelValues("auth_expired").Inc()
+		}
+		if relErr != nil {
+			return res, fmt.Errorf("refresh/relogin: %w", relErr)
+		}
+		res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+		observeHoldMetrics(res, err)
+		if res != nil {
+			res.Path = HoldPathRelaunchRetry
+		}
+		return res, err
+
+	case errors.Is(err, ErrNotLoggedIn):
+		// recaccount entirely missing — full relaunch + login.
+		p.cfg.Logger.Warn("hold: session not logged in; relaunching and retrying", "user", userID)
+		metrics.BookerRelaunchTotal.WithLabelValues("session_expired").Inc()
+		if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
+			return nil, fmt.Errorf("relaunch after session expiry: %w", relaunchErr)
+		}
+		res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+		observeHoldMetrics(res, err)
+		if res != nil {
+			res.Path = HoldPathRelaunchRetry
+		}
+		return res, err
+
+	default:
 		observeHoldMetrics(res, err)
 		// Path is set by the caller wrapper if it knows; if not (direct
 		// HoldCampsite caller, no warm-tab context), tag as main_session.
@@ -234,19 +340,6 @@ func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundI
 		}
 		return res, err
 	}
-	// Session JWT expired silently. Force a full relaunch (login) and try
-	// once more on the fresh session.
-	p.cfg.Logger.Warn("hold: session not logged in; relaunching and retrying", "user", userID)
-	metrics.BookerRelaunchTotal.WithLabelValues("session_expired").Inc()
-	if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
-		return nil, fmt.Errorf("relaunch after session expiry: %w", relaunchErr)
-	}
-	res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
-	observeHoldMetrics(res, err)
-	if res != nil {
-		res.Path = HoldPathRelaunchRetry
-	}
-	return res, err
 }
 
 // observeHoldMetrics emits per-phase histograms for one HoldCampsite call.
@@ -501,28 +594,53 @@ func (p *Pool) HoldOnRequestTab(ctx context.Context, userID string, requestID in
 		return res, err
 	}
 	res, path, err := p.holdOnRequestTabOnce(ctx, e, wt, campsiteID, campgroundID, checkIn, checkOut, requestID, userID)
-	if !errors.Is(err, ErrNotLoggedIn) {
+	switch {
+	case errors.Is(err, ErrAuthExpired):
+		// access_token TTL expired while the tab sat warm. Silent
+		// refresh (~100ms) keeps the OLD token valid until its original
+		// exp, so warm tabs serving stale Chrome cross-tab cache never
+		// see a 401 from this refresh. Fall back to form-fill Login
+		// only if the refresh endpoint rejects.
+		p.cfg.Logger.Warn("warm-tab hold: auth token expired; refreshing and retrying",
+			"user_id", userID, "request_id", requestID, "campsite_id", campsiteID)
+		e.mu.Lock()
+		refreshUsed, relErr := p.refreshOrRelogin(ctx, userID, e)
+		e.mu.Unlock()
+		if refreshUsed {
+			metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_auth_refreshed").Inc()
+		} else {
+			metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_auth_expired").Inc()
+		}
+		if relErr != nil {
+			return nil, fmt.Errorf("refresh/relogin for warm tab: %w", relErr)
+		}
+		res, path, err = p.holdOnRequestTabOnce(ctx, e, wt, campsiteID, campgroundID, checkIn, checkOut, requestID, userID)
+		tagPath(res, path)
+		p.logHoldPath(path, userID, requestID, campsiteID, res, err)
+		return res, err
+
+	case errors.Is(err, ErrNotLoggedIn):
+		// recaccount entirely cleared. Full relaunch (kills all warm
+		// tabs; reconcile rebuilds on next tick). This booking falls
+		// back to a fresh main-session HoldCampsite so we don't miss
+		// the race.
+		p.cfg.Logger.Warn("warm-tab hold: session not logged in; relaunching and retrying",
+			"user_id", userID, "request_id", requestID, "campsite_id", campsiteID)
+		metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_session_expired").Inc()
+		if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
+			return nil, fmt.Errorf("relaunch after warm-tab session expiry: %w", relaunchErr)
+		}
+		res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
+		tagPath(res, HoldPathRelaunchRetry)
+		observeHoldMetrics(res, err)
+		p.logHoldPath(HoldPathRelaunchRetry, userID, requestID, campsiteID, res, err)
+		return res, err
+
+	default:
 		tagPath(res, path)
 		p.logHoldPath(path, userID, requestID, campsiteID, res, err)
 		return res, err
 	}
-	// The warm tab's JWT silently expired. The whole session is stale —
-	// any other warm tab in this entry has the same problem. Force a full
-	// relaunch + login (this also closes all warm tabs via closeEntryTabs
-	// inside launchUser). The reconcile loop will rebuild the warm tabs
-	// on its next tick; for THIS booking we fall back to a fresh
-	// HoldCampsite on the new session so the user doesn't miss this race.
-	p.cfg.Logger.Warn("warm-tab hold: session not logged in; relaunching and retrying",
-		"user_id", userID, "request_id", requestID, "campsite_id", campsiteID)
-	metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_session_expired").Inc()
-	if relaunchErr := p.launchUser(ctx, userID); relaunchErr != nil {
-		return nil, fmt.Errorf("relaunch after warm-tab session expiry: %w", relaunchErr)
-	}
-	res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
-	tagPath(res, HoldPathRelaunchRetry)
-	observeHoldMetrics(res, err)
-	p.logHoldPath(HoldPathRelaunchRetry, userID, requestID, campsiteID, res, err)
-	return res, err
 }
 
 // tagPath stamps the path onto the result if non-nil. Tolerates nil so
@@ -785,6 +903,41 @@ func (p *Pool) RunWatchdog(ctx context.Context) {
 	}
 }
 
+// tokenRefreshThreshold is how close to expiry an access_token has to be
+// before the watchdog proactively re-logins. Picked so a watchdog tick
+// running every WatchdogInterval (default 60s) always catches a token
+// before it actually expires — set to 5min so even a 10-minute TTL gets
+// refreshed with ~half its lifetime left, leaving headroom for booking
+// POSTs that run a bit after the watchdog check.
+const tokenRefreshThreshold = 5 * time.Minute
+
+// jwtRemainingScript decodes the access_token in window.localStorage
+// .recaccount, reads its exp claim, and returns seconds until expiry.
+// Sentinel return values:
+//
+//	0 or negative → already expired (and we should treat as no token)
+//	-1 → no recaccount / no access_token in localStorage
+//	-2 → access_token isn't a JWT (3 dot-separated parts)
+//	-3 → JWT base64/json decode failed
+//
+// The watchdog uses this to distinguish "session is fine for now" from
+// "token's about to expire — proactively re-login" and from "session
+// is fully gone — full relaunch".
+const jwtRemainingScript = `(() => {
+	const raw = window.localStorage.getItem('recaccount');
+	if (!raw) return -1;
+	let rec; try { rec = JSON.parse(raw); } catch (_) { return -1; }
+	const token = rec && rec.access_token;
+	if (!token) return -1;
+	const parts = token.split('.');
+	if (parts.length !== 3) return -2;
+	try {
+		const padded = parts[1] + '='.repeat((4 - parts[1].length % 4) % 4);
+		const payload = JSON.parse(atob(padded.replace(/-/g, '+').replace(/_/g, '/')));
+		return (payload.exp || 0) - Math.floor(Date.now() / 1000);
+	} catch (_) { return -3; }
+})()`
+
 func (p *Pool) watchdogSweep(ctx context.Context) {
 	p.mu.RLock()
 	type pair struct {
@@ -800,36 +953,74 @@ func (p *Pool) watchdogSweep(ctx context.Context) {
 		pa.e.mu.Lock()
 		dead := pa.e.disabled || !sessionAlive(pa.e.session)
 		pa.e.mu.Unlock()
-		if !dead {
-			// Also do a quick liveness ping so we catch hung browsers
-			// (chromedp ctx not yet cancelled but Chrome unresponsive),
-			// and verify the JWT is still in localStorage so we catch
-			// silent server-side session expiry before the next booking.
-			pa.e.mu.Lock()
-			pingCtx, pingCancel := context.WithTimeout(pa.e.session.Ctx(), 3*time.Second)
-			var loggedIn bool
-			perr := chromedp.Run(pingCtx, chromedp.Evaluate(
-				`!!(window.localStorage.getItem('recaccount'))`, &loggedIn,
-			))
-			pingCancel()
-			pa.e.mu.Unlock()
-			if perr == nil && loggedIn {
-				continue
-			}
-			reason := "watchdog_jwt_missing"
-			if perr != nil {
-				reason = "watchdog_ping_failed"
-				p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
-			} else {
-				p.cfg.Logger.Warn("watchdog: session not logged in; will relaunch", "user", pa.id)
-			}
-			metrics.BookerRelaunchTotal.WithLabelValues(reason).Inc()
-		} else {
+		if dead {
 			p.cfg.Logger.Warn("watchdog: session dead; will relaunch", "user", pa.id)
 			metrics.BookerRelaunchTotal.WithLabelValues("watchdog_dead").Inc()
+			if err := p.launchUser(ctx, pa.id); err != nil {
+				p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
+			}
+			continue
 		}
-		if err := p.launchUser(ctx, pa.id); err != nil {
-			p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
+		// Probe the access_token's remaining lifetime. Three branches:
+		//   remain >= threshold → fine, do nothing
+		//   0 < remain < threshold → relogin-in-place (token still
+		//     works for now but won't survive the next booking)
+		//   remain <= 0 (or sentinel -1/-2/-3) → full relaunch
+		// Holds e.mu across the ping so a concurrent HoldCampsite on
+		// this session can't race the localStorage read.
+		pa.e.mu.Lock()
+		pingCtx, pingCancel := context.WithTimeout(pa.e.session.Ctx(), 3*time.Second)
+		var remainSec int
+		perr := chromedp.Run(pingCtx, chromedp.Evaluate(jwtRemainingScript, &remainSec))
+		pingCancel()
+		if perr != nil {
+			pa.e.mu.Unlock()
+			p.cfg.Logger.Warn("watchdog: session ping failed; will relaunch", "user", pa.id, "err", perr)
+			metrics.BookerRelaunchTotal.WithLabelValues("watchdog_ping_failed").Inc()
+			if err := p.launchUser(ctx, pa.id); err != nil {
+				p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
+			}
+			continue
+		}
+		switch {
+		case remainSec <= 0:
+			// Expired or recaccount entirely gone — full relaunch.
+			pa.e.mu.Unlock()
+			reason := "watchdog_jwt_missing"
+			if remainSec == 0 || remainSec == -2 || remainSec == -3 {
+				reason = "watchdog_jwt_expired"
+			}
+			p.cfg.Logger.Warn("watchdog: token gone or expired; relaunching",
+				"user", pa.id, "remain_sec", remainSec)
+			metrics.BookerRelaunchTotal.WithLabelValues(reason).Inc()
+			if err := p.launchUser(ctx, pa.id); err != nil {
+				p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
+			}
+		case time.Duration(remainSec)*time.Second < tokenRefreshThreshold:
+			// Near expiry — silent refresh (~100ms). The old token stays
+			// valid until its original exp, so in-flight HoldFasts on
+			// warm tabs serving stale localStorage cache never see a
+			// 401 during the refresh window. Average path stays hot.
+			p.cfg.Logger.Info("watchdog: token near expiry; refreshing",
+				"user", pa.id, "remain_sec", remainSec)
+			refreshUsed, err := p.refreshOrRelogin(ctx, pa.id, pa.e)
+			pa.e.mu.Unlock()
+			if refreshUsed {
+				metrics.BookerRelaunchTotal.WithLabelValues("watchdog_proactive_refresh").Inc()
+			} else {
+				metrics.BookerRelaunchTotal.WithLabelValues("watchdog_proactive_relogin").Inc()
+			}
+			if err != nil {
+				p.cfg.Logger.Warn("watchdog: proactive refresh/relogin failed; will relaunch",
+					"user", pa.id, "err", err)
+				if launchErr := p.launchUser(ctx, pa.id); launchErr != nil {
+					p.cfg.Logger.Warn("watchdog: fallback relaunch failed",
+						"user", pa.id, "err", launchErr)
+				}
+			}
+		default:
+			// Plenty of life left.
+			pa.e.mu.Unlock()
 		}
 	}
 }

@@ -46,6 +46,15 @@ var ErrHumanVerification = errors.New("human verification required")
 // this, relaunches, and retries once.
 var ErrNotLoggedIn = errors.New("not logged in")
 
+// ErrAuthExpired is returned when the recaccount IS present in localStorage
+// but rec.gov rejected its access_token with HTTP 401 on the booking POST.
+// Different from ErrNotLoggedIn (where the JWT was cleared entirely): the
+// token still exists, it's just past its TTL. Recoverable by clearing the
+// stale token + re-running Login on the same Chrome instance — no full
+// browser relaunch needed. The Pool catches this, re-logins in place, and
+// retries on the warm tab.
+var ErrAuthExpired = errors.New("auth token expired")
+
 type Config struct {
 	ProfileDir string
 	ChromePath string // empty = autodetect
@@ -213,6 +222,86 @@ func (s *Session) Refresh(ctx context.Context) error {
 		chromedp.Navigate(SiteOrigin+"/"),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
+}
+
+// ErrRefreshFailed is returned by RefreshAccessToken when the silent
+// refresh endpoint returned non-200. Caller should fall back to the full
+// form-fill Login. Common causes: refresh_id no longer valid (rec.gov
+// rotated keys), session past max-refresh-chain age.
+var ErrRefreshFailed = errors.New("token refresh failed")
+
+// RefreshAccessToken calls rec.gov's POST /api/accounts/login/v2/refresh
+// from this session's main tab, swapping the new recaccount into
+// localStorage atomically. Returns nil on success; the new access_token
+// is now in localStorage and visible to all tabs on the same origin
+// (eventually — Chrome's cross-tab localStorage cache is lazy, but the
+// old token is still valid until its original exp, so warm tabs serving
+// stale cache succeed during the refresh window).
+//
+// Reverse-engineered from sarsaparilla-*.js: the SPA's refresh function
+// POSTs {account_id, refresh_id} with the current access_token as
+// Bearer auth, and on 200 sets the response body as the new recaccount.
+// We replicate that exactly so behaviour matches what rec.gov expects
+// for a normal browser session.
+//
+// Returns ErrRefreshFailed on non-200 so callers can fall back to the
+// full Login path. ~100ms wall in practice (vs ~2-3s for Login).
+func (s *Session) RefreshAccessToken(ctx context.Context) error {
+	const script = `(async () => {
+		const raw = window.localStorage.getItem('recaccount');
+		if (!raw) return {ok: false, err: 'no recaccount'};
+		let rec;
+		try { rec = JSON.parse(raw); } catch (e) { return {ok: false, err: 'parse: ' + e.message}; }
+		const accessToken = rec && rec.access_token;
+		const accountID   = rec && rec.account && rec.account.account_id;
+		const refreshID   = rec && rec.refresh_id;
+		if (!accessToken || !accountID || !refreshID) {
+			return {ok: false, err: 'missing access_token / account_id / refresh_id'};
+		}
+		const resp = await fetch('/api/accounts/login/v2/refresh', {
+			method: 'POST',
+			headers: {
+				'authorization': 'Bearer ' + accessToken,
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({account_id: accountID, refresh_id: refreshID}),
+			credentials: 'include',
+		});
+		const text = await resp.text();
+		if (resp.status !== 200) return {ok: false, status: resp.status, body: text};
+		// Atomic swap. The OLD token remains valid until its original
+		// exp, so any warm tab serving a stale localStorage cache during
+		// this window's tail still succeeds with the old token.
+		window.localStorage.setItem('recaccount', text);
+		return {ok: true, status: resp.status};
+	})()`
+	var out struct {
+		OK     bool   `json:"ok"`
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+		Err    string `json:"err"`
+	}
+	awaitOpt := func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }
+	if err := chromedp.Run(ctx, chromedp.Evaluate(script, &out, awaitOpt)); err != nil {
+		return fmt.Errorf("eval refresh: %w", err)
+	}
+	if !out.OK {
+		detail := out.Err
+		if detail == "" {
+			detail = fmt.Sprintf("status=%d body=%s", out.Status, truncateBody(out.Body, 200))
+		}
+		return fmt.Errorf("%w: %s", ErrRefreshFailed, detail)
+	}
+	return nil
+}
+
+// truncateBody bounds an error string so a giant HTML response body
+// doesn't make the log line unreadable.
+func truncateBody(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 type HoldResult struct {
@@ -452,7 +541,20 @@ func bookingResponseError(response map[string]any, orderID string) error {
 	if status < 200 || status >= 300 {
 		body, _ := json.Marshal(response)
 		slog.Warn("rec.gov booking rejected", slog.Any("status", response["status"]), slog.String("body", string(body)))
-		if msg, ok := response["error"].(string); ok && msg != "" {
+		msg, _ := response["error"].(string)
+		// 401 specifically means our Bearer access_token was rejected
+		// (e.g., its TTL expired while the tab sat warm). Surface as
+		// ErrAuthExpired so the Pool can re-login in place on the same
+		// Chrome session and retry on the warm tab — much cheaper than
+		// the full ErrNotLoggedIn relaunch path (~3s vs ~10s).
+		if int(status) == 401 {
+			detail := msg
+			if detail == "" {
+				detail = string(body)
+			}
+			return fmt.Errorf("%w: %s", ErrAuthExpired, detail)
+		}
+		if msg != "" {
 			return fmt.Errorf("rec.gov %v: %s", response["status"], msg)
 		}
 		return fmt.Errorf("rec.gov returned status %v: %s", response["status"], string(body))
