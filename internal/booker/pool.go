@@ -148,57 +148,68 @@ func (p *Pool) launchUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// reloginInPlace clears the stale 'recaccount' from localStorage on the
-// main tab and re-runs sess.Login on the same Chrome instance. Used by
-// the booking path when rec.gov returns HTTP 401 — the JWT still EXISTS
-// in localStorage (so the watchdog's "is recaccount present?" check
-// passes) but rec.gov rejected its access_token because the TTL expired
-// while the tab sat warm.
+// refreshOrRelogin tries the cheap path first — rec.gov's silent refresh
+// endpoint (~100ms wall, doesn't navigate, doesn't clear localStorage,
+// old token stays valid until its original exp). On non-200 (e.g.
+// refresh_id rejected), falls back to the full form-fill Login (~2-3s,
+// navigates main tab to /log-in, clears recaccount first to bypass
+// IsLoggedIn's existence-only check).
 //
-// Why not just launchUser? Because launching kills Chrome + reopens it
-// + reloads the profile (~10s wall, all warm tabs die, reconcile loop
-// rebuilds them over its 30s tick). reloginInPlace runs Login on the
-// existing browser in ~2-3s and the warm tabs survive — localStorage
-// is shared across tabs on the same origin in the same profile, so the
-// fresh recaccount written by Login becomes visible to every warm tab
-// without re-navigating any of them.
+// Critical property: when the silent refresh succeeds, the OLD token
+// remains valid until its original exp. Warm tabs serving Chrome's
+// lazy cross-tab localStorage cache still pass their bookings during
+// the refresh window — so bookings *never* get a 401 just because a
+// refresh is in flight. That's the "average path is hot" guarantee:
+// silent refresh never disrupts in-flight bookings.
 //
-// Must be called with the entry's main-tab mutex (e.mu) held — Login
-// navigates the main tab to /log-in and fills the form, which would
-// race a concurrent HoldCampsite on the same session.
-func (p *Pool) reloginInPlace(ctx context.Context, userID string, e *entry) error {
-	email, password, err := p.cfg.LookupCredential(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("lookup credential: %w", err)
-	}
-	if email == "" {
-		return errors.New("no credential")
-	}
-	// Clear the stale token so Session.Login's IsLoggedIn early-return
-	// doesn't fire (it checks for the *presence* of recaccount, not its
-	// validity). Without this, Login would short-circuit and we'd loop
-	// back into the same 401.
+// Why not just always Login? Login navigates the main tab to /log-in.
+// While the main tab is loading the login page, anything that needs to
+// land on a campsite page (HoldCampsite fallback path) breaks. Silent
+// refresh avoids the navigation entirely.
+//
+// Must be called with e.mu held — both branches mutate session state
+// that would race a concurrent HoldCampsite on the main tab.
+func (p *Pool) refreshOrRelogin(ctx context.Context, userID string, e *entry) (refreshUsed bool, err error) {
 	opCtx, opcancel := sessionOperationContext(e.session.Ctx(), ctx)
 	defer opcancel()
+	refreshCtx, refreshCancel := context.WithTimeout(opCtx, 15*time.Second)
+	defer refreshCancel()
+	if err := e.session.RefreshAccessToken(refreshCtx); err == nil {
+		return true, nil
+	} else {
+		p.cfg.Logger.Info("silent refresh failed; falling back to form-fill login",
+			"user", userID, "err", err)
+	}
+	// Fall back to form-fill Login.
+	email, password, lookupErr := p.cfg.LookupCredential(ctx, userID)
+	if lookupErr != nil {
+		return false, fmt.Errorf("lookup credential: %w", lookupErr)
+	}
+	if email == "" {
+		return false, errors.New("no credential")
+	}
+	// Clear the stale token so Session.Login's IsLoggedIn early-return
+	// doesn't short-circuit (it checks for the *presence* of recaccount,
+	// not its validity).
 	if err := chromedp.Run(opCtx, chromedp.Evaluate(
 		`window.localStorage.removeItem('recaccount')`, nil,
 	)); err != nil {
-		return fmt.Errorf("clear stale recaccount: %w", err)
+		return false, fmt.Errorf("clear stale recaccount: %w", err)
 	}
 	loginCtx, cancel := context.WithTimeout(opCtx, 60*time.Second)
 	defer cancel()
 	if err := e.session.Login(loginCtx, email, password); err != nil {
 		if errors.Is(err, ErrBadCredentials) && p.cfg.OnDisable != nil {
-			p.cfg.OnDisable(ctx, userID, "re-login after 401 failed")
+			p.cfg.OnDisable(ctx, userID, "re-login after refresh failure failed")
 		}
-		return fmt.Errorf("re-login: %w", err)
+		return false, fmt.Errorf("re-login: %w", err)
 	}
 	// Main tab is now on /log-in (Login navigates there). For HoldCampsite
 	// callers that use the main tab, that's a problem — they expect to
 	// land HoldFast on a campsite page. So invalidate prewarmedSite so
 	// the next holdOnce takes the full nav path.
 	e.prewarmedSite = ""
-	return nil
+	return false, nil
 }
 
 // StartAll boots all provided users in parallel. Per-user errors are logged
@@ -281,19 +292,23 @@ func (p *Pool) HoldCampsite(ctx context.Context, userID, campsiteID, campgroundI
 	switch {
 	case errors.Is(err, ErrAuthExpired):
 		// recaccount existed but rec.gov rejected the access_token with
-		// 401. Re-login on the same Chrome and retry without a full
-		// relaunch — saves ~7s vs the ErrNotLoggedIn path below.
-		p.cfg.Logger.Warn("hold: auth token expired; relogin-in-place and retrying", "user", userID)
-		metrics.BookerRelaunchTotal.WithLabelValues("auth_expired").Inc()
+		// 401. Try silent refresh first (~100ms, no nav); fall back to
+		// form-fill Login if the refresh endpoint rejects.
+		p.cfg.Logger.Warn("hold: auth token expired; refreshing and retrying", "user", userID)
 		e, ealive := p.ensureAlive(ctx, userID)
 		if ealive != nil {
-			return res, fmt.Errorf("ensure alive for relogin: %w", ealive)
+			return res, fmt.Errorf("ensure alive for refresh: %w", ealive)
 		}
 		e.mu.Lock()
-		relErr := p.reloginInPlace(ctx, userID, e)
+		refreshUsed, relErr := p.refreshOrRelogin(ctx, userID, e)
 		e.mu.Unlock()
+		if refreshUsed {
+			metrics.BookerRelaunchTotal.WithLabelValues("auth_refreshed").Inc()
+		} else {
+			metrics.BookerRelaunchTotal.WithLabelValues("auth_expired").Inc()
+		}
 		if relErr != nil {
-			return res, fmt.Errorf("relogin-in-place: %w", relErr)
+			return res, fmt.Errorf("refresh/relogin: %w", relErr)
 		}
 		res, err = p.holdOnce(ctx, userID, campsiteID, campgroundID, checkIn, checkOut)
 		observeHoldMetrics(res, err)
@@ -581,18 +596,23 @@ func (p *Pool) HoldOnRequestTab(ctx context.Context, userID string, requestID in
 	res, path, err := p.holdOnRequestTabOnce(ctx, e, wt, campsiteID, campgroundID, checkIn, checkOut, requestID, userID)
 	switch {
 	case errors.Is(err, ErrAuthExpired):
-		// access_token TTL expired while the tab sat warm. Re-login on
-		// the same Chrome (~2-3s) — warm tabs survive because
-		// localStorage is shared across tabs on the same origin in the
-		// same profile. Then retry HoldFast on the SAME warm tab.
-		p.cfg.Logger.Warn("warm-tab hold: auth token expired; relogin-in-place and retrying",
+		// access_token TTL expired while the tab sat warm. Silent
+		// refresh (~100ms) keeps the OLD token valid until its original
+		// exp, so warm tabs serving stale Chrome cross-tab cache never
+		// see a 401 from this refresh. Fall back to form-fill Login
+		// only if the refresh endpoint rejects.
+		p.cfg.Logger.Warn("warm-tab hold: auth token expired; refreshing and retrying",
 			"user_id", userID, "request_id", requestID, "campsite_id", campsiteID)
-		metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_auth_expired").Inc()
 		e.mu.Lock()
-		relErr := p.reloginInPlace(ctx, userID, e)
+		refreshUsed, relErr := p.refreshOrRelogin(ctx, userID, e)
 		e.mu.Unlock()
+		if refreshUsed {
+			metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_auth_refreshed").Inc()
+		} else {
+			metrics.BookerRelaunchTotal.WithLabelValues("warm_tab_auth_expired").Inc()
+		}
 		if relErr != nil {
-			return nil, fmt.Errorf("relogin-in-place for warm tab: %w", relErr)
+			return nil, fmt.Errorf("refresh/relogin for warm tab: %w", relErr)
 		}
 		res, path, err = p.holdOnRequestTabOnce(ctx, e, wt, campsiteID, campgroundID, checkIn, checkOut, requestID, userID)
 		tagPath(res, path)
@@ -977,15 +997,21 @@ func (p *Pool) watchdogSweep(ctx context.Context) {
 				p.cfg.Logger.Warn("watchdog: relaunch failed", "user", pa.id, "err", err)
 			}
 		case time.Duration(remainSec)*time.Second < tokenRefreshThreshold:
-			// Near expiry — relogin-in-place. Cheap (~3s) and keeps
-			// warm tabs alive because localStorage is shared.
-			p.cfg.Logger.Info("watchdog: token near expiry; relogin-in-place",
+			// Near expiry — silent refresh (~100ms). The old token stays
+			// valid until its original exp, so in-flight HoldFasts on
+			// warm tabs serving stale localStorage cache never see a
+			// 401 during the refresh window. Average path stays hot.
+			p.cfg.Logger.Info("watchdog: token near expiry; refreshing",
 				"user", pa.id, "remain_sec", remainSec)
-			metrics.BookerRelaunchTotal.WithLabelValues("watchdog_proactive_refresh").Inc()
-			err := p.reloginInPlace(ctx, pa.id, pa.e)
+			refreshUsed, err := p.refreshOrRelogin(ctx, pa.id, pa.e)
 			pa.e.mu.Unlock()
+			if refreshUsed {
+				metrics.BookerRelaunchTotal.WithLabelValues("watchdog_proactive_refresh").Inc()
+			} else {
+				metrics.BookerRelaunchTotal.WithLabelValues("watchdog_proactive_relogin").Inc()
+			}
 			if err != nil {
-				p.cfg.Logger.Warn("watchdog: proactive relogin failed; will relaunch",
+				p.cfg.Logger.Warn("watchdog: proactive refresh/relogin failed; will relaunch",
 					"user", pa.id, "err", err)
 				if launchErr := p.launchUser(ctx, pa.id); launchErr != nil {
 					p.cfg.Logger.Warn("watchdog: fallback relaunch failed",
