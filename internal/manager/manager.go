@@ -453,6 +453,15 @@ func (m *Manager) fireDailySummary(ctx context.Context) {
 		m.logger.Error("daily summary: get data failed", slog.Any("err", err))
 		return
 	}
+	// Skip the roundup on idle days. "Activity" here means schniffs were
+	// active during the day — either still active now (ActiveRequests) or
+	// scraped at some point in the window (Lookups24h). We deliberately do
+	// NOT require an actual detection/DM, so quiet-but-watching days still
+	// count as activity worth reporting.
+	if summary.Stats.ActiveRequests == 0 && summary.Stats.Lookups24h == 0 {
+		m.logger.Info("daily summary skipped: no activity in the last 24h")
+		return
+	}
 	summary.UserNames = m.resolveUserNames(summary)
 	embed := db.MakeSummaryEmbed(summary)
 	m.logger.Info("daily summary firing",
