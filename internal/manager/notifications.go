@@ -558,6 +558,13 @@ func (m *Manager) sendDisplacementDM(ctx context.Context, userID string, displac
 	_ = ctx
 }
 
+// DisplayName returns a human-friendly Discord name for userID (falling
+// back to the raw ID). Exposed for the monitor dashboard; callers should
+// cache it, as it may hit Discord for uncached users.
+func (m *Manager) DisplayName(userID string) string {
+	return m.lookupUsername(userID)
+}
+
 // lookupUsername returns the Discord username for userID, falling back to a
 // raw ID reference if the lookup fails. Plain text only — DMs from a bot
 // can't ping other users.

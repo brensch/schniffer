@@ -11,11 +11,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/metrics"
+	"github.com/brensch/schniffer/internal/monitor"
+	"github.com/brensch/schniffer/internal/proxypool"
 )
 
 // instrumentedWriter wraps http.ResponseWriter so middleware can capture
@@ -71,6 +74,22 @@ type Server struct {
 	store *db.Store
 	mgr   *manager.Manager
 	addr  string
+
+	// Monitor dashboard (optional; nil auth disables the routes).
+	monAuth  *monitor.Auth
+	monPool  *proxypool.Pool
+	monStart time.Time
+	nameMu   sync.Mutex
+	nameCn   map[string]nameCacheEntry
+}
+
+// SetMonitor wires the private dashboard's auth and the proxy pool it
+// reports on. Call once after NewServer.
+func (s *Server) SetMonitor(auth *monitor.Auth, pool *proxypool.Pool) {
+	s.monAuth = auth
+	s.monPool = pool
+	s.monStart = time.Now()
+	s.nameCn = map[string]nameCacheEntry{}
 }
 
 type CampgroundMapData struct {
@@ -136,6 +155,10 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/campground_state/", instrument("api_campground_state", http.HandlerFunc(s.handleCampgroundState)))
 	mux.Handle("/api/groups", instrument("api_groups", http.HandlerFunc(s.handleGroups)))
 	mux.Handle("/api/groups/create", instrument("api_groups_create", http.HandlerFunc(s.handleCreateGroup)))
+	if s.monAuth != nil {
+		mux.Handle("/monitor", instrument("monitor_page", http.HandlerFunc(s.handleMonitorPage)))
+		mux.Handle("/api/monitor/stream", instrument("api_monitor_stream", http.HandlerFunc(s.handleMonitorStream)))
+	}
 
 	server := &http.Server{
 		Addr:    s.addr,

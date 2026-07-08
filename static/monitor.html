@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>schniffer · monitor</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#2a3140;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#5865F2;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;line-height:1.45}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.3px}
+  header .spacer{flex:1}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;background:var(--muted)}
+  .dot.live{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .dot.dead{background:var(--bad)}
+  .meta{color:var(--muted);font-size:12.5px}
+  main{padding:20px;max-width:1200px;margin:0 auto}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .tile .n{font-size:26px;font-weight:700}
+  .tile .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px;margin-top:2px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .panel h2{margin:0;font-size:13px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;
+    color:var(--muted);padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel2)}
+  .panel .body{padding:6px 0;max-height:360px;overflow:auto}
+  .row{display:flex;gap:10px;align-items:baseline;padding:6px 16px;border-bottom:1px solid rgba(255,255,255,.03)}
+  .row:last-child{border-bottom:0}
+  .row .ago{font-family:var(--mono);color:var(--muted);font-size:12px;min-width:34px;text-align:right}
+  .row .main{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .sub{color:var(--muted);font-size:12px}
+  .pill{font-size:11px;padding:1px 7px;border-radius:20px;font-weight:600}
+  .pill.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .pill.bad{background:rgba(248,81,73,.15);color:var(--bad)}
+  .prov{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.03)}
+  .prov:last-child{border-bottom:0}
+  .prov .name{font-weight:600;min-width:150px}
+  .bar{flex:1;height:8px;background:rgba(248,81,73,.25);border-radius:5px;overflow:hidden}
+  .bar>span{display:block;height:100%;background:var(--ok)}
+  .prov .pct{font-family:var(--mono);color:var(--muted);font-size:12.5px;min-width:120px;text-align:right}
+  .empty{color:var(--muted);padding:14px 16px;font-style:italic}
+  .full{grid-column:1/-1}
+  @media(max-width:820px){.tiles{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐽 schniffer monitor</h1>
+  <span class="meta" id="uptime"></span>
+  <div class="spacer"></div>
+  <span class="meta"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+  <span class="meta" id="updated"></span>
+</header>
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="n" id="t-active">–</div><div class="l">Active schniffs</div></div>
+    <div class="tile"><div class="n" id="t-checks">–</div><div class="l">Checks / 5 min</div></div>
+    <div class="tile"><div class="n" id="t-hits">–</div><div class="l">Hits / 24h</div></div>
+    <div class="tile"><div class="n" id="t-cg">–</div><div class="l">Campgrounds</div></div>
+  </div>
+
+  <div class="panel full" style="margin-bottom:16px">
+    <h2>Proxy targets</h2>
+    <div class="body" id="providers"><div class="empty">waiting…</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Who's schniffing what</h2>
+      <div class="body" id="schniffs"><div class="empty">waiting…</div></div>
+    </div>
+    <div class="panel">
+      <h2>Live checks</h2>
+      <div class="body" id="checks"><div class="empty">waiting…</div></div>
+    </div>
+    <div class="panel full">
+      <h2>Recent hits</h2>
+      <div class="body" id="hits"><div class="empty">waiting…</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const setStatus = (live) => {
+    $('dot').className = 'dot ' + (live ? 'live' : 'dead');
+    $('status').textContent = live ? 'live' : 'reconnecting…';
+  };
+
+  function render(d){
+    $('uptime').textContent = d.uptime ? ('up ' + d.uptime) : '';
+    $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    const st = d.stats || {};
+    $('t-active').textContent = st.activeSchniffs ?? 0;
+    $('t-checks').textContent = st.checks5m ?? 0;
+    $('t-hits').textContent = st.hits24h ?? 0;
+    $('t-cg').textContent = st.campgrounds ?? 0;
+
+    // providers
+    const prov = (d.providers||[]).map(p=>{
+      const okPct = p.total ? (100*p.ok/p.total) : 100;
+      return `<div class="prov">
+        <div class="name">${esc(p.name)}</div>
+        <div class="bar"><span style="width:${okPct.toFixed(1)}%"></span></div>
+        <div class="pct">${p.ok.toLocaleString()} ok / ${p.failed.toLocaleString()} fail · ${p.pctFail.toFixed(1)}%</div>
+      </div>`;
+    }).join('');
+    $('providers').innerHTML = prov || '<div class="empty">no proxy traffic yet</div>';
+
+    // schniffs
+    const sch = (d.schniffs||[]).map(s=>`
+      <div class="row">
+        <div class="main"><b>${esc(s.user)}</b> — ${esc(s.campground)}
+          <span class="sub">${esc(s.checkin)}→${esc(s.checkout)}${s.strategy?(' · '+esc(s.strategy)):''} · ${esc(s.provider)}</span></div>
+      </div>`).join('');
+    $('schniffs').innerHTML = sch || '<div class="empty">no active schniffs</div>';
+
+    // checks
+    const chk = (d.recentChecks||[]).map(c=>`
+      <div class="row">
+        <div class="ago">${esc(c.ago)}</div>
+        <div class="main">${esc(c.campground)} <span class="sub">${esc(c.provider)}${c.error?(' · '+esc(c.error)):''}</span></div>
+        <span class="pill ${c.ok?'ok':'bad'}">${c.ok?'ok':'fail'}</span>
+      </div>`).join('');
+    $('checks').innerHTML = chk || '<div class="empty">no checks yet</div>';
+
+    // hits
+    const hit = (d.recentHits||[]).map(h=>`
+      <div class="row">
+        <div class="ago">${esc(h.ago)}</div>
+        <div class="main">${esc(h.campground)} <span class="sub">site ${esc(h.site)} · ${esc(h.date)} → ${esc(h.user)}</span></div>
+      </div>`).join('');
+    $('hits').innerHTML = hit || '<div class="empty">no hits recorded</div>';
+  }
+
+  let es;
+  function connect(){
+    es = new EventSource('/api/monitor/stream');
+    es.onopen = () => setStatus(true);
+    es.onmessage = e => { try { render(JSON.parse(e.data)); setStatus(true); } catch(err){} };
+    es.onerror = () => { setStatus(false); }; // EventSource auto-reconnects
+  }
+  connect();
+</script>
+</body>
+</html>

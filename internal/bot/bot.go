@@ -7,6 +7,7 @@ import (
 
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/monitor"
 	"github.com/brensch/schniffer/internal/nonsense"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/brensch/schniffer/internal/secrets"
@@ -26,6 +27,21 @@ type Bot struct {
 	// Optional auto-booking plumbing; nil-safe so the bot still runs without it.
 	secrets *secrets.Box
 	pool    *booker.Pool
+
+	// Dashboard access: only dashboardAdminID may mint a token. Empty
+	// adminID or nil auth disables the /schniff dashboard command.
+	dashAuth    *monitor.Auth
+	dashAdminID string
+	dashBaseURL string
+}
+
+// SetDashboard wires the admin-gated /schniff dashboard command. adminID is
+// the only Discord user allowed to mint an access token; baseURL is the
+// public origin of the dashboard (e.g. https://schniff.example.com).
+func (b *Bot) SetDashboard(auth *monitor.Auth, adminID, baseURL string) {
+	b.dashAuth = auth
+	b.dashAdminID = adminID
+	b.dashBaseURL = baseURL
 }
 
 // SetAutoBooking wires the secrets box + browser pool used by /schniff link
@@ -190,6 +206,7 @@ func (b *Bot) registerCommands() {
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
 				{Name: "ratelimits", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show how often each proxy IP is being rate-limited right now"},
+				{Name: "dashboard", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get a private, expiring link to the live monitoring dashboard (admin only)"},
 				{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
 				{Name: "unlink", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove your stored recreation.gov credentials"},
 				// {Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
@@ -319,6 +336,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleSummaryCommand(s, i, sub)
 	case "ratelimits":
 		b.handleRateLimitsCommand(s, i, sub)
+	case "dashboard":
+		b.handleDashboardCommand(s, i, sub)
 	case "nonsense":
 		b.handleNonsenseCommand(s, i, sub)
 	case "link":
