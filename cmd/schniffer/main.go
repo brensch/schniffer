@@ -23,6 +23,7 @@ import (
 	"github.com/brensch/schniffer/internal/httpx"
 	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/metrics"
+	"github.com/brensch/schniffer/internal/monitor"
 	"github.com/brensch/schniffer/internal/providers"
 	"github.com/brensch/schniffer/internal/secrets"
 	"github.com/brensch/schniffer/internal/web"
@@ -114,6 +115,13 @@ func main() {
 	// its stats. Nil when the proxy is disabled.
 	mgr.SetProxyPool(httpx.Pool())
 
+	// Private monitoring dashboard: the admin-gated /schniff dashboard
+	// command mints a one-time link; the web server validates it. Both share
+	// one Auth. DASHBOARD_BASE_URL is the public origin (e.g.
+	// https://schniff.example.com); without it no links can be minted.
+	dashAuth := monitor.NewAuth()
+	b.SetDashboard(dashAuth, os.Getenv("ADMIN_USER_ID"), os.Getenv("DASHBOARD_BASE_URL"))
+
 	// The daily rate-limit report posts to #problemos. Resolve by name so
 	// it survives channel-id changes; empty (channel absent) disables it.
 	if problemos, err := bot.ChannelIDByName(discordSession, guildID, "problemos"); err != nil {
@@ -149,6 +157,7 @@ func main() {
 		webAddr = ":8069"
 	}
 	webServer := web.NewServer(store, mgr, webAddr)
+	webServer.SetMonitor(dashAuth, httpx.Pool())
 	go func() {
 		err := webServer.Run(ctx)
 		if err != nil {
