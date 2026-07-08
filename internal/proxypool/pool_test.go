@@ -95,16 +95,18 @@ func TestThrottleExpires(t *testing.T) {
 func TestDrainStatsResets(t *testing.T) {
 	p := newTestPool("a")
 	ep := Endpoint{URL: "a", Region: "region-a"}
-	p.recordResult(ep, wireResp{Status: http.StatusOK})
-	p.recordResult(ep, wireResp{Status: http.StatusTooManyRequests})
-	p.recordResult(ep, wireResp{Status: http.StatusForbidden})
+	// 200 is clean; 429, 403, and a transport error all count as failed.
+	p.recordResult("recreation_gov", ep, wireResp{Status: http.StatusOK})
+	p.recordResult("recreation_gov", ep, wireResp{Status: http.StatusTooManyRequests})
+	p.recordResult("recreation_gov", ep, wireResp{Status: http.StatusForbidden})
+	p.recordResult("recreation_gov", ep, wireResp{Error: "dial timeout"})
 
 	stats, _ := p.DrainStats()
 	if len(stats) != 1 {
 		t.Fatalf("want 1 endpoint stat, got %d", len(stats))
 	}
 	s := stats[0]
-	if s.Requests != 3 || s.RateLimited != 1 || s.Forbidden != 1 {
+	if s.Target != "recreation_gov" || s.Requests != 4 || s.Failed != 3 {
 		t.Fatalf("unexpected tally: %+v", s)
 	}
 
@@ -112,5 +114,18 @@ func TestDrainStatsResets(t *testing.T) {
 	stats2, _ := p.DrainStats()
 	if len(stats2) != 0 {
 		t.Fatalf("want empty stats after drain, got %d", len(stats2))
+	}
+}
+
+func TestRecordResultKeysByTarget(t *testing.T) {
+	p := newTestPool("a")
+	ep := Endpoint{URL: "a", Region: "region-a"}
+	// Same endpoint, two targets → two distinct rows.
+	p.recordResult("recreation_gov", ep, wireResp{Status: 200})
+	p.recordResult("reservecalifornia", ep, wireResp{Status: 403})
+
+	stats, _ := p.Snapshot()
+	if len(stats) != 2 {
+		t.Fatalf("want 2 rows (one per target), got %d: %+v", len(stats), stats)
 	}
 }
