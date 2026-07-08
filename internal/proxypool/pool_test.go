@@ -14,81 +14,122 @@ func newTestPool(urls ...string) *Pool {
 		eps[i] = Endpoint{URL: u, Provider: "test", Region: "region-" + u}
 	}
 	return &Pool{
-		endpoints:         eps,
-		rlCooldown:        5 * time.Minute,
-		cooldown:          time.Minute,
-		endpointBad:       map[string]time.Time{},
-		endpointThrottled: map[string]time.Time{},
-		stats:             map[string]*EndpointStat{},
-		statsSince:        time.Now(),
+		endpoints:      eps,
+		cooldown:       time.Minute,
+		endpointBad:    map[string]time.Time{},
+		endpointHealth: map[string]*epHealth{},
+		stats:          map[string]*EndpointStat{},
+		statsSince:     time.Now(),
 	}
 }
 
-func TestPickSkipsHostThrottledEndpoint(t *testing.T) {
+func TestPickSkipsBackingOffEndpoint(t *testing.T) {
 	p := newTestPool("a", "b")
-	host := "recreation.gov"
+	target := "recreation_gov"
 
-	// Throttle "a" for recreation.gov only.
-	p.throttle(Endpoint{URL: "a", Region: "region-a"}, host)
+	// Back "a" off for recreation_gov only.
+	p.onFailure(Endpoint{URL: "a", Region: "region-a"}, target)
 
-	// Every pick for that host must avoid "a" while the cooldown holds.
+	// Every pick for that target must avoid "a" while the backoff holds.
 	for i := 0; i < 10; i++ {
-		ep, ok := p.pick(map[string]bool{}, host)
+		ep, ok := p.pick(map[string]bool{}, target)
 		if !ok {
 			t.Fatal("pick returned no endpoint")
 		}
 		if ep.URL == "a" {
-			t.Fatalf("pick returned throttled endpoint 'a' for host %s", host)
+			t.Fatalf("pick returned backed-off endpoint 'a' for target %s", target)
 		}
 	}
 
-	// A different host is unaffected — "a" should still be reachable.
+	// A different target is unaffected — "a" should still be reachable.
 	sawA := false
 	for i := 0; i < 10; i++ {
-		ep, _ := p.pick(map[string]bool{}, "reservecalifornia.com")
+		ep, _ := p.pick(map[string]bool{}, "reservecalifornia")
 		if ep.URL == "a" {
 			sawA = true
 			break
 		}
 	}
 	if !sawA {
-		t.Fatal("endpoint 'a' should remain available for a different host")
+		t.Fatal("endpoint 'a' should remain available for a different target")
 	}
 }
 
-func TestPickFallsBackWhenAllThrottled(t *testing.T) {
+func TestBackoffEscalatesAndSuccessResets(t *testing.T) {
 	p := newTestPool("a", "b")
-	host := "recreation.gov"
-	p.throttle(Endpoint{URL: "a"}, host)
-	p.throttle(Endpoint{URL: "b"}, host)
+	target := "reservecalifornia"
+	ep := Endpoint{URL: "a", Region: "region-a"}
 
-	// Both throttled: pick must still return something rather than fail,
-	// so requests degrade instead of dropping.
-	ep, ok := p.pick(map[string]bool{}, host)
+	p.onFailure(ep, target)
+	if got := p.endpointHealth[badKey("a", target)].failLevel; got != 1 {
+		t.Fatalf("first failure should be level 1, got %d", got)
+	}
+	p.onFailure(ep, target)
+	h := p.endpointHealth[badKey("a", target)]
+	if h.failLevel != 2 {
+		t.Fatalf("second failure should escalate to level 2, got %d", h.failLevel)
+	}
+	if h.nextRetry.Sub(h.lastFail) != backoffFor(2) {
+		t.Fatalf("backoff should match ladder level 2 (%v)", backoffFor(2))
+	}
+	// A success clears the backoff entirely.
+	p.onSuccess(ep, target)
+	if _, ok := p.endpointHealth[badKey("a", target)]; ok {
+		t.Fatal("success should delete the backoff entry (healthy again)")
+	}
+}
+
+func TestPickFallsBackWhenAllBackedOff(t *testing.T) {
+	p := newTestPool("a", "b")
+	target := "recreation_gov"
+	p.onFailure(Endpoint{URL: "a"}, target)
+	p.onFailure(Endpoint{URL: "b"}, target)
+
+	// Both backed off: pick must still return something rather than fail.
+	ep, ok := p.pick(map[string]bool{}, target)
 	if !ok {
-		t.Fatal("pick should fall back to a throttled endpoint, not fail")
+		t.Fatal("pick should fall back to a backed-off endpoint, not fail")
 	}
 	if ep.URL != "a" && ep.URL != "b" {
 		t.Fatalf("unexpected endpoint %q", ep.URL)
 	}
 }
 
-func TestThrottleExpires(t *testing.T) {
+func TestBackoffExpires(t *testing.T) {
 	p := newTestPool("a", "b")
-	host := "recreation.gov"
-	// Set an already-expired throttle directly.
-	p.endpointThrottled[badKey("a", host)] = time.Now().Add(-time.Second)
+	target := "recreation_gov"
+	// Set an already-expired backoff directly.
+	p.endpointHealth[badKey("a", target)] = &epHealth{failLevel: 1, nextRetry: time.Now().Add(-time.Second)}
 
 	sawA := false
 	for i := 0; i < 10; i++ {
-		ep, _ := p.pick(map[string]bool{}, host)
+		ep, _ := p.pick(map[string]bool{}, target)
 		if ep.URL == "a" {
 			sawA = true
 			break
 		}
 	}
 	if !sawA {
-		t.Fatal("expired throttle should let 'a' back into rotation")
+		t.Fatal("expired backoff should let 'a' back into rotation")
+	}
+}
+
+func TestHealthByTarget(t *testing.T) {
+	p := newTestPool("a", "b", "c")
+	target := "reservecalifornia"
+	// Give the target some traffic so it shows up, and block "a".
+	p.recordResult(target, Endpoint{URL: "a", Region: "region-a"}, wireResp{Status: 403})
+	p.recordResult(target, Endpoint{URL: "b", Region: "region-b"}, wireResp{Status: 200})
+	for i := 0; i < len(backoffLadder); i++ {
+		p.onFailure(Endpoint{URL: "a", Region: "region-a"}, target)
+	}
+	rows, ok := p.HealthByTarget()[target]
+	if !ok || len(rows) != 3 {
+		t.Fatalf("want 3 IP rows for target, got %d", len(rows))
+	}
+	// Worst-first: "a" is blocked and should be first.
+	if rows[0].Region != "region-a" || rows[0].State != "blocked" {
+		t.Fatalf("expected region-a blocked first, got %+v", rows[0])
 	}
 }
 

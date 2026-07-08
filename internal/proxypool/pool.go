@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/textproto"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,17 +59,47 @@ type Pool struct {
 	mu      sync.Mutex
 	pending []*pendingReq
 	timer   *time.Timer
-	// endpointBad cools an endpoint out of rotation for all hosts after a
+	// endpointBad cools an endpoint out of rotation for all targets after a
 	// proxy-level failure (transport error / non-200 from the proxy itself).
 	endpointBad map[string]time.Time
-	// endpointThrottled cools an endpoint out of rotation for ONE upstream
-	// host after that host returned 429/403 through it — the egress IP is
-	// being rate-limited by that host specifically. Keyed by badKey(url, host).
-	endpointThrottled map[string]time.Time
+	// endpointHealth tracks per-(endpoint, target) escalating backoff after
+	// upstream 403/429s. Keyed by badKey(url, target); absent means healthy.
+	endpointHealth map[string]*epHealth
 
 	statsMu    sync.Mutex
 	stats      map[string]*EndpointStat
 	statsSince time.Time
+}
+
+// backoffLadder is the escalating out-of-rotation duration per consecutive
+// failure level for one (endpoint, target). It grows until it caps at a day,
+// so a persistently-blocked IP is re-probed roughly daily and rejoins the
+// instant it succeeds again. Index = failLevel - 1.
+var backoffLadder = []time.Duration{
+	2 * time.Minute,
+	10 * time.Minute,
+	30 * time.Minute,
+	2 * time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
+}
+
+func backoffFor(level int) time.Duration {
+	if level <= 0 {
+		return 0
+	}
+	if level > len(backoffLadder) {
+		level = len(backoffLadder)
+	}
+	return backoffLadder[level-1]
+}
+
+// epHealth is one (endpoint, target) pair's escalating backoff. An entry
+// exists only once the pair has failed; a success deletes it (healthy).
+type epHealth struct {
+	failLevel int
+	nextRetry time.Time
+	lastFail  time.Time
 }
 
 // EndpointStat is a rolling per-(target, endpoint) tally of upstream
@@ -173,17 +204,13 @@ func New(secret string) (*Pool, error) {
 		// waits would just be tax. 2ms is enough for the cycle's
 		// concurrent goroutines to all enqueue without losing a full
 		// network roundtrip to the wait.
-		flushAfter: 2 * time.Millisecond,
-		maxBatch:   50,
-		cooldown:   60 * time.Second,
-		// rlCooldown parks an egress IP after an upstream throttles it.
-		// 5 min is long enough for rec.gov's per-IP window to reset but
-		// short enough to return the IP to a 42-strong rotation quickly.
-		rlCooldown:        5 * time.Minute,
-		endpointBad:       map[string]time.Time{},
-		endpointThrottled: map[string]time.Time{},
-		stats:             map[string]*EndpointStat{},
-		statsSince:        time.Now(),
+		flushAfter:     2 * time.Millisecond,
+		maxBatch:       50,
+		cooldown:       60 * time.Second,
+		endpointBad:    map[string]time.Time{},
+		endpointHealth: map[string]*epHealth{},
+		stats:          map[string]*EndpointStat{},
+		statsSince:     time.Now(),
 	}, nil
 }
 
@@ -282,6 +309,11 @@ func (p *Pool) dispatch(batch []*pendingReq) {
 }
 
 func (p *Pool) dispatchHost(host string, batch []*pendingReq) {
+	// All requests in a host group share one upstream, hence one target.
+	target := providerFromCtx(batch[0].req.Context())
+	if target == "" {
+		target = host
+	}
 	reqs := make([]wireReq, len(batch))
 	for i, pr := range batch {
 		h := map[string]string{}
@@ -319,7 +351,7 @@ func (p *Pool) dispatchHost(host string, batch []*pendingReq) {
 			WithLabelValues(ep.URL, ep.Region, metrics.BoolLabel(err == nil)).
 			Observe(dispatchSecs)
 		if err == nil {
-			p.demux(batch, resp, ep, host)
+			p.demux(batch, resp, ep, target)
 			return
 		}
 		p.markBad(ep.URL)
@@ -364,21 +396,20 @@ func (e *proxyHTTPError) Error() string {
 	return "proxy returned " + http.StatusText(e.Status) + ": " + e.Body
 }
 
-func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, host string) {
+func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, target string) {
 	if len(br.Responses) != len(batch) {
 		p.finishAll(batch, nil, errors.New("proxy response length mismatch"))
 		return
 	}
-	throttled := false
+	sawBlock, sawOK := false, false
 	for i, pr := range batch {
 		wr := br.Responses[i]
-		target := providerFromCtx(pr.req.Context())
-		if target == "" {
-			target = host
-		}
 		p.recordResult(target, ep, wr)
-		if wr.Status == http.StatusTooManyRequests || wr.Status == http.StatusForbidden {
-			throttled = true
+		switch {
+		case wr.Status == http.StatusTooManyRequests || wr.Status == http.StatusForbidden:
+			sawBlock = true
+		case wr.Status >= 200 && wr.Status < 300:
+			sawOK = true
 		}
 		if wr.Error != "" {
 			pr.done <- pendingResp{err: errors.New(wr.Error)}
@@ -409,8 +440,12 @@ func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, host s
 		resp.ContentLength = int64(len(wr.Body))
 		pr.done <- pendingResp{resp: resp}
 	}
-	if throttled {
-		p.throttle(ep, host)
+	// A 403/429 escalates this (endpoint, target)'s backoff; a clean 2xx
+	// with no blocks clears it back to healthy.
+	if sawBlock {
+		p.onFailure(ep, target)
+	} else if sawOK {
+		p.onSuccess(ep, target)
 	}
 }
 
@@ -433,18 +468,117 @@ func (p *Pool) recordResult(target string, ep Endpoint, wr wireResp) {
 	}
 }
 
-// throttle parks an endpoint for one upstream host after that host
-// rate-limited (429) or blocked (403) it. Other hosts keep using the
-// endpoint; only this (endpoint, host) pair is cooled down.
-func (p *Pool) throttle(ep Endpoint, host string) {
+// onFailure escalates the (endpoint, target) backoff after a 403/429 and
+// parks the endpoint out of that target's rotation for the new duration.
+// Only this pair is affected — the endpoint stays healthy for other targets.
+func (p *Pool) onFailure(ep Endpoint, target string) {
+	key := badKey(ep.URL, target)
+	now := time.Now()
 	p.mu.Lock()
-	p.endpointThrottled[badKey(ep.URL, host)] = time.Now().Add(p.rlCooldown)
+	h := p.endpointHealth[key]
+	if h == nil {
+		h = &epHealth{}
+		p.endpointHealth[key] = h
+	}
+	h.failLevel++
+	h.lastFail = now
+	h.nextRetry = now.Add(backoffFor(h.failLevel))
+	level := h.failLevel
 	p.mu.Unlock()
 
 	metrics.ProxyEndpointBadTotal.WithLabelValues(ep.URL).Inc()
-	slog.Warn("proxy endpoint throttled by upstream",
-		"endpoint", ep.URL, "region", ep.Region, "host", host,
-		"cooldown", p.rlCooldown)
+	slog.Warn("proxy endpoint backing off",
+		"endpoint", ep.URL, "region", ep.Region, "target", target,
+		"fail_level", level, "backoff", backoffFor(level))
+}
+
+// onSuccess clears any backoff for the (endpoint, target) pair — one good
+// response restores it to healthy, so a recovered IP rejoins immediately.
+func (p *Pool) onSuccess(ep Endpoint, target string) {
+	key := badKey(ep.URL, target)
+	p.mu.Lock()
+	delete(p.endpointHealth, key)
+	p.mu.Unlock()
+}
+
+// IPHealth is one endpoint's state for one target, for the dashboard.
+type IPHealth struct {
+	Region     string `json:"region"`
+	URL        string `json:"url"`
+	State      string `json:"state"` // healthy | backing_off | blocked
+	FailLevel  int    `json:"failLevel"`
+	RetryInSec int64  `json:"retryInSec"`
+	Requests   int64  `json:"requests"`
+	Failed     int64  `json:"failed"`
+}
+
+func stateRank(s string) int {
+	switch s {
+	case "blocked":
+		return 2
+	case "backing_off":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// HealthByTarget returns, for every target that has seen traffic, the state
+// of all pool endpoints (healthy / backing_off / blocked) with their tallies
+// and time-to-next-probe. Worst state first. Powers the dashboard IP view.
+func (p *Pool) HealthByTarget() map[string][]IPHealth {
+	// Snapshot stats (targets + tallies) and health under their own locks —
+	// never nested, so no deadlock with the hot dispatch path.
+	p.statsMu.Lock()
+	targets := map[string]struct{}{}
+	tally := make(map[string]EndpointStat, len(p.stats))
+	for k, s := range p.stats {
+		targets[s.Target] = struct{}{}
+		tally[k] = *s
+	}
+	p.statsMu.Unlock()
+
+	now := time.Now()
+	p.mu.Lock()
+	health := make(map[string]epHealth, len(p.endpointHealth))
+	for k, h := range p.endpointHealth {
+		health[k] = *h
+	}
+	p.mu.Unlock()
+
+	out := make(map[string][]IPHealth, len(targets))
+	for target := range targets {
+		rows := make([]IPHealth, 0, len(p.endpoints))
+		for _, ep := range p.endpoints {
+			ih := IPHealth{Region: ep.Region, URL: ep.URL, State: "healthy"}
+			if s, ok := tally[statKey(target, ep.URL)]; ok {
+				ih.Requests, ih.Failed = s.Requests, s.Failed
+			}
+			if h, ok := health[badKey(ep.URL, target)]; ok && h.failLevel > 0 {
+				ih.FailLevel = h.failLevel
+				if h.nextRetry.After(now) {
+					ih.RetryInSec = int64(h.nextRetry.Sub(now).Seconds())
+				}
+				if h.failLevel >= len(backoffLadder) {
+					ih.State = "blocked"
+				} else {
+					ih.State = "backing_off"
+				}
+			}
+			rows = append(rows, ih)
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if ri, rj := stateRank(rows[i].State), stateRank(rows[j].State); ri != rj {
+				return ri > rj
+			}
+			if rows[i].FailLevel != rows[j].FailLevel {
+				return rows[i].FailLevel > rows[j].FailLevel
+			}
+			return rows[i].Region < rows[j].Region
+		})
+		out[target] = rows
+	}
+	return out
 }
 
 // DrainStats returns and clears the per-endpoint tallies, along with the
@@ -492,12 +626,12 @@ func (p *Pool) finishAll(batch []*pendingReq, resp *http.Response, err error) {
 	}
 }
 
-// pick returns the next healthy endpoint for host in round-robin order,
-// skipping ones already tried this dispatch, globally cooled down (proxy
-// failure), or throttled for this specific host (upstream 429/403). If
-// every endpoint is unavailable it falls back to any untried endpoint —
-// trying a throttled IP beats dropping the request.
-func (p *Pool) pick(skip map[string]bool, host string) (Endpoint, bool) {
+// pick returns the next endpoint for target in round-robin order, skipping
+// ones already tried this dispatch, globally cooled down (proxy failure), or
+// backing off for this target (escalating after 403/429). If every endpoint
+// is unavailable it falls back to any untried endpoint — trying a backed-off
+// IP beats dropping the request.
+func (p *Pool) pick(skip map[string]bool, target string) (Endpoint, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -514,7 +648,7 @@ func (p *Pool) pick(skip map[string]bool, host string) (Endpoint, bool) {
 		if t, bad := p.endpointBad[ep.URL]; bad && t.After(now) {
 			continue
 		}
-		if t, thr := p.endpointThrottled[badKey(ep.URL, host)]; thr && t.After(now) {
+		if h, ok := p.endpointHealth[badKey(ep.URL, target)]; ok && h.nextRetry.After(now) {
 			continue
 		}
 		return ep, true
