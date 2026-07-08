@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/brensch/schniffer/internal/booker"
@@ -125,17 +126,12 @@ People make plans, those plans change. They cancel their booking. They normally 
 		return
 	}
 
-	// Generate public welcome message
+	// Generate public welcome message. Mentions inside embeds don't resolve
+	// reliably (clients show the raw <@id> for uncached members), so the
+	// greeting goes in the message content instead of an embed description.
 	welcomeMessage := nonsense.RandomSillyGreeting(m.User.ID)
 
-	// Create an embed with "⚠️ New schniffist alert 🐽" title
-	embed := &discordgo.MessageEmbed{
-		Title:       "⚠️ New schniffist alert 🐽",
-		Description: welcomeMessage,
-		Color:       0x5865F2, // Discord blurple color
-	}
-
-	_, err = s.ChannelMessageSendEmbed(b.broadcastChannel, embed)
+	_, err = s.ChannelMessageSend(b.broadcastChannel, fmt.Sprintf("⚠️ **New schniffist alert** 🐽\n\n%s", welcomeMessage))
 	if err != nil {
 		b.logger.Error("failed to send public welcome message", slog.Any("err", err))
 	}
