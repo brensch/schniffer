@@ -1,6 +1,7 @@
 package proxypool
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,59 +15,75 @@ func TestFormatReportNoTraffic(t *testing.T) {
 	}
 }
 
-func TestFormatReportCleanRun(t *testing.T) {
+func TestFormatReportGroupsByProvider(t *testing.T) {
 	now := time.Now()
 	stats := []EndpointStat{
-		{URL: "a", Region: "us-central1", Requests: 100},
-		{URL: "b", Region: "us-west1", Requests: 80},
+		{Target: "recreation_gov", URL: "a", Region: "us-central1", Requests: 8100, Failed: 9},
+		{Target: "recreation_gov", URL: "b", Region: "asia-east1", Requests: 512, Failed: 215},
+		{Target: "reservecalifornia", URL: "a", Region: "us-west1", Requests: 120, Failed: 72},
 	}
-	msg := FormatReport(stats, now.Add(-24*time.Hour), now)
-	if !strings.Contains(msg, "No individual IP hit a 429 or 403") {
-		t.Fatalf("expected clean-run message, got: %q", msg)
+	msg := FormatReport(stats, now.Add(-3*time.Hour), now)
+
+	// One section per provider.
+	if !strings.Contains(msg, "**recreation_gov**") || !strings.Contains(msg, "**reservecalifornia**") {
+		t.Fatalf("expected a section per provider, got:\n%s", msg)
 	}
-	if !strings.Contains(msg, "0.0% throttled") {
-		t.Fatalf("expected 0%% throttled summary, got: %q", msg)
+	// reservecalifornia (60% failed) is worse than recreation_gov (2.6%),
+	// so it should be listed first.
+	if strings.Index(msg, "reservecalifornia") > strings.Index(msg, "recreation_gov") {
+		t.Fatalf("worse provider should be first, got:\n%s", msg)
+	}
+	// Failure percentages appear, not raw 403/429 splits.
+	if !strings.Contains(msg, "% failed") {
+		t.Fatalf("expected %% failed, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "blocked") || strings.Contains(msg, "429") || strings.Contains(msg, "403") {
+		t.Fatalf("should not mention blocked/429/403, got:\n%s", msg)
+	}
+	// Thousands separators.
+	if !strings.Contains(msg, "8,100") {
+		t.Fatalf("expected comma-formatted counts, got:\n%s", msg)
 	}
 }
 
-func TestFormatReportOffendersSortedAndCounted(t *testing.T) {
+func TestFormatReportHealthyProvider(t *testing.T) {
 	now := time.Now()
 	stats := []EndpointStat{
-		{URL: "a", Region: "us-central1", Requests: 100, RateLimited: 2, Forbidden: 1, Cooldowns: 1},
-		{URL: "b", Region: "asia-east1", Requests: 50, RateLimited: 40, Forbidden: 5, Cooldowns: 9},
-		{URL: "c", Region: "europe-west1", Requests: 70},
+		{Target: "recreation_gov", URL: "a", Region: "us-central1", Requests: 100, Failed: 0},
 	}
-	msg := FormatReport(stats, now.Add(-24*time.Hour), now)
-
-	// Totals: 220 reqs, 42 rate-limited, 6 blocked => 48/220 = 21.8%.
-	if !strings.Contains(msg, "21.8% throttled") {
-		t.Fatalf("expected 21.8%% overall, got: %q", msg)
+	msg := FormatReport(stats, now.Add(-time.Hour), now)
+	if !strings.Contains(msg, "0.0% failed") {
+		t.Fatalf("expected 0.0%% failed, got:\n%s", msg)
 	}
-	// The worst offender (asia-east1, 45 hits) must be listed before the
-	// lesser one (us-central1, 3 hits).
-	iAsia := strings.Index(msg, "asia-east1")
-	iCentral := strings.Index(msg, "us-central1")
-	if iAsia < 0 || iCentral < 0 {
-		t.Fatalf("both offenders should appear, got: %q", msg)
-	}
-	if iAsia > iCentral {
-		t.Fatalf("asia-east1 should be listed before us-central1, got: %q", msg)
-	}
-	// The clean endpoint (europe-west1) is not an offender and shouldn't
-	// appear in the per-IP table.
-	if strings.Contains(msg, "europe-west1") {
-		t.Fatalf("clean endpoint should be omitted from offender table, got: %q", msg)
+	if !strings.Contains(msg, "all IPs healthy") {
+		t.Fatalf("expected healthy note, got:\n%s", msg)
 	}
 }
 
-func TestHasRateLimiting(t *testing.T) {
-	if HasRateLimiting([]EndpointStat{{Requests: 100}}) {
-		t.Fatal("clean stats should report no rate limiting")
+func TestFormatReportTruncatesManyFailingIPs(t *testing.T) {
+	now := time.Now()
+	var stats []EndpointStat
+	for i := 0; i < 15; i++ {
+		stats = append(stats, EndpointStat{
+			Target:   "recreation_gov",
+			URL:      fmt.Sprintf("u%d", i),
+			Region:   fmt.Sprintf("region-%02d", i),
+			Requests: 100,
+			Failed:   50,
+		})
 	}
-	if !HasRateLimiting([]EndpointStat{{Requests: 100, Forbidden: 1}}) {
-		t.Fatal("a 403 should count as rate limiting")
+	msg := FormatReport(stats, now.Add(-time.Hour), now)
+	// 15 failing IPs, cap 10 → note the remaining 5.
+	if !strings.Contains(msg, "…and 5 more IPs with failures") {
+		t.Fatalf("expected truncation note for 5 extra IPs, got:\n%s", msg)
 	}
-	if !HasRateLimiting([]EndpointStat{{Requests: 100, RateLimited: 1}}) {
-		t.Fatal("a 429 should count as rate limiting")
+}
+
+func TestHasFailures(t *testing.T) {
+	if HasFailures([]EndpointStat{{Requests: 100}}) {
+		t.Fatal("clean stats should report no failures")
+	}
+	if !HasFailures([]EndpointStat{{Requests: 100, Failed: 1}}) {
+		t.Fatal("a failed request should be detected")
 	}
 }

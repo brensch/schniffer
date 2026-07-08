@@ -1,6 +1,7 @@
 package proxypool
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -70,21 +71,47 @@ type Pool struct {
 	statsSince time.Time
 }
 
-// EndpointStat is a rolling per-endpoint tally of upstream outcomes,
-// drained by the daily report. Requests counts demuxed upstream
-// responses (not proxy-transport errors).
+// EndpointStat is a rolling per-(target, endpoint) tally of upstream
+// outcomes, drained by the daily report. Target is the friendly provider
+// name when the request was tagged (see WithProvider), else the upstream
+// host. Requests counts every demuxed response; Failed counts the ones
+// that weren't a clean 2xx (transport error, 4xx, 5xx) — we deliberately
+// don't split 403 vs 429, since both usually mean the same thing.
 type EndpointStat struct {
-	URL         string
-	Region      string
-	Requests    int64
-	RateLimited int64 // upstream 429
-	Forbidden   int64 // upstream 403 (WAF block)
-	Cooldowns   int64 // times this endpoint was throttled out of rotation
+	Target   string
+	URL      string
+	Region   string
+	Requests int64
+	Failed   int64
 }
 
 // badKey namespaces a per-host throttle entry. NUL can't appear in a URL
 // or host, so it's a safe separator.
 func badKey(url, host string) string { return url + "\x00" + host }
+
+// statKey namespaces a per-(target, endpoint) stat entry.
+func statKey(target, url string) string { return target + "\x00" + url }
+
+// providerCtxKey tags a request context with the friendly provider name so
+// the pool can attribute stats to it without a hardcoded host→name table.
+type providerCtxKey struct{}
+
+// WithProvider returns a context that tags outbound requests with the
+// given provider name for rate-limit reporting. The manager sets this from
+// the provider registry; requests without it fall back to their host.
+func WithProvider(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, providerCtxKey{}, name)
+}
+
+func providerFromCtx(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(providerCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 type pendingReq struct {
 	req  *http.Request
@@ -345,7 +372,11 @@ func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, host s
 	throttled := false
 	for i, pr := range batch {
 		wr := br.Responses[i]
-		p.recordResult(ep, wr)
+		target := providerFromCtx(pr.req.Context())
+		if target == "" {
+			target = host
+		}
+		p.recordResult(target, ep, wr)
 		if wr.Status == http.StatusTooManyRequests || wr.Status == http.StatusForbidden {
 			throttled = true
 		}
@@ -383,21 +414,22 @@ func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, host s
 	}
 }
 
-// recordResult tallies one demuxed upstream response for the daily report.
-func (p *Pool) recordResult(ep Endpoint, wr wireResp) {
+// recordResult tallies one demuxed upstream response against a
+// (target, endpoint) pair. A response is Failed unless it's a clean 2xx —
+// transport error, 4xx, and 5xx all count, without distinguishing 403 from
+// 429.
+func (p *Pool) recordResult(target string, ep Endpoint, wr wireResp) {
 	p.statsMu.Lock()
 	defer p.statsMu.Unlock()
-	s := p.stats[ep.URL]
+	key := statKey(target, ep.URL)
+	s := p.stats[key]
 	if s == nil {
-		s = &EndpointStat{URL: ep.URL, Region: ep.Region}
-		p.stats[ep.URL] = s
+		s = &EndpointStat{Target: target, URL: ep.URL, Region: ep.Region}
+		p.stats[key] = s
 	}
 	s.Requests++
-	switch wr.Status {
-	case http.StatusTooManyRequests:
-		s.RateLimited++
-	case http.StatusForbidden:
-		s.Forbidden++
+	if wr.Error != "" || wr.Status < 200 || wr.Status >= 300 {
+		s.Failed++
 	}
 }
 
@@ -408,12 +440,6 @@ func (p *Pool) throttle(ep Endpoint, host string) {
 	p.mu.Lock()
 	p.endpointThrottled[badKey(ep.URL, host)] = time.Now().Add(p.rlCooldown)
 	p.mu.Unlock()
-
-	p.statsMu.Lock()
-	if s := p.stats[ep.URL]; s != nil {
-		s.Cooldowns++
-	}
-	p.statsMu.Unlock()
 
 	metrics.ProxyEndpointBadTotal.WithLabelValues(ep.URL).Inc()
 	slog.Warn("proxy endpoint throttled by upstream",
@@ -449,11 +475,11 @@ func (p *Pool) Snapshot() ([]EndpointStat, time.Time) {
 	return out, p.statsSince
 }
 
-// HasRateLimiting reports whether the tallies contain any 429 or 403 —
+// HasFailures reports whether the tallies contain any failed request —
 // the trigger for the daily problemos post.
-func HasRateLimiting(stats []EndpointStat) bool {
+func HasFailures(stats []EndpointStat) bool {
 	for _, s := range stats {
-		if s.RateLimited+s.Forbidden > 0 {
+		if s.Failed > 0 {
 			return true
 		}
 	}

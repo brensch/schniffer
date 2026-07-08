@@ -245,6 +245,10 @@ func (m *Manager) PollProvider(ctx context.Context, targetProvider string) error
 		return nil
 	}
 
+	// Tag every fetch this cycle with the provider name so the proxy pool
+	// can attribute per-IP rate-limit stats to it (see proxypool.WithProvider).
+	ctx = proxypool.WithProvider(ctx, targetProvider)
+
 	prov, ok := m.reg.Get(targetProvider)
 	if !ok {
 		return nil
@@ -543,8 +547,8 @@ func (m *Manager) RunProxyReport(ctx context.Context) {
 // silent on clean days.
 func (m *Manager) fireProxyReport() {
 	stats, since := m.proxyPool.DrainStats()
-	if !proxypool.HasRateLimiting(stats) {
-		m.logger.Info("proxy rate-limit report: no rate limiting today, skipping problemos post")
+	if !proxypool.HasFailures(stats) {
+		m.logger.Info("proxy rate-limit report: no failures today, skipping problemos post")
 		return
 	}
 	msg := proxypool.FormatReport(stats, since, time.Now())
@@ -709,6 +713,7 @@ func (m *Manager) processAdhocScrapeRequest(ctx context.Context, req *db.AdhocSc
 	endDate := startDate.AddDate(0, 0, 60)
 
 	// Execute the scrape using FetchAvailability
+	ctx = proxypool.WithProvider(ctx, req.Provider)
 	results, err := provider.FetchAvailability(ctx, req.CampgroundID, startDate, endDate)
 	if err != nil {
 		return fmt.Errorf("failed to scrape availability: %w", err)
