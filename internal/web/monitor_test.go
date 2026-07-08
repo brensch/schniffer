@@ -67,6 +67,18 @@ func TestMonitorPageValidTokenSetsCookieAndRedirects(t *testing.T) {
 	}
 }
 
+func TestInstrumentPreservesFlusher(t *testing.T) {
+	// SSE needs http.Flusher to survive the metrics middleware wrapper.
+	var gotFlusher bool
+	h := instrument("test", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, gotFlusher = w.(http.Flusher)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	if !gotFlusher {
+		t.Fatal("instrumented writer must expose http.Flusher for SSE streaming")
+	}
+}
+
 func TestMonitorStreamRejectsNoSession(t *testing.T) {
 	s := authedServer()
 	rr := httptest.NewRecorder()

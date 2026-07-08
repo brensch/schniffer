@@ -45,6 +45,18 @@ func (w *instrumentedWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush and Unwrap let streaming handlers (SSE) reach the underlying
+// writer's flusher through this wrapper. Embedding the ResponseWriter
+// interface doesn't promote Flush into the concrete type's method set, so
+// without this the /api/monitor/stream type assertion fails.
+func (w *instrumentedWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *instrumentedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // instrument returns h wrapped with request/duration/in-flight/response-size
 // observers. The route label is supplied by the caller so we don't end up
 // with a high-cardinality label set from path parameters
