@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/brensch/schniffer/internal/db"
 	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
+	"github.com/brensch/schniffer/internal/proxypool"
 	"github.com/bwmarrin/discordgo"
 	"github.com/robfig/cron/v3"
 )
@@ -24,6 +26,10 @@ type Manager struct {
 	summaryChannelID string
 	adminUserID      string
 	logger           *slog.Logger
+
+	// Optional proxy pool, wired for the daily per-IP rate-limit report.
+	// Nil when the proxy is disabled (no PROXY_SECRET).
+	proxyPool *proxypool.Pool
 
 	// Optional auto-booking. Nil when SCHNIFFER_ENC_KEY is unset or pool
 	// isn't wired; notification path falls back to plain DM in that case.
@@ -54,6 +60,13 @@ func (m *Manager) GetSummaryChannel() string {
 // for this Discord user instead of pinging the whole summary channel.
 func (m *Manager) SetAdminUser(userID string) {
 	m.adminUserID = userID
+}
+
+// SetProxyPool wires the proxy pool so the daily report can drain its
+// per-IP rate-limit stats. Call once after NewManager; nil disables the
+// report.
+func (m *Manager) SetProxyPool(pool *proxypool.Pool) {
+	m.proxyPool = pool
 }
 
 // notifyOps delivers an operational alert. DMs the admin when configured;
@@ -475,6 +488,120 @@ func (m *Manager) RunDailySummary(ctx context.Context) {
 	<-ctx.Done()
 	stopCtx := c.Stop()
 	<-stopCtx.Done()
+}
+
+// proxyReportSchedule fires the per-IP rate-limit report. 08:00
+// America/Los_Angeles keeps it clear of the 21:00 nightly summary so the
+// two don't arrive back-to-back.
+const proxyReportSchedule = "0 8 * * *"
+
+// RunProxyReport schedules the daily per-IP rate-limit DM to the admin.
+// Returns immediately; runs until ctx is cancelled. No-op (logs once) when
+// no proxy pool is wired.
+func (m *Manager) RunProxyReport(ctx context.Context) {
+	if m.proxyPool == nil {
+		m.logger.Info("proxy rate-limit report disabled: no proxy pool")
+		return
+	}
+	loc, err := time.LoadLocation(dailySummaryTimezone)
+	if err != nil {
+		m.logger.Error("proxy report: failed to load timezone; falling back to UTC",
+			slog.String("timezone", dailySummaryTimezone), slog.Any("err", err))
+		loc = time.UTC
+	}
+	c := cron.New(cron.WithLocation(loc))
+	if _, err := c.AddFunc(proxyReportSchedule, func() {
+		m.fireProxyReport()
+	}); err != nil {
+		m.logger.Error("failed to register proxy report cron",
+			slog.String("schedule", proxyReportSchedule), slog.Any("err", err))
+		return
+	}
+	c.Start()
+	next := c.Entries()[0].Next
+	m.logger.Info("proxy rate-limit report scheduled",
+		slog.String("schedule", proxyReportSchedule),
+		slog.String("timezone", loc.String()),
+		slog.String("next_fire", next.Format(time.RFC3339)))
+	<-ctx.Done()
+	stopCtx := c.Stop()
+	<-stopCtx.Done()
+}
+
+// fireProxyReport drains the pool's per-IP tallies and DMs the admin a
+// breakdown. Drains unconditionally (even when it won't send) so the
+// window doesn't accumulate across a misconfigured report.
+func (m *Manager) fireProxyReport() {
+	stats, since := m.proxyPool.DrainStats()
+	msg := formatProxyReport(stats, since, time.Now())
+	m.notifyOps(msg)
+}
+
+// formatProxyReport renders the per-IP rate-limit summary. Offenders
+// (any 429/403) are listed most-throttled first in a code block; clean
+// runs collapse to a one-liner. Capped so the message stays under
+// Discord's 2000-char limit even with all 42 IPs degraded.
+func formatProxyReport(stats []proxypool.EndpointStat, since, now time.Time) string {
+	var totReq, totRL, tot403, totCD int64
+	for _, s := range stats {
+		totReq += s.Requests
+		totRL += s.RateLimited
+		tot403 += s.Forbidden
+		totCD += s.Cooldowns
+	}
+
+	var b strings.Builder
+	window := now.Sub(since).Round(time.Minute)
+	fmt.Fprintf(&b, "📊 **Proxy rate-limit report** (last %s)\n", window)
+	if totReq == 0 {
+		b.WriteString("No proxy traffic recorded in this window.")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%d IPs · %d requests · %d rate-limited (429) · %d blocked (403) · %d cooldowns — %.1f%% throttled overall.\n",
+		len(stats), totReq, totRL, tot403, totCD,
+		100*float64(totRL+tot403)/float64(totReq))
+
+	offenders := make([]proxypool.EndpointStat, 0, len(stats))
+	for _, s := range stats {
+		if s.RateLimited+s.Forbidden > 0 {
+			offenders = append(offenders, s)
+		}
+	}
+	if len(offenders) == 0 {
+		b.WriteString("No individual IP hit a 429 or 403. 🎉")
+		return b.String()
+	}
+	sort.Slice(offenders, func(i, j int) bool {
+		oi := offenders[i].RateLimited + offenders[i].Forbidden
+		oj := offenders[j].RateLimited + offenders[j].Forbidden
+		if oi != oj {
+			return oi > oj
+		}
+		return offenders[i].Region < offenders[j].Region
+	})
+
+	b.WriteString("```\n")
+	fmt.Fprintf(&b, "%-22s %7s %6s %6s %5s\n", "region", "reqs", "429", "403", "cool")
+	const maxRows = 20
+	for i, s := range offenders {
+		if i >= maxRows {
+			fmt.Fprintf(&b, "…and %d more IPs\n", len(offenders)-maxRows)
+			break
+		}
+		fmt.Fprintf(&b, "%-22s %7d %6d %6d %5d\n",
+			proxyRegionLabel(s), s.Requests, s.RateLimited, s.Forbidden, s.Cooldowns)
+	}
+	b.WriteString("```")
+	return b.String()
+}
+
+// proxyRegionLabel prefers the human region name, falling back to the
+// endpoint URL when a stat somehow lacks one.
+func proxyRegionLabel(s proxypool.EndpointStat) string {
+	if s.Region != "" {
+		return s.Region
+	}
+	return strings.TrimPrefix(s.URL, "https://")
 }
 
 // fireDailySummary builds and sends one roundup. Surfaced as its own
