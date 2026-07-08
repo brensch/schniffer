@@ -22,6 +22,7 @@ type Manager struct {
 	mu               sync.Mutex
 	notifier         *discordgo.Session
 	summaryChannelID string
+	adminUserID      string
 	logger           *slog.Logger
 
 	// Optional auto-booking. Nil when SCHNIFFER_ENC_KEY is unset or pool
@@ -47,6 +48,30 @@ func NewManager(store *db.Store, reg *providers.Registry, notifier *discordgo.Se
 
 func (m *Manager) GetSummaryChannel() string {
 	return m.summaryChannelID
+}
+
+// SetAdminUser routes operational alerts (rate limits, backoffs) to a DM
+// for this Discord user instead of pinging the whole summary channel.
+func (m *Manager) SetAdminUser(userID string) {
+	m.adminUserID = userID
+}
+
+// notifyOps delivers an operational alert. DMs the admin when configured;
+// falls back to the summary channel when unset or the DM fails, so alerts
+// are never silently dropped.
+func (m *Manager) notifyOps(msg string) {
+	if m.adminUserID != "" {
+		channel, err := m.notifier.UserChannelCreate(m.adminUserID)
+		if err == nil {
+			if _, err = m.notifier.ChannelMessageSend(channel.ID, msg); err == nil {
+				return
+			}
+		}
+		m.logger.Warn("ops DM failed; falling back to summary channel", slog.Any("err", err))
+	}
+	if _, err := m.notifier.ChannelMessageSend(m.summaryChannelID, msg); err != nil {
+		m.logger.Warn("failed to send ops alert", slog.Any("err", err))
+	}
 }
 
 // Run polls providers at dynamic intervals based on their rate limit status
@@ -108,13 +133,30 @@ func (m *Manager) runExpiryReaper(ctx context.Context) {
 // effective cadence than the old time.After loop at the same value.
 const fastestPoll = 5 * time.Second
 
+// pollFloors overrides fastestPoll per provider. ReserveCalifornia's grid
+// endpoint sits behind a CloudFront WAF that was blocking ~64% of our
+// grid POSTs at the 5s cadence (2026-07-07); the data is a whole-facility
+// grid anyway, so 60s loses little freshness and stops burning blocked
+// attempts.
+var pollFloors = map[string]time.Duration{
+	"reservecalifornia": 60 * time.Second,
+}
+
+func pollFloor(providerName string) time.Duration {
+	if d, ok := pollFloors[providerName]; ok {
+		return d
+	}
+	return fastestPoll
+}
+
 // pollBackoffStep is added to the interval each time a cycle returns an
 // error; the next success resets to fastestPoll. Keeps backoff linear so
 // recovery is quick after a transient.
 const pollBackoffStep = 10 * time.Second
 
 func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
-	interval := fastestPoll
+	floor := pollFloor(providerName)
+	interval := floor
 	m.logger.Info("Starting provider loop", "provider", providerName, "interval", interval)
 
 	// Ticker, not time.After: cycles fire at a fixed cadence even when a
@@ -133,16 +175,12 @@ func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 			if err != nil {
 				interval += pollBackoffStep
 				m.logger.Warn("Rate limited, increasing interval", "provider", providerName, "new_interval", interval)
-				if interval > 60*time.Second {
-					msg := fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval)
-					_, sendErr := m.notifier.ChannelMessageSend(m.summaryChannelID, msg)
-					if sendErr != nil {
-						m.logger.Warn("failed to send rate limit notification", slog.Any("err", sendErr))
-					}
+				if interval > floor+60*time.Second {
+					m.notifyOps(fmt.Sprintf("⚠️🐽🛑 %s rate limit detected while schniffing. Increased polling interval to %v", providerName, interval))
 				}
 				t.Reset(interval)
-			} else if interval != fastestPoll {
-				interval = fastestPoll
+			} else if interval != floor {
+				interval = floor
 				t.Reset(interval)
 			}
 		}

@@ -103,6 +103,12 @@ func main() {
 
 	mgr := manager.NewManager(store, provRegistry, discordSession, broadcastChannel)
 
+	// Operational alerts (rate-limit backoffs) DM this user instead of
+	// pinging the summary channel. Unset → alerts go to the channel.
+	if adminID := os.Getenv("ADMIN_USER_ID"); adminID != "" {
+		mgr.SetAdminUser(adminID)
+	}
+
 	// Optional auto-booking: only enabled when SCHNIFFER_ENC_KEY is set.
 	// Without it we can't decrypt stored passwords, so the pool stays nil and
 	// notifications fall back to plain DMs.

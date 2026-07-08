@@ -63,6 +63,14 @@ var (
 		[]string{"provider", "success"},
 	)
 
+	ProviderUpstreamStatus = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "schniffer_provider_upstream_status_total",
+			Help: "Upstream HTTP responses by provider and status code. Separates WAF blocks (403) and throttles (429) from real availability data (200).",
+		},
+		[]string{"provider", "status"},
+	)
+
 	ProxyBatchSize = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "schniffer_proxy_batch_size",
@@ -191,6 +199,7 @@ func init() {
 		ProviderFetchDuration,
 		ProviderUpstreamDuration,
 		ProviderFetchTotal,
+		ProviderUpstreamStatus,
 		ProxyBatchSize,
 		ProxyDispatchDuration,
 		ProxyEndpointBadTotal,
