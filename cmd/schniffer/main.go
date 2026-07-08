@@ -114,6 +114,16 @@ func main() {
 	// its stats. Nil when the proxy is disabled.
 	mgr.SetProxyPool(httpx.Pool())
 
+	// The daily rate-limit report posts to #problemos. Resolve by name so
+	// it survives channel-id changes; empty (channel absent) disables it.
+	if problemos, err := bot.ChannelIDByName(discordSession, guildID, "problemos"); err != nil {
+		slog.Warn("failed to resolve problemos channel; rate-limit report disabled", slog.Any("err", err))
+	} else if problemos == "" {
+		slog.Warn("no #problemos channel found; rate-limit report disabled")
+	} else {
+		mgr.SetProblemosChannel(problemos)
+	}
+
 	// Optional auto-booking: only enabled when SCHNIFFER_ENC_KEY is set.
 	// Without it we can't decrypt stored passwords, so the pool stays nil and
 	// notifications fall back to plain DMs.

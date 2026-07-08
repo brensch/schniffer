@@ -65,7 +65,7 @@ func (s *Store) GetDetailedSummary(ctx context.Context) (string, error) {
 		summary.WriteString("No schniffists yet.\n")
 	} else {
 		for _, r := range rows {
-			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d schniffs sent\n",
+			summary.WriteString(fmt.Sprintf("<@%s> — %d active / %d sites found\n",
 				r.UserID, r.Active, r.Sent))
 		}
 	}
@@ -167,7 +167,11 @@ type schniffistRow struct {
 
 // formatSchniffistRows renders one line per user:
 //
-//	<name> — <active> active / <sent> schniffs sent
+//	<name> — <active> active / <found> sites found
+//
+// "sites found" counts individual (campsite, date) availabilities the user
+// was notified about — distinct from the embed's top-level "Schniffs Sent",
+// which counts DMs (a single DM can bundle many found sites).
 func formatSchniffistRows(rows []schniffistRow, names map[string]string) string {
 	if len(rows) == 0 {
 		return ""
@@ -177,7 +181,7 @@ func formatSchniffistRows(rows []schniffistRow, names map[string]string) string 
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%s — %d active / %d schniffs sent",
+		fmt.Fprintf(&b, "%s — %d active / %d sites found",
 			userLabel(r.UserID, names), r.Active, r.Sent)
 	}
 	return b.String()

@@ -1,28 +1,26 @@
-package manager
+package proxypool
 
 import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/brensch/schniffer/internal/proxypool"
 )
 
-func TestFormatProxyReportNoTraffic(t *testing.T) {
+func TestFormatReportNoTraffic(t *testing.T) {
 	now := time.Now()
-	msg := formatProxyReport(nil, now.Add(-24*time.Hour), now)
+	msg := FormatReport(nil, now.Add(-24*time.Hour), now)
 	if !strings.Contains(msg, "No proxy traffic") {
 		t.Fatalf("expected no-traffic message, got: %q", msg)
 	}
 }
 
-func TestFormatProxyReportCleanRun(t *testing.T) {
+func TestFormatReportCleanRun(t *testing.T) {
 	now := time.Now()
-	stats := []proxypool.EndpointStat{
+	stats := []EndpointStat{
 		{URL: "a", Region: "us-central1", Requests: 100},
 		{URL: "b", Region: "us-west1", Requests: 80},
 	}
-	msg := formatProxyReport(stats, now.Add(-24*time.Hour), now)
+	msg := FormatReport(stats, now.Add(-24*time.Hour), now)
 	if !strings.Contains(msg, "No individual IP hit a 429 or 403") {
 		t.Fatalf("expected clean-run message, got: %q", msg)
 	}
@@ -31,14 +29,14 @@ func TestFormatProxyReportCleanRun(t *testing.T) {
 	}
 }
 
-func TestFormatProxyReportOffendersSortedAndCounted(t *testing.T) {
+func TestFormatReportOffendersSortedAndCounted(t *testing.T) {
 	now := time.Now()
-	stats := []proxypool.EndpointStat{
+	stats := []EndpointStat{
 		{URL: "a", Region: "us-central1", Requests: 100, RateLimited: 2, Forbidden: 1, Cooldowns: 1},
 		{URL: "b", Region: "asia-east1", Requests: 50, RateLimited: 40, Forbidden: 5, Cooldowns: 9},
 		{URL: "c", Region: "europe-west1", Requests: 70},
 	}
-	msg := formatProxyReport(stats, now.Add(-24*time.Hour), now)
+	msg := FormatReport(stats, now.Add(-24*time.Hour), now)
 
 	// Totals: 220 reqs, 42 rate-limited, 6 blocked => 48/220 = 21.8%.
 	if !strings.Contains(msg, "21.8% throttled") {
@@ -58,5 +56,17 @@ func TestFormatProxyReportOffendersSortedAndCounted(t *testing.T) {
 	// appear in the per-IP table.
 	if strings.Contains(msg, "europe-west1") {
 		t.Fatalf("clean endpoint should be omitted from offender table, got: %q", msg)
+	}
+}
+
+func TestHasRateLimiting(t *testing.T) {
+	if HasRateLimiting([]EndpointStat{{Requests: 100}}) {
+		t.Fatal("clean stats should report no rate limiting")
+	}
+	if !HasRateLimiting([]EndpointStat{{Requests: 100, Forbidden: 1}}) {
+		t.Fatal("a 403 should count as rate limiting")
+	}
+	if !HasRateLimiting([]EndpointStat{{Requests: 100, RateLimited: 1}}) {
+		t.Fatal("a 429 should count as rate limiting")
 	}
 }

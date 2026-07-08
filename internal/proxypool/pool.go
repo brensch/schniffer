@@ -436,6 +436,30 @@ func (p *Pool) DrainStats() ([]EndpointStat, time.Time) {
 	return out, since
 }
 
+// Snapshot returns a copy of the current tallies without clearing them,
+// along with the time collection started. Used by the on-demand
+// /schniff ratelimits command; the daily DrainStats still owns the reset.
+func (p *Pool) Snapshot() ([]EndpointStat, time.Time) {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	out := make([]EndpointStat, 0, len(p.stats))
+	for _, s := range p.stats {
+		out = append(out, *s)
+	}
+	return out, p.statsSince
+}
+
+// HasRateLimiting reports whether the tallies contain any 429 or 403 —
+// the trigger for the daily problemos post.
+func HasRateLimiting(stats []EndpointStat) bool {
+	for _, s := range stats {
+		if s.RateLimited+s.Forbidden > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) finishAll(batch []*pendingReq, resp *http.Response, err error) {
 	for _, pr := range batch {
 		pr.done <- pendingResp{resp: resp, err: err}
