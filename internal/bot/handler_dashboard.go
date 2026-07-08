@@ -30,9 +30,11 @@ func (b *Bot) handleDashboardCommand(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
+	// Wrap the URL in <> so Discord doesn't unfurl (and pre-fetch) it — an
+	// unfurl fetch would otherwise redeem the link before you click it.
 	url := fmt.Sprintf("%s/monitor?token=%s", b.dashBaseURL, token)
 	respond(s, i, fmt.Sprintf(
-		"🖥️ **Live dashboard** — this link is for you only and expires in 5 minutes (one use):\n%s",
+		"🖥️ **Live dashboard** — this link is for you only and expires in 5 minutes:\n<%s>",
 		url,
 	))
 }

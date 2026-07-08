@@ -66,8 +66,14 @@ func (a *Auth) MintToken() (string, error) {
 	return tok, nil
 }
 
-// Redeem consumes a token (single use, even on failure paths that find it
-// expired) and, if it was valid, returns a fresh session id.
+// Redeem validates a token and, if it's live, returns a fresh session id.
+//
+// The token stays valid for its full (short) TTL rather than being consumed
+// on first use: Discord unfurls links to build previews, and link scanners
+// pre-fetch them, so a strictly single-use token gets burned before the
+// admin ever clicks. Since the token is only ever delivered to the admin
+// (ephemeral message, over TLS) and dies in TokenTTL, allowing a few
+// redemptions within that window is a safe trade for reliability.
 func (a *Auth) Redeem(token string) (sessionID string, ok bool) {
 	if token == "" {
 		return "", false
@@ -76,11 +82,8 @@ func (a *Auth) Redeem(token string) (sessionID string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	exp, found := a.tokens[key]
-	if !found {
-		return "", false
-	}
-	delete(a.tokens, key) // single use: gone whether or not it was expired
-	if a.now().After(exp) {
+	if !found || a.now().After(exp) {
+		delete(a.tokens, key) // clean up an expired entry
 		return "", false
 	}
 	sid, err := randSecret()
