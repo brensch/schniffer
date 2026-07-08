@@ -31,11 +31,13 @@ func aggregateByTarget(stats []EndpointStat) []targetAgg {
 	}
 	out := make([]targetAgg, 0, len(byTarget))
 	for _, a := range byTarget {
+		// Sort by raw failure count, not fail-rate: a throttled IP is pulled
+		// from rotation after one 403/429, so it makes only a request or two
+		// and its rate is ~100% regardless — the count is the real signal of
+		// which IPs are getting blocked most.
 		sort.Slice(a.ips, func(i, j int) bool {
-			ri := failRate(a.ips[i])
-			rj := failRate(a.ips[j])
-			if ri != rj {
-				return ri > rj
+			if a.ips[i].Failed != a.ips[j].Failed {
+				return a.ips[i].Failed > a.ips[j].Failed
 			}
 			return a.ips[i].Region < a.ips[j].Region
 		})
@@ -75,15 +77,14 @@ func pct(n, d int64) float64 {
 	return 100 * float64(n) / float64(d)
 }
 
-func failRate(s EndpointStat) float64 { return pct(s.Failed, s.Requests) }
-
-// FormatReport renders a per-provider rate-limit summary as a plain-text
-// Discord message: one section per target, each with an overall failure
-// rate and a line per IP that saw failures. Shared by the daily problemos
-// post and the on-demand /schniff ratelimits command.
+// FormatReport renders a per-provider request summary as a plain-text
+// Discord message. Each target shows its overall success/failure split,
+// the IPs that saw failures (by count — see the sort note), and a rollup
+// of the healthy IPs so successes are always visible. Shared by the daily
+// problemos post and the on-demand /schniff ratelimits command.
 func FormatReport(stats []EndpointStat, since, now time.Time) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "📊 **Proxy failure report** · last %s\n", humanDur(now.Sub(since)))
+	fmt.Fprintf(&b, "📊 **Proxy request report** · last %s\n", humanDur(now.Sub(since)))
 
 	targets := aggregateByTarget(stats)
 	if len(targets) == 0 {
@@ -93,35 +94,57 @@ func FormatReport(stats []EndpointStat, since, now time.Time) string {
 
 	const maxIPsPerTarget = 10
 	for _, t := range targets {
-		fmt.Fprintf(&b, "\n**%s** — %.1f%% failed (%s / %s requests)\n",
-			t.name, pct(t.failed, t.requests), comma(t.failed), comma(t.requests))
+		ok := t.requests - t.failed
+		fmt.Fprintf(&b, "\n**%s** — %s ok / %s failed (%.1f%% of %s)\n",
+			t.name, comma(ok), comma(t.failed), pct(t.failed, t.requests), comma(t.requests))
 
-		// Count failing IPs first so we can honestly note any we truncate.
-		failing := 0
+		// Split IPs into ones that saw failures vs fully-healthy ones, so we
+		// can list the offenders and still account for the successes.
+		var failing []EndpointStat
+		var healthyIPs, healthyReq int64
 		for _, ip := range t.ips {
 			if ip.Failed > 0 {
-				failing++
+				failing = append(failing, ip)
+			} else {
+				healthyIPs++
+				healthyReq += ip.Requests
 			}
 		}
-		if failing == 0 {
-			b.WriteString("• all IPs healthy\n")
-			continue
-		}
+
 		shown := 0
-		for _, ip := range t.ips {
-			if ip.Failed == 0 {
-				continue
-			}
+		for _, ip := range failing {
 			if shown >= maxIPsPerTarget {
-				fmt.Fprintf(&b, "• …and %d more IPs with failures\n", failing-shown)
+				fmt.Fprintf(&b, "• …and %d more IPs with failures\n", len(failing)-shown)
 				break
 			}
-			fmt.Fprintf(&b, "• %s — %.0f%% failed (%s / %s)\n",
-				ipLabel(ip), failRate(ip), comma(ip.Failed), comma(ip.Requests))
+			// Show counts (failed of total), not a standalone rate: a
+			// cooled-down IP's rate is ~100% off one or two attempts, which
+			// reads scarier than it is.
+			fmt.Fprintf(&b, "• %s — %s failed of %s\n",
+				ipLabel(ip), comma(ip.Failed), reqWord(ip.Requests))
 			shown++
+		}
+		if healthyIPs > 0 {
+			word := "other IPs"
+			if len(failing) == 0 {
+				word = "all IPs"
+			}
+			if healthyIPs == 1 {
+				word = strings.Replace(word, "IPs", "IP", 1)
+			}
+			fmt.Fprintf(&b, "• %d %s healthy — %s, no failures\n",
+				healthyIPs, word, reqWord(healthyReq))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// reqWord formats a request count with its unit, e.g. "1 request" / "512 requests".
+func reqWord(n int64) string {
+	if n == 1 {
+		return "1 request"
+	}
+	return comma(n) + " requests"
 }
 
 // ipLabel prefers the human region name, falling back to the endpoint URL.

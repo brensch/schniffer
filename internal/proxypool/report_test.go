@@ -33,9 +33,9 @@ func TestFormatReportGroupsByProvider(t *testing.T) {
 	if strings.Index(msg, "reservecalifornia") > strings.Index(msg, "recreation_gov") {
 		t.Fatalf("worse provider should be first, got:\n%s", msg)
 	}
-	// Failure percentages appear, not raw 403/429 splits.
-	if !strings.Contains(msg, "% failed") {
-		t.Fatalf("expected %% failed, got:\n%s", msg)
+	// Both successes and failures are shown, without 403/429 jargon.
+	if !strings.Contains(msg, "ok /") || !strings.Contains(msg, "failed") {
+		t.Fatalf("expected ok/failed split, got:\n%s", msg)
 	}
 	if strings.Contains(msg, "blocked") || strings.Contains(msg, "429") || strings.Contains(msg, "403") {
 		t.Fatalf("should not mention blocked/429/403, got:\n%s", msg)
@@ -46,17 +46,45 @@ func TestFormatReportGroupsByProvider(t *testing.T) {
 	}
 }
 
+func TestFormatReportShowsSuccesses(t *testing.T) {
+	now := time.Now()
+	// One failing IP (throttled after one attempt) plus many healthy IPs —
+	// the report must surface the successes, not just the 1/1 failure.
+	stats := []EndpointStat{
+		{Target: "reservecalifornia", URL: "a", Region: "us-west1", Requests: 1, Failed: 1},
+		{Target: "reservecalifornia", URL: "b", Region: "asia-east1", Requests: 40, Failed: 0},
+		{Target: "reservecalifornia", URL: "c", Region: "me-west1", Requests: 35, Failed: 0},
+	}
+	msg := FormatReport(stats, now.Add(-time.Hour), now)
+	// Provider header shows the ok count.
+	if !strings.Contains(msg, "75 ok / 1 failed") {
+		t.Fatalf("expected explicit ok count, got:\n%s", msg)
+	}
+	// Healthy IPs are rolled up so successes are visible.
+	if !strings.Contains(msg, "2 other IPs healthy — 75 requests, no failures") {
+		t.Fatalf("expected healthy-IP rollup, got:\n%s", msg)
+	}
+	// The failing IP is shown as a count, not a scary 100%.
+	if !strings.Contains(msg, "us-west1 — 1 failed of 1 request") {
+		t.Fatalf("expected count-based failing line, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "100%") {
+		t.Fatalf("per-IP lines should not show a standalone rate, got:\n%s", msg)
+	}
+}
+
 func TestFormatReportHealthyProvider(t *testing.T) {
 	now := time.Now()
 	stats := []EndpointStat{
 		{Target: "recreation_gov", URL: "a", Region: "us-central1", Requests: 100, Failed: 0},
+		{Target: "recreation_gov", URL: "b", Region: "us-west1", Requests: 60, Failed: 0},
 	}
 	msg := FormatReport(stats, now.Add(-time.Hour), now)
-	if !strings.Contains(msg, "0.0% failed") {
-		t.Fatalf("expected 0.0%% failed, got:\n%s", msg)
+	if !strings.Contains(msg, "160 ok / 0 failed (0.0% of 160)") {
+		t.Fatalf("expected clean summary, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "all IPs healthy") {
-		t.Fatalf("expected healthy note, got:\n%s", msg)
+		t.Fatalf("expected all-healthy note, got:\n%s", msg)
 	}
 }
 
