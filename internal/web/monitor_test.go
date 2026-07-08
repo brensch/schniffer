@@ -10,7 +10,7 @@ import (
 
 func authedServer() *Server {
 	s := &Server{}
-	s.SetMonitor(monitor.NewAuth(), nil)
+	s.SetMonitor(monitor.NewAuth([]byte("test-signing-key-0123456789abcdef")), nil)
 	return s
 }
 

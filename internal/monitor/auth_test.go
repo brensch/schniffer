@@ -6,7 +6,7 @@ import (
 )
 
 func TestTokenRedeemReusableWithinTTL(t *testing.T) {
-	a := NewAuth()
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
 	tok, err := a.MintToken()
 	if err != nil {
 		t.Fatal(err)
@@ -19,10 +19,12 @@ func TestTokenRedeemReusableWithinTTL(t *testing.T) {
 		t.Fatal("session from redeem should be valid")
 	}
 	// Reusable within TTL: a second redeem (e.g. the admin clicking after a
-	// link-preview fetch) also succeeds, with an independent session.
+	// link-preview fetch) also succeeds with a valid session. (The signed
+	// cookie is deterministic, so a same-second redeem may be byte-identical
+	// — that's harmless.)
 	sid2, ok := a.Redeem(tok)
-	if !ok || sid2 == "" || sid2 == sid {
-		t.Fatal("token should be redeemable again within its TTL, yielding a new session")
+	if !ok || sid2 == "" {
+		t.Fatal("token should be redeemable again within its TTL")
 	}
 	if !a.ValidSession(sid2) {
 		t.Fatal("second session should be valid")
@@ -30,7 +32,7 @@ func TestTokenRedeemReusableWithinTTL(t *testing.T) {
 }
 
 func TestRedeemRejectsUnknownAndEmpty(t *testing.T) {
-	a := NewAuth()
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
 	if _, ok := a.Redeem(""); ok {
 		t.Fatal("empty token must be rejected")
 	}
@@ -43,7 +45,7 @@ func TestRedeemRejectsUnknownAndEmpty(t *testing.T) {
 }
 
 func TestTokenExpiry(t *testing.T) {
-	a := NewAuth()
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
 	base := time.Now()
 	a.now = func() time.Time { return base }
 	tok, _ := a.MintToken()
@@ -55,7 +57,7 @@ func TestTokenExpiry(t *testing.T) {
 }
 
 func TestSessionExpiry(t *testing.T) {
-	a := NewAuth()
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
 	base := time.Now()
 	a.now = func() time.Time { return base }
 	tok, _ := a.MintToken()
@@ -72,8 +74,41 @@ func TestSessionExpiry(t *testing.T) {
 	}
 }
 
+func TestSessionSurvivesRestartWithSameKey(t *testing.T) {
+	key := []byte("stable-signing-key-0123456789abcdef")
+	a1 := NewAuth(key)
+	tok, _ := a1.MintToken()
+	sid, ok := a1.Redeem(tok)
+	if !ok {
+		t.Fatal("redeem should succeed")
+	}
+	// Simulate a process restart: a brand-new Auth with the same key must
+	// still accept the previously issued session cookie.
+	a2 := NewAuth(key)
+	if !a2.ValidSession(sid) {
+		t.Fatal("session should stay valid across restart with the same key")
+	}
+	// A different key must reject it (rotating the key revokes sessions).
+	a3 := NewAuth([]byte("a-totally-different-signing-key-xx"))
+	if a3.ValidSession(sid) {
+		t.Fatal("session must be rejected under a different signing key")
+	}
+}
+
+func TestTamperedSessionRejected(t *testing.T) {
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
+	tok, _ := a.MintToken()
+	sid, _ := a.Redeem(tok)
+	if a.ValidSession(sid + "x") {
+		t.Fatal("tampered signature must be rejected")
+	}
+	if a.ValidSession("garbage.notbase64") {
+		t.Fatal("malformed cookie must be rejected")
+	}
+}
+
 func TestTokensAreDistinctAndHighEntropy(t *testing.T) {
-	a := NewAuth()
+	a := NewAuth([]byte("test-signing-key-0123456789abcdef"))
 	seen := map[string]bool{}
 	for range 100 {
 		tok, err := a.MintToken()
