@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/monitor"
+	"github.com/brensch/schniffer/internal/proxypool"
 )
 
 const monitorCookie = "monitor_session"
@@ -132,14 +133,15 @@ func (s *Server) handleMonitorStream(w http.ResponseWriter, r *http.Request) {
 // ---- snapshot model ----
 
 type monSnapshot struct {
-	TS        string        `json:"ts"`
-	Uptime    string        `json:"uptime"`
-	Stats     monStats      `json:"stats"`
-	Providers []monProvider `json:"providers"`
-	Users     []monUser     `json:"users"`
-	Checks    []monCheck    `json:"recentChecks"`
-	Errors    []monError    `json:"recentErrors"`
-	Hits      []monHit      `json:"recentHits"`
+	TS        string                          `json:"ts"`
+	Uptime    string                          `json:"uptime"`
+	Stats     monStats                        `json:"stats"`
+	Providers []monProvider                   `json:"providers"`
+	IPHealth  map[string][]proxypool.IPHealth `json:"ipHealth"`
+	Users     []monUser                       `json:"users"`
+	Checks    []monCheck                      `json:"recentChecks"`
+	Errors    []monError                      `json:"recentErrors"`
+	Hits      []monHit                        `json:"recentHits"`
 }
 
 type monStats struct {
@@ -203,6 +205,9 @@ func (s *Server) buildSnapshot(ctx context.Context) monSnapshot {
 		Uptime: humanSince(s.monStart),
 	}
 	snap.Providers = s.providerStats()
+	if s.monPool != nil {
+		snap.IPHealth = s.monPool.HealthByTarget()
+	}
 	snap.Stats = s.monTopStats(ctx)
 	snap.Users = s.activeSchniffsByUser(ctx)
 	snap.Checks = s.recentChecks(ctx)
