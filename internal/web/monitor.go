@@ -136,8 +136,9 @@ type monSnapshot struct {
 	Uptime    string        `json:"uptime"`
 	Stats     monStats      `json:"stats"`
 	Providers []monProvider `json:"providers"`
-	Schniffs  []monSchniff  `json:"schniffs"`
+	Users     []monUser     `json:"users"`
 	Checks    []monCheck    `json:"recentChecks"`
+	Errors    []monError    `json:"recentErrors"`
 	Hits      []monHit      `json:"recentHits"`
 }
 
@@ -156,12 +157,20 @@ type monProvider struct {
 	PctFail float64 `json:"pctFail"`
 }
 
+// monUser groups one user's active schniffs for the dashboard.
+type monUser struct {
+	User        string       `json:"user"`
+	Count       int          `json:"count"`
+	TotalNights int          `json:"totalNights"`
+	Schniffs    []monSchniff `json:"schniffs"`
+}
+
 type monSchniff struct {
-	User       string `json:"user"`
 	Provider   string `json:"provider"`
 	Campground string `json:"campground"`
 	Checkin    string `json:"checkin"`
 	Checkout   string `json:"checkout"`
+	Nights     int    `json:"nights"`
 	Strategy   string `json:"strategy"`
 }
 
@@ -170,6 +179,13 @@ type monCheck struct {
 	Provider   string `json:"provider"`
 	Campground string `json:"campground"`
 	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+}
+
+type monError struct {
+	Ago        string `json:"ago"`
+	Provider   string `json:"provider"`
+	Campground string `json:"campground"`
 	Error      string `json:"error"`
 }
 
@@ -188,8 +204,9 @@ func (s *Server) buildSnapshot(ctx context.Context) monSnapshot {
 	}
 	snap.Providers = s.providerStats()
 	snap.Stats = s.monTopStats(ctx)
-	snap.Schniffs = s.activeSchniffs(ctx)
+	snap.Users = s.activeSchniffsByUser(ctx)
 	snap.Checks = s.recentChecks(ctx)
+	snap.Errors = s.recentErrors(ctx)
 	snap.Hits = s.recentHits(ctx)
 	return snap
 }
@@ -239,7 +256,9 @@ func (s *Server) monTopStats(ctx context.Context) monStats {
 	return st
 }
 
-func (s *Server) activeSchniffs(ctx context.Context) []monSchniff {
+// activeSchniffsByUser returns active schniffs grouped per user, each user's
+// schniffs sorted by check-in. Users are ordered by schniff count desc.
+func (s *Server) activeSchniffsByUser(ctx context.Context) []monUser {
 	rows, err := s.store.DB.QueryContext(ctx, `
 		SELECT sr.user_id, sr.provider, COALESCE(c.name, sr.campground_id),
 		       sr.checkin, sr.checkout, COALESCE(sr.strategy,'')
@@ -252,22 +271,91 @@ func (s *Server) activeSchniffs(ctx context.Context) []monSchniff {
 		return nil
 	}
 	defer rows.Close()
-	var out []monSchniff
+
+	byUser := map[string]*monUser{}
+	var order []string
 	for rows.Next() {
 		var uid, prov, cg, checkin, checkout, strat string
 		if err := rows.Scan(&uid, &prov, &cg, &checkin, &checkout, &strat); err != nil {
 			continue
 		}
-		out = append(out, monSchniff{
-			User:       s.displayName(uid),
+		u := byUser[uid]
+		if u == nil {
+			u = &monUser{User: s.displayName(uid)}
+			byUser[uid] = u
+			order = append(order, uid)
+		}
+		nights := nightsBetween(checkin, checkout)
+		u.Schniffs = append(u.Schniffs, monSchniff{
 			Provider:   prov,
 			Campground: cg,
 			Checkin:    shortDate(checkin),
 			Checkout:   shortDate(checkout),
+			Nights:     nights,
 			Strategy:   strat,
+		})
+		u.Count++
+		u.TotalNights += nights
+	}
+
+	out := make([]monUser, 0, len(order))
+	for _, uid := range order {
+		out = append(out, *byUser[uid])
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].User < out[j].User
+	})
+	return out
+}
+
+// recentErrors returns the most recent failed checks with their error text.
+func (s *Server) recentErrors(ctx context.Context) []monError {
+	rows, err := s.store.DB.QueryContext(ctx, `
+		SELECT l.checked_at, l.provider, COALESCE(c.name, l.campground_id),
+		       COALESCE(l.error_msg,'')
+		FROM lookup_log l
+		LEFT JOIN campgrounds c ON c.provider=l.provider AND c.campground_id=l.campground_id
+		WHERE l.success=0
+		ORDER BY l.checked_at DESC
+		LIMIT 15`)
+	if err != nil {
+		slog.Warn("monitor: recent errors query failed", slog.Any("err", err))
+		return nil
+	}
+	defer rows.Close()
+	var out []monError
+	for rows.Next() {
+		var ts, prov, cg, errMsg string
+		if err := rows.Scan(&ts, &prov, &cg, &errMsg); err != nil {
+			continue
+		}
+		if errMsg == "" {
+			errMsg = "(no error message recorded)"
+		}
+		out = append(out, monError{
+			Ago:        agoOf(ts),
+			Provider:   prov,
+			Campground: cg,
+			Error:      truncate(errMsg, 300),
 		})
 	}
 	return out
+}
+
+// nightsBetween returns the number of nights between two schniff dates.
+func nightsBetween(checkin, checkout string) int {
+	ci, co := parseSQLiteTime(checkin), parseSQLiteTime(checkout)
+	if ci.IsZero() || co.IsZero() {
+		return 0
+	}
+	n := int(co.Sub(ci).Hours()/24 + 0.5)
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (s *Server) recentChecks(ctx context.Context) []monCheck {
@@ -295,7 +383,7 @@ func (s *Server) recentChecks(ctx context.Context) []monCheck {
 			Provider:   prov,
 			Campground: cg,
 			OK:         ok,
-			Error:      clip(errMsg, 80),
+			Error:      truncate(errMsg, 80),
 		})
 	}
 	return out
@@ -401,11 +489,4 @@ func shortDate(ts string) string {
 		return ts
 	}
 	return t.Format("Jan 2")
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
