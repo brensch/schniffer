@@ -64,7 +64,8 @@ jobs:
             [ -z "$region" ] && continue
             [[ "$region" =~ ^# ]] && continue
             printf '%-25s ' "$region"
-            if gcloud run deploy "$SERVICE" \
+            deploy() {
+              gcloud run deploy "$SERVICE" \
                 --image="$IMAGE" \
                 --project="$PROJECT_ID" \
                 --region="$region" \
@@ -72,7 +73,10 @@ jobs:
                 --cpu=1 --memory=256Mi --max-instances=2 \
                 --timeout=30 --concurrency=80 \
                 --set-env-vars="PROXY_SECRET=${SECRET_VALUE},CLOUD_RUN_REGION=${region}" \
-                --quiet >/tmp/d.log 2>&1; then
+                --quiet >/tmp/d.log 2>&1
+            }
+            # Region initialization can fail transiently (quota race); retry once.
+            if deploy || { sleep 10; deploy; }; then
               echo OK
             else
               echo "FAIL: $(tail -1 /tmp/d.log)"
