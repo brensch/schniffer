@@ -1,17 +1,201 @@
 {
   "_meta": {
     "purpose": "Round-robin proxy endpoints used by schniffer to fan out outbound HTTP requests across many egress IPs, to avoid per-IP rate limiting from upstream APIs (recreation.gov, reservecalifornia, etc).",
-    "request_contract": "Each endpoint MUST accept POST /fetch with header 'Authorization: Bearer <PROXY_SECRET>' and JSON body {\"requests\":[{\"url\":\"...\",\"method\":\"GET|POST|...\",\"headers\":{\"K\":\"V\"},\"body\":\"...\"}]}. It MUST respond 200 with {\"responses\":[{\"status\":200,\"headers\":{...},\"body\":\"...\",\"error\":\"\",\"elapsed_ms\":123}],\"region\":\"...\"} — same length as requests, same order. See proxy/main.go (Go/Cloud Run) and proxy-cf/worker.js (Cloudflare Worker) for reference implementations.",
+    "request_contract": "Each endpoint MUST accept POST /fetch with header 'Authorization: Bearer <PROXY_SECRET>' and JSON body {\"requests\":[{\"url\":\"...\",\"method\":\"GET|POST|...\",\"headers\":{\"K\":\"V\"},\"body\":\"...\"}]}. It MUST respond 200 with {\"responses\":[{\"status\":200,\"headers\":{...},\"body\":\"...\",\"error\":\"\",\"elapsed_ms\":123}],\"region\":\"...\"} \u2014 same length as requests, same order. See proxy/main.go for the reference implementation.",
     "auth_secret": "All endpoints share one PROXY_SECRET, sourced from Secret Manager (or equivalent) at deploy time and baked in as an env var; never committed to this repo.",
-    "active_target": "Cloud Run — five GCP regions. We previously moved everything to a single Cloudflare Worker but rec.gov rate-limited the CF egress IP pool to 100% 429s within minutes. CF's outbound IPs are too few per-colo for this workload. The Worker (proxy-cf/) is kept deployed as a future fallback; revisit only after we have multi-colo / multi-IP coverage.",
-    "how_to_swap_to_cloudflare": "Replace these entries with the single cloudflare entry — see git history of this file for the exact form. Worker is at https://schniffer-proxy.schniffer-rec.workers.dev and stays warm via CI.",
-    "how_to_add_an_endpoint": "Append a JSON object to 'endpoints' with {url, provider, region}. Schniffer loads this file at startup (via go:embed) and rotates round-robin across all entries. Provider/region fields are informational — used for metrics labels and per-endpoint cooldown bookkeeping, not for routing."
+    "active_target": "Cloud Run \u2014 every available GCP region (see proxy/regions.txt; me-central2 excluded, needs Google opt-in). A Cloudflare Worker was tried previously but rec.gov rate-limited CF's shared egress IP pool to 100% 429s within minutes; that implementation was removed (see git history of proxy-cf/ before July 2026).",
+    "how_to_add_an_endpoint": "Append a JSON object to 'endpoints' with {url, provider, region}. Schniffer loads this file at startup (via go:embed) and rotates round-robin across all entries. Provider/region fields are informational \u2014 used for metrics labels and per-endpoint cooldown bookkeeping, not for routing."
   },
   "endpoints": [
+    {
+      "url": "https://proxyrequest-ri77demp7a-bq.a.run.app",
+      "provider": "gcp",
+      "region": "africa-south1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-de.a.run.app",
+      "provider": "gcp",
+      "region": "asia-east1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-df.a.run.app",
+      "provider": "gcp",
+      "region": "asia-east2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-an.a.run.app",
+      "provider": "gcp",
+      "region": "asia-northeast1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-dt.a.run.app",
+      "provider": "gcp",
+      "region": "asia-northeast2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-du.a.run.app",
+      "provider": "gcp",
+      "region": "asia-northeast3"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-el.a.run.app",
+      "provider": "gcp",
+      "region": "asia-south1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-em.a.run.app",
+      "provider": "gcp",
+      "region": "asia-south2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-as.a.run.app",
+      "provider": "gcp",
+      "region": "asia-southeast1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-et.a.run.app",
+      "provider": "gcp",
+      "region": "asia-southeast2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-eu.a.run.app",
+      "provider": "gcp",
+      "region": "asia-southeast3"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ts.a.run.app",
+      "provider": "gcp",
+      "region": "australia-southeast1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-km.a.run.app",
+      "provider": "gcp",
+      "region": "australia-southeast2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-lm.a.run.app",
+      "provider": "gcp",
+      "region": "europe-central2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-lz.a.run.app",
+      "provider": "gcp",
+      "region": "europe-north1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ma.a.run.app",
+      "provider": "gcp",
+      "region": "europe-north2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-no.a.run.app",
+      "provider": "gcp",
+      "region": "europe-southwest1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ew.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-oe.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west10"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-og.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west12"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-nw.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ey.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west3"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ez.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west4"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-oa.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west6"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-oc.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west8"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-od.a.run.app",
+      "provider": "gcp",
+      "region": "europe-west9"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ww.a.run.app",
+      "provider": "gcp",
+      "region": "me-central1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-zf.a.run.app",
+      "provider": "gcp",
+      "region": "me-west1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-nn.a.run.app",
+      "provider": "gcp",
+      "region": "northamerica-northeast1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-pd.a.run.app",
+      "provider": "gcp",
+      "region": "northamerica-northeast2"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-pv.a.run.app",
+      "provider": "gcp",
+      "region": "northamerica-south1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-rj.a.run.app",
+      "provider": "gcp",
+      "region": "southamerica-east1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-tl.a.run.app",
+      "provider": "gcp",
+      "region": "southamerica-west1"
+    },
     {
       "url": "https://proxyrequest-ri77demp7a-uc.a.run.app",
       "provider": "gcp",
       "region": "us-central1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ue.a.run.app",
+      "provider": "gcp",
+      "region": "us-east1"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-uk.a.run.app",
+      "provider": "gcp",
+      "region": "us-east4"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-ul.a.run.app",
+      "provider": "gcp",
+      "region": "us-east5"
+    },
+    {
+      "url": "https://proxyrequest-ri77demp7a-vp.a.run.app",
+      "provider": "gcp",
+      "region": "us-south1"
     },
     {
       "url": "https://proxyrequest-ri77demp7a-uw.a.run.app",
@@ -24,14 +208,14 @@
       "region": "us-west2"
     },
     {
+      "url": "https://proxyrequest-ri77demp7a-wm.a.run.app",
+      "provider": "gcp",
+      "region": "us-west3"
+    },
+    {
       "url": "https://proxyrequest-ri77demp7a-wn.a.run.app",
       "provider": "gcp",
       "region": "us-west4"
-    },
-    {
-      "url": "https://proxyrequest-ri77demp7a-vp.a.run.app",
-      "provider": "gcp",
-      "region": "us-south1"
     }
   ]
 }
