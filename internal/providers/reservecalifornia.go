@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
-	"github.com/brensch/schniffer/internal/metrics"
 )
 
 // ReserveCalifornia implements the Provider interface using the UseDirect endpoints.
@@ -141,6 +140,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 
 	var intErr error
 	var parsed gridResponse
+	failedAttempts := 0
 	for i := 0; i < maxRetriesAvailability; i++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/grid", bytes.NewReader(body))
 		if err != nil {
@@ -158,11 +158,9 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
 		fetchStart := time.Now()
 		resp, err := r.client.Do(req)
-		metrics.ProviderFetchTotal.WithLabelValues("reservecalifornia", metrics.BoolLabel(err == nil)).Inc()
-		metrics.ProviderFetchDuration.
-			WithLabelValues("reservecalifornia", metrics.BoolLabel(err == nil)).
-			Observe(time.Since(fetchStart).Seconds())
 		if err != nil {
+			recordFetch("reservecalifornia", fetchStart, false)
+			failedAttempts++
 			slog.Warn("grid POST failed", slog.Any("err", err), slog.String("facility", campgroundID))
 			intErr = err
 			continue
@@ -171,11 +169,15 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 		b, rerr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if rerr != nil {
+			recordFetch("reservecalifornia", fetchStart, false)
+			failedAttempts++
 			slog.Warn("grid read body failed", slog.Any("err", rerr), slog.String("facility", campgroundID))
 			intErr = fmt.Errorf("grid read body failed: %w", rerr)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
+			recordFetch("reservecalifornia", fetchStart, false)
+			failedAttempts++
 			slog.Warn("grid status not OK", slog.Int("status", resp.StatusCode), slog.String("facility", campgroundID), slog.String("body", string(b)))
 			intErr = fmt.Errorf("grid status %d; body: %s", resp.StatusCode, clipBody(b))
 			continue
@@ -183,17 +185,28 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 
 		err = json.Unmarshal(b, &parsed)
 		if err != nil {
+			recordFetch("reservecalifornia", fetchStart, false)
+			failedAttempts++
 			slog.Warn("grid JSON decode failed", slog.Any("err", err), slog.String("body", string(b)))
 			intErr = fmt.Errorf("grid JSON decode failed: %w; body: %s", err, clipBody(b))
 			continue
 		}
 
+		recordFetch("reservecalifornia", fetchStart, true)
 		intErr = nil
 		break
 	}
 
 	if intErr != nil {
-		return nil, intErr
+		return nil, fmt.Errorf("grid fetch failed after %d attempts: %w", maxRetriesAvailability, intErr)
+	}
+	if failedAttempts > 0 {
+		// Succeeded, but only after the retry loop rotated past blocked
+		// egress IPs. Surface it — a rising count here is the early
+		// warning that the WAF is closing in on the proxy pool.
+		slog.Warn("RC grid degraded: succeeded after retries",
+			slog.Int("failed_attempts", failedAttempts),
+			slog.String("facility", facilityID))
 	}
 
 	var out []CampsiteAvailability

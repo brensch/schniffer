@@ -20,6 +20,7 @@ import (
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/bot"
 	"github.com/brensch/schniffer/internal/db"
+	"github.com/brensch/schniffer/internal/httpx"
 	"github.com/brensch/schniffer/internal/manager"
 	"github.com/brensch/schniffer/internal/metrics"
 	"github.com/brensch/schniffer/internal/providers"
@@ -103,6 +104,16 @@ func main() {
 
 	mgr := manager.NewManager(store, provRegistry, discordSession, broadcastChannel)
 
+	// Operational alerts (rate-limit backoffs) DM this user instead of
+	// pinging the summary channel. Unset → alerts go to the channel.
+	if adminID := os.Getenv("ADMIN_USER_ID"); adminID != "" {
+		mgr.SetAdminUser(adminID)
+	}
+
+	// Wire the proxy pool so the daily per-IP rate-limit report can drain
+	// its stats. Nil when the proxy is disabled.
+	mgr.SetProxyPool(httpx.Pool())
+
 	// Optional auto-booking: only enabled when SCHNIFFER_ENC_KEY is set.
 	// Without it we can't decrypt stored passwords, so the pool stays nil and
 	// notifications fall back to plain DMs.
@@ -115,6 +126,7 @@ func main() {
 
 	go mgr.Run(ctx)
 	go mgr.RunDailySummary(ctx)
+	go mgr.RunProxyReport(ctx)
 	go runHealthcheckPinger(ctx, "https://hc-ping.com/ec9f9824-6317-4fb8-a5e3-dcc9e06431d5", 10*time.Minute)
 
 	// // Background metadata sync

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/brensch/schniffer/internal/httpx"
-	"github.com/brensch/schniffer/internal/metrics"
 )
 
 type RecreationGov struct {
@@ -114,11 +113,8 @@ func (r *RecreationGov) fetchOneMonth(ctx context.Context, campgroundID string, 
 	httpx.SpoofChromeHeaders(req)
 	fetchStart := time.Now()
 	resp, err := r.client.Do(req)
-	metrics.ProviderFetchTotal.WithLabelValues("recreation_gov", metrics.BoolLabel(err == nil)).Inc()
-	metrics.ProviderFetchDuration.
-		WithLabelValues("recreation_gov", metrics.BoolLabel(err == nil)).
-		Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
+		recordFetch("recreation_gov", fetchStart, false)
 		mr.err = fmt.Errorf("availability GET failed: %w", err)
 		return
 	}
@@ -126,13 +122,16 @@ func (r *RecreationGov) fetchOneMonth(ctx context.Context, campgroundID string, 
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
+		recordFetch("recreation_gov", fetchStart, false)
 		mr.err = fmt.Errorf("availability read body failed: %w", err)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
+		recordFetch("recreation_gov", fetchStart, false)
 		mr.err = fmt.Errorf("recreation.gov availability status %d; body: %s", resp.StatusCode, clipBody(body))
 		return
 	}
+	recordFetch("recreation_gov", fetchStart, true)
 	var parsed recGovResp
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		mr.err = fmt.Errorf("availability JSON decode failed: %w; body: %s", err, clipBody(body))
@@ -196,22 +195,22 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 		httpx.SpoofChromeHeaders(req)
 		searchStart := time.Now()
 		resp, err := r.client.Do(req)
-		metrics.ProviderFetchTotal.WithLabelValues("recreation_gov_search", metrics.BoolLabel(err == nil)).Inc()
-		metrics.ProviderFetchDuration.
-			WithLabelValues("recreation_gov_search", metrics.BoolLabel(err == nil)).
-			Observe(time.Since(searchStart).Seconds())
 		if err != nil {
+			recordFetch("recreation_gov_search", searchStart, false)
 			return nil, fmt.Errorf("search GET failed: %w", err)
 		}
 		observeUpstream("recreation_gov", resp)
 		body, rerr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if rerr != nil {
+			recordFetch("recreation_gov_search", searchStart, false)
 			return nil, fmt.Errorf("search read body failed: %w", rerr)
 		}
 		if resp.StatusCode != http.StatusOK {
+			recordFetch("recreation_gov_search", searchStart, false)
 			return nil, fmt.Errorf("recreation.gov search status %d; body: %s", resp.StatusCode, clipBody(body))
 		}
+		recordFetch("recreation_gov_search", searchStart, true)
 
 		var page struct {
 			Results []struct {
@@ -339,19 +338,18 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 
 	metaStart := time.Now()
 	resp, err := r.client.Do(req)
-	metrics.ProviderFetchTotal.WithLabelValues("recreation_gov_campsites", metrics.BoolLabel(err == nil)).Inc()
-	metrics.ProviderFetchDuration.
-		WithLabelValues("recreation_gov_campsites", metrics.BoolLabel(err == nil)).
-		Observe(time.Since(metaStart).Seconds())
 	if err != nil {
+		recordFetch("recreation_gov_campsites", metaStart, false)
 		return nil, fmt.Errorf("failed to fetch campsite metadata: %w", err)
 	}
 	defer resp.Body.Close()
 	observeUpstream("recreation_gov", resp)
 
 	if resp.StatusCode != http.StatusOK {
+		recordFetch("recreation_gov_campsites", metaStart, false)
 		return nil, fmt.Errorf("campsite metadata request failed with status %d", resp.StatusCode)
 	}
+	recordFetch("recreation_gov_campsites", metaStart, true)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

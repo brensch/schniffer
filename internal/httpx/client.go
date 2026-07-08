@@ -15,6 +15,7 @@ import (
 var (
 	defaultOnce   sync.Once
 	defaultClient *http.Client
+	defaultPool   *proxypool.Pool
 )
 
 // Default returns a shared HTTP client. If PROXY_SECRET is set and
@@ -26,6 +27,7 @@ func Default() *http.Client {
 		secret := os.Getenv("PROXY_SECRET")
 		if pool, err := proxypool.New(secret); err == nil && pool != nil {
 			slog.Info("httpx using proxy pool", "endpoints", len(pool.Endpoints()))
+			defaultPool = pool
 			defaultClient = &http.Client{
 				Timeout:   40 * time.Second,
 				Transport: pool,
@@ -52,6 +54,14 @@ func Default() *http.Client {
 		}
 	})
 	return defaultClient
+}
+
+// Pool returns the shared proxy pool, or nil when the proxy is disabled
+// (no PROXY_SECRET / no endpoints). Ensures the client is initialized
+// first so callers get the same pool the providers use.
+func Pool() *proxypool.Pool {
+	Default()
+	return defaultPool
 }
 
 // browserProfile represents a complete browser header set

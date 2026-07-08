@@ -47,6 +47,9 @@ func TestMetricCardinalityBounded(t *testing.T) {
 			ProviderFetchDuration.WithLabelValues(p, b).Observe(0.1)
 			ProviderFetchTotal.WithLabelValues(p, b).Inc()
 		}
+		for _, s := range statuses {
+			ProviderUpstreamStatus.WithLabelValues(p, s).Inc()
+		}
 		for _, r := range regions {
 			ProviderUpstreamDuration.WithLabelValues(p, r).Observe(0.1)
 		}
@@ -98,6 +101,7 @@ func TestMetricCardinalityBounded(t *testing.T) {
 		"schniffer_provider_fetch_duration_seconds":     20,
 		"schniffer_provider_upstream_duration_seconds":  40,
 		"schniffer_provider_fetch_total":                20,
+		"schniffer_provider_upstream_status_total":      160, // providers × statuses
 		"schniffer_proxy_batch_size":                    40,
 		"schniffer_proxy_dispatch_duration_seconds":     80,
 		"schniffer_proxy_endpoint_bad_total":            20,
@@ -153,6 +157,7 @@ func resetAll() {
 	ProviderFetchDuration.Reset()
 	ProviderUpstreamDuration.Reset()
 	ProviderFetchTotal.Reset()
+	ProviderUpstreamStatus.Reset()
 	ProxyBatchSize.Reset()
 	ProxyDispatchDuration.Reset()
 	ProxyEndpointBadTotal.Reset()

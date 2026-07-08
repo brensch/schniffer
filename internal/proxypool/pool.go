@@ -51,13 +51,40 @@ type Pool struct {
 	flushAfter time.Duration
 	maxBatch   int
 	cooldown   time.Duration
+	rlCooldown time.Duration
 
-	rrIdx       atomic.Uint64
-	mu          sync.Mutex
-	pending     []*pendingReq
-	timer       *time.Timer
+	rrIdx   atomic.Uint64
+	mu      sync.Mutex
+	pending []*pendingReq
+	timer   *time.Timer
+	// endpointBad cools an endpoint out of rotation for all hosts after a
+	// proxy-level failure (transport error / non-200 from the proxy itself).
 	endpointBad map[string]time.Time
+	// endpointThrottled cools an endpoint out of rotation for ONE upstream
+	// host after that host returned 429/403 through it — the egress IP is
+	// being rate-limited by that host specifically. Keyed by badKey(url, host).
+	endpointThrottled map[string]time.Time
+
+	statsMu    sync.Mutex
+	stats      map[string]*EndpointStat
+	statsSince time.Time
 }
+
+// EndpointStat is a rolling per-endpoint tally of upstream outcomes,
+// drained by the daily report. Requests counts demuxed upstream
+// responses (not proxy-transport errors).
+type EndpointStat struct {
+	URL         string
+	Region      string
+	Requests    int64
+	RateLimited int64 // upstream 429
+	Forbidden   int64 // upstream 403 (WAF block)
+	Cooldowns   int64 // times this endpoint was throttled out of rotation
+}
+
+// badKey namespaces a per-host throttle entry. NUL can't appear in a URL
+// or host, so it's a safe separator.
+func badKey(url, host string) string { return url + "\x00" + host }
 
 type pendingReq struct {
 	req  *http.Request
@@ -119,10 +146,17 @@ func New(secret string) (*Pool, error) {
 		// waits would just be tax. 2ms is enough for the cycle's
 		// concurrent goroutines to all enqueue without losing a full
 		// network roundtrip to the wait.
-		flushAfter:  2 * time.Millisecond,
-		maxBatch:    50,
-		cooldown:    60 * time.Second,
-		endpointBad: map[string]time.Time{},
+		flushAfter: 2 * time.Millisecond,
+		maxBatch:   50,
+		cooldown:   60 * time.Second,
+		// rlCooldown parks an egress IP after an upstream throttles it.
+		// 5 min is long enough for rec.gov's per-IP window to reset but
+		// short enough to return the IP to a 42-strong rotation quickly.
+		rlCooldown:        5 * time.Minute,
+		endpointBad:       map[string]time.Time{},
+		endpointThrottled: map[string]time.Time{},
+		stats:             map[string]*EndpointStat{},
+		statsSince:        time.Now(),
 	}, nil
 }
 
@@ -191,7 +225,36 @@ func (p *Pool) flush() {
 	p.dispatch(batch)
 }
 
+// dispatch groups a batch by upstream host and sends one sub-batch per
+// host. Same-host is the common case (one goroutine per provider), so this
+// is usually a single group; when providers coincide, each host is
+// dispatched concurrently so a slow host doesn't stall the other. Grouping
+// by host keeps per-IP throttle attribution exact — every response in a
+// sub-batch shares one upstream, so a 429 unambiguously implicates that
+// (endpoint, host) pair.
 func (p *Pool) dispatch(batch []*pendingReq) {
+	byHost := map[string][]*pendingReq{}
+	for _, pr := range batch {
+		byHost[pr.req.URL.Host] = append(byHost[pr.req.URL.Host], pr)
+	}
+	if len(byHost) == 1 {
+		for host, group := range byHost {
+			p.dispatchHost(host, group)
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	for host, group := range byHost {
+		wg.Add(1)
+		go func(host string, group []*pendingReq) {
+			defer wg.Done()
+			p.dispatchHost(host, group)
+		}(host, group)
+	}
+	wg.Wait()
+}
+
+func (p *Pool) dispatchHost(host string, batch []*pendingReq) {
 	reqs := make([]wireReq, len(batch))
 	for i, pr := range batch {
 		h := map[string]string{}
@@ -216,7 +279,7 @@ func (p *Pool) dispatch(batch []*pendingReq) {
 	tried := map[string]bool{}
 	var lastErr error
 	for attempt := 0; attempt < min(3, len(p.endpoints)); attempt++ {
-		ep, ok := p.pick(tried)
+		ep, ok := p.pick(tried, host)
 		if !ok {
 			break
 		}
@@ -229,7 +292,7 @@ func (p *Pool) dispatch(batch []*pendingReq) {
 			WithLabelValues(ep.URL, ep.Region, metrics.BoolLabel(err == nil)).
 			Observe(dispatchSecs)
 		if err == nil {
-			p.demux(batch, resp, ep)
+			p.demux(batch, resp, ep, host)
 			return
 		}
 		p.markBad(ep.URL)
@@ -274,13 +337,18 @@ func (e *proxyHTTPError) Error() string {
 	return "proxy returned " + http.StatusText(e.Status) + ": " + e.Body
 }
 
-func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint) {
+func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint, host string) {
 	if len(br.Responses) != len(batch) {
 		p.finishAll(batch, nil, errors.New("proxy response length mismatch"))
 		return
 	}
+	throttled := false
 	for i, pr := range batch {
 		wr := br.Responses[i]
+		p.recordResult(ep, wr)
+		if wr.Status == http.StatusTooManyRequests || wr.Status == http.StatusForbidden {
+			throttled = true
+		}
 		if wr.Error != "" {
 			pr.done <- pendingResp{err: errors.New(wr.Error)}
 			continue
@@ -310,6 +378,62 @@ func (p *Pool) demux(batch []*pendingReq, br *wireBatchResp, ep Endpoint) {
 		resp.ContentLength = int64(len(wr.Body))
 		pr.done <- pendingResp{resp: resp}
 	}
+	if throttled {
+		p.throttle(ep, host)
+	}
+}
+
+// recordResult tallies one demuxed upstream response for the daily report.
+func (p *Pool) recordResult(ep Endpoint, wr wireResp) {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	s := p.stats[ep.URL]
+	if s == nil {
+		s = &EndpointStat{URL: ep.URL, Region: ep.Region}
+		p.stats[ep.URL] = s
+	}
+	s.Requests++
+	switch wr.Status {
+	case http.StatusTooManyRequests:
+		s.RateLimited++
+	case http.StatusForbidden:
+		s.Forbidden++
+	}
+}
+
+// throttle parks an endpoint for one upstream host after that host
+// rate-limited (429) or blocked (403) it. Other hosts keep using the
+// endpoint; only this (endpoint, host) pair is cooled down.
+func (p *Pool) throttle(ep Endpoint, host string) {
+	p.mu.Lock()
+	p.endpointThrottled[badKey(ep.URL, host)] = time.Now().Add(p.rlCooldown)
+	p.mu.Unlock()
+
+	p.statsMu.Lock()
+	if s := p.stats[ep.URL]; s != nil {
+		s.Cooldowns++
+	}
+	p.statsMu.Unlock()
+
+	metrics.ProxyEndpointBadTotal.WithLabelValues(ep.URL).Inc()
+	slog.Warn("proxy endpoint throttled by upstream",
+		"endpoint", ep.URL, "region", ep.Region, "host", host,
+		"cooldown", p.rlCooldown)
+}
+
+// DrainStats returns and clears the per-endpoint tallies, along with the
+// time collection started. Called once per day by the report.
+func (p *Pool) DrainStats() ([]EndpointStat, time.Time) {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	out := make([]EndpointStat, 0, len(p.stats))
+	for _, s := range p.stats {
+		out = append(out, *s)
+	}
+	since := p.statsSince
+	p.stats = map[string]*EndpointStat{}
+	p.statsSince = time.Now()
+	return out, since
 }
 
 func (p *Pool) finishAll(batch []*pendingReq, resp *http.Response, err error) {
@@ -318,7 +442,12 @@ func (p *Pool) finishAll(batch []*pendingReq, resp *http.Response, err error) {
 	}
 }
 
-func (p *Pool) pick(skip map[string]bool) (Endpoint, bool) {
+// pick returns the next healthy endpoint for host in round-robin order,
+// skipping ones already tried this dispatch, globally cooled down (proxy
+// failure), or throttled for this specific host (upstream 429/403). If
+// every endpoint is unavailable it falls back to any untried endpoint —
+// trying a throttled IP beats dropping the request.
+func (p *Pool) pick(skip map[string]bool, host string) (Endpoint, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -333,6 +462,9 @@ func (p *Pool) pick(skip map[string]bool) (Endpoint, bool) {
 			continue
 		}
 		if t, bad := p.endpointBad[ep.URL]; bad && t.After(now) {
+			continue
+		}
+		if t, thr := p.endpointThrottled[badKey(ep.URL, host)]; thr && t.After(now) {
 			continue
 		}
 		return ep, true
