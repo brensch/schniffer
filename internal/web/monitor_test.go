@@ -58,11 +58,12 @@ func TestMonitorPageValidTokenSetsCookieAndRedirects(t *testing.T) {
 	if !s.monAuth.ValidSession(sess.Value) {
 		t.Fatal("session cookie should be valid")
 	}
-	// The single-use token must not redeem again.
+	// Reusable within TTL (tolerates a preview-fetch consuming a click):
+	// the same token redeems again and issues another session.
 	rr2 := httptest.NewRecorder()
 	s.handleMonitorPage(rr2, httptest.NewRequest("GET", "/monitor?token="+tok, nil))
-	if rr2.Code != http.StatusForbidden {
-		t.Fatalf("reused token should be 403, got %d", rr2.Code)
+	if rr2.Code != http.StatusSeeOther {
+		t.Fatalf("reused token within TTL should still redirect (303), got %d", rr2.Code)
 	}
 }
 

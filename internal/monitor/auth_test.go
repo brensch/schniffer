@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestTokenRedeemSingleUse(t *testing.T) {
+func TestTokenRedeemReusableWithinTTL(t *testing.T) {
 	a := NewAuth()
 	tok, err := a.MintToken()
 	if err != nil {
@@ -18,9 +18,14 @@ func TestTokenRedeemSingleUse(t *testing.T) {
 	if !a.ValidSession(sid) {
 		t.Fatal("session from redeem should be valid")
 	}
-	// Single use: a second redeem of the same token must fail.
-	if _, ok := a.Redeem(tok); ok {
-		t.Fatal("token must not be redeemable twice")
+	// Reusable within TTL: a second redeem (e.g. the admin clicking after a
+	// link-preview fetch) also succeeds, with an independent session.
+	sid2, ok := a.Redeem(tok)
+	if !ok || sid2 == "" || sid2 == sid {
+		t.Fatal("token should be redeemable again within its TTL, yielding a new session")
+	}
+	if !a.ValidSession(sid2) {
+		t.Fatal("second session should be valid")
 	}
 }
 

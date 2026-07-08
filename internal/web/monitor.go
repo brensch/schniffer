@@ -54,9 +54,11 @@ func (s *Server) handleMonitorPage(w http.ResponseWriter, r *http.Request) {
 	if token := r.URL.Query().Get("token"); token != "" {
 		sid, ok := s.monAuth.Redeem(token)
 		if !ok {
+			slog.Warn("monitor: token redemption failed", slog.String("ua", r.UserAgent()))
 			http.Error(w, "This dashboard link is invalid or has expired. Run /schniff dashboard for a fresh one.", http.StatusForbidden)
 			return
 		}
+		slog.Info("monitor: session issued", slog.String("ua", r.UserAgent()))
 		http.SetCookie(w, &http.Cookie{
 			Name:     monitorCookie,
 			Value:    sid,
