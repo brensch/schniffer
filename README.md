@@ -1,6 +1,8 @@
 # schniffer
 
-A Go Discord bot that monitors campground availability and notifies users when booked sites become available. When a cancellation frees up a site matching a user's request ("schniff"), the bot DMs them a link, and can optionally hold the site automatically for users who have linked their recreation.gov account.
+A discord bot for schniffing people cancelling their reservations at in demand campgrounds. Select a date and place you want to go and the schniffer will do the rest. 
+
+Schniffer now features the ability to auto add to cart so you have 10 minutes to hold. It only works for reserve california sites. If you choose not to use that feature you will likely be beaten by someone paying Campsite Tonight to schniff for them. They scan every 20 seconds, we scan every 5, we beat them most of the time.
 
 ## Features
 
