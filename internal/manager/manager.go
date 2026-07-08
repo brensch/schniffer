@@ -18,9 +18,9 @@ import (
 )
 
 type Manager struct {
-	store            *db.Store
-	reg              *providers.Registry
-	mu               sync.Mutex
+	store              *db.Store
+	reg                *providers.Registry
+	mu                 sync.Mutex
 	notifier           *discordgo.Session
 	summaryChannelID   string
 	problemosChannelID string
