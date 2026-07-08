@@ -16,7 +16,27 @@ var (
 	defaultOnce   sync.Once
 	defaultClient *http.Client
 	defaultPool   *proxypool.Pool
+
+	directOnce   sync.Once
+	directClient *http.Client
 )
+
+// newDirectTransport builds a plain (non-pooled) transport that egresses
+// from the host's own IP.
+func newDirectTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
 
 // Default returns a shared HTTP client. If PROXY_SECRET is set and
 // endpoints.json has entries, the client routes requests through the
@@ -36,24 +56,26 @@ func Default() *http.Client {
 		} else if err != nil {
 			slog.Warn("proxy pool init failed; falling back to direct", "err", err)
 		}
-		transport := &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
 		defaultClient = &http.Client{
 			Timeout:   20 * time.Second,
-			Transport: transport,
+			Transport: newDirectTransport(),
 		}
 	})
 	return defaultClient
+}
+
+// Direct returns a shared HTTP client that always egresses directly from
+// this host's IP, bypassing the proxy pool. Used by providers whose
+// upstream WAF blocks datacenter IPs (e.g. ReserveCalifornia's CloudFront):
+// the residential host IP succeeds where pooled cloud IPs get 403s.
+func Direct() *http.Client {
+	directOnce.Do(func() {
+		directClient = &http.Client{
+			Timeout:   40 * time.Second,
+			Transport: newDirectTransport(),
+		}
+	})
+	return directClient
 }
 
 // Pool returns the shared proxy pool, or nil when the proxy is disabled
