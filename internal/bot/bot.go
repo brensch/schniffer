@@ -3,6 +3,7 @@ package bot
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/brensch/schniffer/internal/booker"
 	"github.com/brensch/schniffer/internal/db"
@@ -67,6 +68,23 @@ func GuildIDToChannelID(session *discordgo.Session, guildID string) (string, err
 	// Find the first text channel in the guild
 	for _, channel := range channels {
 		if channel.Type == discordgo.ChannelTypeGuildText {
+			return channel.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// ChannelIDByName resolves a text channel by its name (case-insensitive).
+// Returns "" (no error) when no channel matches, so callers can treat an
+// absent channel as "feature disabled" rather than fatal.
+func ChannelIDByName(session *discordgo.Session, guildID, name string) (string, error) {
+	channels, err := session.GuildChannels(guildID)
+	if err != nil {
+		return "", err
+	}
+	for _, channel := range channels {
+		if channel.Type == discordgo.ChannelTypeGuildText &&
+			strings.EqualFold(channel.Name, name) {
 			return channel.ID, nil
 		}
 	}
@@ -171,6 +189,7 @@ func (b *Bot) registerCommands() {
 				{Name: "remove-all", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove ALL of your active schniffs."},
 				{Name: "list", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "List all your active schniffs"},
 				{Name: "summary", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Get summary of schniff activity for all users"},
+				{Name: "ratelimits", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Show how often each proxy IP is being rate-limited right now"},
 				{Name: "link", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Link your recreation.gov account so schniffer can auto-add hits to your cart"},
 				{Name: "unlink", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Remove your stored recreation.gov credentials"},
 				// {Name: "nonsense", Type: discordgo.ApplicationCommandOptionSubCommand, Description: "Broadcast a silly greeting to the channel"},
@@ -298,6 +317,8 @@ func (b *Bot) handleApplicationCommand(s *discordgo.Session, i *discordgo.Intera
 		b.handleListCommand(s, i, sub)
 	case "summary":
 		b.handleSummaryCommand(s, i, sub)
+	case "ratelimits":
+		b.handleRateLimitsCommand(s, i, sub)
 	case "nonsense":
 		b.handleNonsenseCommand(s, i, sub)
 	case "link":

@@ -147,14 +147,14 @@ func TestMakeSummaryEmbed_CombinedActiveAndFired(t *testing.T) {
 	if got == "" {
 		t.Fatalf("Schniffists field missing")
 	}
-	// u2 has the most schniffs sent → first row.
-	if !strings.HasPrefix(got, "<@u2> — 0 active / 5 schniffs sent") {
-		t.Errorf("expected u2 first (most schniffs sent); got %q", got)
+	// u2 has the most sites found → first row.
+	if !strings.HasPrefix(got, "<@u2> — 0 active / 5 sites found") {
+		t.Errorf("expected u2 first (most sites found); got %q", got)
 	}
-	if !strings.Contains(got, "hulio — 4 active / 2 schniffs sent") {
+	if !strings.Contains(got, "hulio — 4 active / 2 sites found") {
 		t.Errorf("expected hulio row; got %q", got)
 	}
-	if !strings.Contains(got, "<@u3> — 1 active / 0 schniffs sent") {
+	if !strings.Contains(got, "<@u3> — 1 active / 0 sites found") {
 		t.Errorf("expected u3 row (active-only); got %q", got)
 	}
 }
