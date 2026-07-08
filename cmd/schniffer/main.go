@@ -118,8 +118,14 @@ func main() {
 	// Private monitoring dashboard: the admin-gated /schniff dashboard
 	// command mints a one-time link; the web server validates it. Both share
 	// one Auth. DASHBOARD_BASE_URL is the public origin (e.g.
-	// https://schniff.example.com); without it no links can be minted.
-	dashAuth := monitor.NewAuth()
+	// https://schniff.example.com); without it no links can be minted. The
+	// signing key lives beside the DB (persisted volume) so redeemed browser
+	// sessions survive restarts; delete it to revoke all sessions.
+	signKey, err := monitor.LoadOrCreateSigningKey(filepath.Join(filepath.Dir(dbPath), "dashboard_signing.key"))
+	if err != nil {
+		slog.Warn("dashboard signing key unavailable; sessions won't survive restart", slog.Any("err", err))
+	}
+	dashAuth := monitor.NewAuth(signKey)
 	b.SetDashboard(dashAuth, os.Getenv("ADMIN_USER_ID"), os.Getenv("DASHBOARD_BASE_URL"))
 
 	// The daily rate-limit report posts to #problemos. Resolve by name so
