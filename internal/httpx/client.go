@@ -16,6 +16,9 @@ var (
 	defaultOnce   sync.Once
 	defaultClient *http.Client
 	defaultPool   *proxypool.Pool
+
+	directOnce   sync.Once
+	directClient *http.Client
 )
 
 // newDirectTransport builds a plain (non-pooled) transport that egresses
@@ -59,6 +62,20 @@ func Default() *http.Client {
 		}
 	})
 	return defaultClient
+}
+
+// Direct returns a shared HTTP client that always egresses directly from
+// this host's IP, bypassing the proxy pool. Used by providers whose
+// upstream WAF blocks datacenter IPs (e.g. ReserveCalifornia's CloudFront):
+// the residential host IP succeeds where pooled cloud IPs get 403s.
+func Direct() *http.Client {
+	directOnce.Do(func() {
+		directClient = &http.Client{
+			Timeout:   40 * time.Second,
+			Transport: newDirectTransport(),
+		}
+	})
+	return directClient
 }
 
 // Pool returns the shared proxy pool, or nil when the proxy is disabled

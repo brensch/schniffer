@@ -18,18 +18,31 @@ import (
 // ReserveCalifornia implements the Provider interface using the UseDirect endpoints.
 // Docs are inferred from examples in reservecalifornia_examples.md.
 //
-// ReserveCalifornia's API sits behind a CloudFront WAF that blocks a subset
-// of datacenter/cloud IPs by reputation (403 "Request blocked"), independent
-// of rate or headers (measured 2026-07-08: ~40% of Cloud Run IPs work). It
-// goes through the shared proxy pool like every other provider; the pool's
-// per-(IP, target) escalating backoff learns which egress IPs the WAF allows
-// and routes around the blocked ones.
+// ReserveCalifornia's API sits behind a CloudFront WAF that blocks
+// datacenter/cloud IPs by reputation (403 "Request blocked"), independent
+// of rate or headers. Measured 2026-07-08: the residential host IP
+// succeeds ~100% while pooled Cloud Run IPs get 403s ~60%. By 2026-07-31 the
+// WAF blocked the pool entirely (0/1100 fetches across all 42 regions), so
+// routing RC through the pool and letting the per-IP backoff find allowed
+// IPs no longer works. RC fetches go out via the direct (host-IP) client,
+// with the proxy pool kept only as a fallback if the host IP ever degrades.
 type ReserveCalifornia struct {
-	client *http.Client
+	direct *http.Client // primary: host IP, not WAF-blocked
+	pool   *http.Client // fallback: proxy pool (rotating cloud IPs)
 }
 
 func NewReserveCalifornia() *ReserveCalifornia {
-	return &ReserveCalifornia{client: httpx.Default()}
+	return &ReserveCalifornia{direct: httpx.Direct(), pool: httpx.Default()}
+}
+
+// clientForAttempt routes early attempts through the direct host IP (which
+// RC's WAF allows) and later retries alternately through the proxy pool, so
+// RC still has a path if the host IP is ever blocked.
+func (r *ReserveCalifornia) clientForAttempt(i int) *http.Client {
+	if i%2 == 1 {
+		return r.pool
+	}
+	return r.direct
 }
 
 func (r *ReserveCalifornia) Name() string { return "reservecalifornia" }
@@ -174,7 +187,7 @@ func (r *ReserveCalifornia) FetchAvailability(ctx context.Context, campgroundID 
 
 		slog.Info("Fetching RC grid", slog.String("facility", facilityID), slog.String("start", payload.StartDate), slog.String("end", payload.EndDate))
 		fetchStart := time.Now()
-		resp, err := r.client.Do(req)
+		resp, err := r.clientForAttempt(i).Do(req)
 		if err != nil {
 			recordFetch("reservecalifornia", fetchStart, false)
 			failedAttempts++
@@ -254,7 +267,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 	}
 	httpx.SpoofChromeHeaders(req)
 	req.Header.Set("tenantid", "cali")
-	resp, err := r.client.Do(req)
+	resp, err := r.direct.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("citypark GET failed: %w", err)
 	}
@@ -331,7 +344,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			time.Sleep(time.Duration(i) * time.Second)
 
 			slog.Info("checking park", slog.Int("id", p.CityParkId), slog.String("name", p.Name), slog.Int("placeId", p.PlaceId), slog.Int("retry", i))
-			resp2, err := r.client.Do(req2)
+			resp2, err := r.direct.Do(req2)
 			if err != nil {
 				slog.Warn("place POST failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
 				continue
@@ -476,7 +489,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 
 		slog.Info("Sending campsite metadata grid request",
 			slog.Int("attempt", i+1))
-		resp, err := r.client.Do(req)
+		resp, err := r.direct.Do(req)
 		if err != nil {
 			slog.Warn("campsite metadata grid request failed", slog.Any("error", err), slog.Int("attempt", i+1))
 			continue
@@ -580,7 +593,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			detailReq.Header.Set("tenantid", "cali")
 
 			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
-			detailResp, err := r.client.Do(detailReq)
+			detailResp, err := r.direct.Do(detailReq)
 			if err != nil {
 				slog.Warn("failed to fetch campsite details",
 					slog.Int("unitId", unit.UnitId),
