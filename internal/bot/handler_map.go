@@ -10,7 +10,7 @@ func (b *Bot) handleLinkMapCommand(s *discordgo.Session, i *discordgo.Interactio
 	uid := getUserID(i)
 
 	// Create the URL with the user's token and welcome parameter
-	baseURL := "https://schniff.snek2.ddns.net"
+	baseURL := "https://schniff.brensch.com"
 	groupCreationURL := fmt.Sprintf("%s/?user=%s&welcome=true", baseURL, uid)
 
 	// Create an embed with the link
