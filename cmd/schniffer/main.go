@@ -115,6 +115,12 @@ func main() {
 	// its stats. Nil when the proxy is disabled.
 	mgr.SetProxyPool(httpx.Pool())
 
+	// Host disk alerts, sourced from the stack's prometheus (node-exporter
+	// job). Unset → disabled, e.g. when running outside docker.
+	if promURL := os.Getenv("PROMETHEUS_URL"); promURL != "" {
+		mgr.SetDiskWatch(promURL)
+	}
+
 	// Private monitoring dashboard: the admin-gated /schniff dashboard
 	// command mints a one-time link; the web server validates it. Both share
 	// one Auth. DASHBOARD_BASE_URL is the public origin (e.g.

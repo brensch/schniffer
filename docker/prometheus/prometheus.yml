@@ -8,3 +8,9 @@ scrape_configs:
       - targets: ['schniffer:9090']
         labels:
           service: schniffer
+
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: node

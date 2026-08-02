@@ -25,6 +25,7 @@ type Manager struct {
 	summaryChannelID   string
 	problemosChannelID string
 	adminUserID        string
+	diskPromURL        string
 	logger             *slog.Logger
 
 	// Optional proxy pool, wired for the daily per-IP rate-limit report.
@@ -102,6 +103,11 @@ func (m *Manager) Run(ctx context.Context) {
 
 	// Expire deactivation runs on its own cadence (used to run every poll cycle).
 	go m.runExpiryReaper(ctx)
+
+	// Host disk watcher: DMs the admin when the box runs low on disk.
+	if m.diskPromURL != "" {
+		go m.runDiskWatch(ctx)
+	}
 
 	// Warm-tab reconcile loop: keep one Chrome tab open per active
 	// auto-book schniff, parked on a recaptcha-loaded campsite page so

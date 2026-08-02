@@ -16,6 +16,7 @@ services:
       - PROD=true
       - DB_PATH=/app/data/schniffer.sqlite
       - BOOKER_PROFILE_DIR=/app/.cache/recgov-profiles
+      - PROMETHEUS_URL=http://prometheus:9090
     volumes:
       - ${SCHNIFFER_DATA:-./data}:/app/data
       # Persist Chrome user-data-dirs across deploys. The r1s-fingerprint
@@ -52,6 +53,21 @@ services:
     volumes:
       - ${SCHNIFFER_DATA:-./data}:/data
     restart: "no"
+    networks:
+      - default
+
+  # Host-level metrics (disk, CPU, memory) so Grafana can alarm on the box
+  # itself, not just the bot. Scraped by prometheus over the compose network;
+  # no host port exposed.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: schniffer-node-exporter
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
     networks:
       - default
 
