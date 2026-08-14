@@ -46,6 +46,14 @@ type Provider interface {
 	PlanBuckets(dates []time.Time) []DateRange
 }
 
+// StayURLProvider is an optional interface for providers whose campground page
+// can be deep-linked to a specific stay. Callers that know the user's dates
+// (notification embeds) should prefer it and fall back to Provider.CampgroundURL
+// for providers that don't implement it.
+type StayURLProvider interface {
+	CampgroundURLForStay(campgroundID string, checkin time.Time, nights int) string
+}
+
 // DateRange represents an inclusive date span [Start..End] at day granularity.
 // Providers that can efficiently fetch data in fixed windows (e.g., month, week)
 // can declare their preferred batching by implementing Bucketizer.

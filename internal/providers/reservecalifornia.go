@@ -47,30 +47,52 @@ func (r *ReserveCalifornia) clientForAttempt(i int) *http.Client {
 
 func (r *ReserveCalifornia) Name() string { return "reservecalifornia" }
 
-// CampsiteURL returns a ReserveCalifornia URL for the campground.
+// reserveCaliforniaSiteOrigin is the browser-facing site (distinct from the API
+// base URL). In August 2026 ReserveCalifornia replaced the old Angular app —
+// which served a hash router under /Web/ — with a React app served from /.
+// The old "/Web/#!park/x/y" deep links now 404.
+const reserveCaliforniaSiteOrigin = "https://www.reservecalifornia.com"
+
+// parkPath renders the site's facility route, "/park/:parkId/:facilityId".
 // campgroundID format: "parentID-facilityID" (e.g., "1260-2181")
-func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
+func reserveCaliforniaParkPath(campgroundID string) string {
 	// Parse composite ID: parentID-facilityID
 	parts := strings.Split(campgroundID, "-")
 	if len(parts) != 2 {
-		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
+		return "" // unexpected ID format; caller falls back to the site root
 	}
 	parentID := parts[0]
 	facilityID := parts[1]
-	return fmt.Sprintf("https://reservecalifornia.com/Web/#!park/%s/%s", parentID, facilityID)
+	return fmt.Sprintf("/park/%s/%s", parentID, facilityID)
+}
+
+// CampsiteURL returns a ReserveCalifornia URL for the campground.
+// ReserveCalifornia has no per-unit route, so the campsite ID is ignored and
+// this lands on the campground's availability grid.
+func (r *ReserveCalifornia) CampsiteURL(campgroundID string, _ string) string {
+	return r.CampgroundURL(campgroundID)
 }
 
 // CampgroundURL returns a ReserveCalifornia URL for the campground.
-// campgroundID format: "parentID-facilityID" (e.g., "1260-2181")
 func (r *ReserveCalifornia) CampgroundURL(campgroundID string) string {
-	// Parse composite ID: parentID-facilityID
-	parts := strings.Split(campgroundID, "-")
-	if len(parts) != 2 {
-		return "https://reservecalifornia.com/" // fallback if ID format is unexpected
+	path := reserveCaliforniaParkPath(campgroundID)
+	if path == "" {
+		return reserveCaliforniaSiteOrigin + "/"
 	}
-	parentID := parts[0]
-	facilityID := parts[1]
-	return fmt.Sprintf("https://reservecalifornia.com/Web/#!park/%s/%s", parentID, facilityID)
+	return reserveCaliforniaSiteOrigin + path
+}
+
+// CampgroundURLForStay implements providers.StayURLProvider. The facility page
+// reads "date" (arrival, YYYY-MM-DD) and "night" off the query string and opens
+// the grid already scoped to that stay, which saves the user from re-entering
+// their dates while the site is racing them for the campsite.
+func (r *ReserveCalifornia) CampgroundURLForStay(campgroundID string, checkin time.Time, nights int) string {
+	path := reserveCaliforniaParkPath(campgroundID)
+	if path == "" || checkin.IsZero() || nights <= 0 {
+		return r.CampgroundURL(campgroundID)
+	}
+	return fmt.Sprintf("%s%s?date=%s&night=%d",
+		reserveCaliforniaSiteOrigin, path, checkin.UTC().Format("2006-01-02"), nights)
 }
 
 // PlanBuckets: ReserveCalifornia can query an arbitrary date range per facility, so collapse to a single [min..max] range.

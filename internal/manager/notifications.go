@@ -806,6 +806,16 @@ func BuildNotificationEmbeds(
 	title := nonsense.RandomSillyHeader()
 	title = fmt.Sprintf("%s\n%s", title, campgroundName)
 
+	// Prefer a link scoped to the user's stay where the provider supports it, so
+	// the booking page opens on their dates rather than today's.
+	plainCampgroundURL := campgroundURL
+	if p, ok := provider.(providers.StayURLProvider); ok {
+		nights := int(checkout.Sub(checkin).Hours() / 24)
+		if u := p.CampgroundURLForStay(campgroundID, checkin, nights); u != "" {
+			campgroundURL = u
+		}
+	}
+
 	desc := fmt.Sprintf("[%s ➡️ %s](%s)",
 		checkin.Format(dateFmtISO), checkout.Format(dateFmtISO),
 		campgroundURL,
@@ -832,6 +842,12 @@ func BuildNotificationEmbeds(
 		// Availability summary w/ link if provider present.
 		if provider != nil {
 			url := provider.CampsiteURL(campgroundID, s.CampsiteID)
+			if url == "" || url == plainCampgroundURL {
+				// Provider has no per-campsite page (ReserveCalifornia), so
+				// this would be an undated copy of the campground link. Use the
+				// stay-scoped one instead.
+				url = campgroundURL
+			}
 			b.WriteString(fmt.Sprintf("[%d of %d days available](%s)\n", s.DaysAvailable, s.TotalDays, url))
 		} else {
 			b.WriteString(fmt.Sprintf("%d of %d days available\n", s.DaysAvailable, s.TotalDays))
