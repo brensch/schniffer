@@ -159,9 +159,8 @@ func main() {
 	go mgr.RunProxyReport(ctx)
 	go runHealthcheckPinger(ctx, "https://hc-ping.com/ec9f9824-6317-4fb8-a5e3-dcc9e06431d5", 10*time.Minute)
 
-	// // Background metadata sync
-	// go mgr.RunCampgroundSync(ctx, "recreation_gov")
-	// go mgr.RunCampgroundSync(ctx, "reservecalifornia")
+	// Background metadata refresh: slow hourly trickle, oldest first.
+	mgr.RunMetadataRefresh(ctx)
 
 	// Start web server
 	webAddr := os.Getenv("WEB_ADDR")

@@ -275,7 +275,8 @@ func (s *Server) shouldClusterViewport(ctx context.Context, req ViewportRequest)
 		FROM campgrounds c
 		WHERE c.latitude BETWEEN ? AND ?
 		AND c.longitude BETWEEN ? AND ?
-		AND c.latitude != 0 AND c.longitude != 0`
+		AND c.latitude != 0 AND c.longitude != 0
+		AND c.removed_at IS NULL`
 
 	args = []interface{}{req.South, req.North, req.West, req.East}
 
@@ -379,7 +380,8 @@ func (s *Server) getCampgroundsInViewport(ctx context.Context, req ViewportReque
 		FROM campgrounds c
 		WHERE c.latitude BETWEEN ? AND ?
 		AND c.longitude BETWEEN ? AND ?
-		AND c.latitude != 0 AND c.longitude != 0`, selectFields)
+		AND c.latitude != 0 AND c.longitude != 0
+		AND c.removed_at IS NULL`, selectFields)
 
 	args := []interface{}{req.South, req.North, req.West, req.East}
 

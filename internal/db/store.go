@@ -302,6 +302,8 @@ func migrate(db *sql.DB) error {
 	for _, alter := range []string{
 		`ALTER TABLE schniff_requests ADD COLUMN minimum_nights INTEGER`,
 		`ALTER TABLE schniff_requests ADD COLUMN strategy TEXT`,
+		`ALTER TABLE campgrounds ADD COLUMN metadata_checked_at DATETIME`,
+		`ALTER TABLE campgrounds ADD COLUMN removed_at DATETIME`,
 	} {
 		if _, aerr := db.Exec(alter); aerr != nil {
 			msg := aerr.Error()
@@ -1294,11 +1296,134 @@ func (s *Store) GetLastState(ctx context.Context, provider, campgroundID, campsi
 
 func (s *Store) UpsertCampground(ctx context.Context, provider, id, name string, lat, lon, rating float64, amenities []string, imageURL string, priceMin, priceMax float64, priceUnit string) error {
 	amenitiesJSON, _ := json.Marshal(amenities)
+	// Update in place rather than INSERT OR REPLACE, which would reset the
+	// campsite-derived columns (types, equipment, prices) and the refresh
+	// bookkeeping. Prices only overwrite when the list actually has one;
+	// ReserveCalifornia's list never does and its prices come from sites.
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR REPLACE INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit, last_updated)
+		INSERT INTO campgrounds(provider, campground_id, name, latitude, longitude, rating, amenities, image_url, price_min, price_max, price_unit, last_updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider, campground_id) DO UPDATE SET
+			name = excluded.name,
+			latitude = excluded.latitude,
+			longitude = excluded.longitude,
+			rating = excluded.rating,
+			amenities = excluded.amenities,
+			image_url = excluded.image_url,
+			price_min = CASE WHEN excluded.price_max > 0 THEN excluded.price_min ELSE campgrounds.price_min END,
+			price_max = CASE WHEN excluded.price_max > 0 THEN excluded.price_max ELSE campgrounds.price_max END,
+			price_unit = excluded.price_unit,
+			last_updated = excluded.last_updated,
+			removed_at = NULL
 	`, provider, id, name, lat, lon, rating, string(amenitiesJSON), imageURL, priceMin, priceMax, priceUnit, time.Now())
 	return err
+}
+
+// MarkCampgroundsRemoved flags every listed campground for provider that
+// isn't in seen as removed. Returns how many were newly flagged.
+func (s *Store) MarkCampgroundsRemoved(ctx context.Context, provider string, seen []string) (int64, error) {
+	seenJSON, _ := json.Marshal(seen)
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE campgrounds SET removed_at = ?
+		WHERE provider = ? AND removed_at IS NULL
+		AND campground_id NOT IN (SELECT value FROM json_each(?))
+	`, time.Now(), provider, string(seenJSON))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// CountListedCampgrounds returns how many campgrounds provider currently lists.
+func (s *Store) CountListedCampgrounds(ctx context.Context, provider string) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM campgrounds WHERE provider = ? AND removed_at IS NULL
+	`, provider).Scan(&n)
+	return n, err
+}
+
+// CampgroundsDueForMetadata returns up to limit listed campgrounds whose
+// campsite metadata was refreshed longest ago, never-refreshed first.
+func (s *Store) CampgroundsDueForMetadata(ctx context.Context, provider string, limit int) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT campground_id FROM campgrounds
+		WHERE provider = ? AND removed_at IS NULL
+		ORDER BY metadata_checked_at IS NOT NULL, metadata_checked_at
+		LIMIT ?
+	`, provider, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SetCampgroundMetadataChecked records when a campground's campsite
+// metadata was last refreshed, which is its place in the refresh queue.
+func (s *Store) SetCampgroundMetadataChecked(ctx context.Context, provider, campgroundID string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE campgrounds SET metadata_checked_at = ? WHERE provider = ? AND campground_id = ?
+	`, at, provider, campgroundID)
+	return err
+}
+
+// CampsiteIDsUpdatedSince returns the campground's sites whose metadata was
+// written at or after since.
+func (s *Store) CampsiteIDsUpdatedSince(ctx context.Context, provider, campgroundID string, since time.Time) (map[string]bool, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT campsite_id FROM campsite_metadata
+		WHERE provider = ? AND campground_id = ? AND last_updated >= ?
+	`, provider, campgroundID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// DeleteCampsitesNotIn drops metadata and equipment for the campground's
+// sites that aren't in seen. Returns how many sites were deleted.
+func (s *Store) DeleteCampsitesNotIn(ctx context.Context, provider, campgroundID string, seen []string) (int64, error) {
+	seenJSON, _ := json.Marshal(seen)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM campsite_equipment
+		WHERE provider = ? AND campground_id = ?
+		AND campsite_id NOT IN (SELECT value FROM json_each(?))
+	`, provider, campgroundID, string(seenJSON)); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		DELETE FROM campsite_metadata
+		WHERE provider = ? AND campground_id = ?
+		AND campsite_id NOT IN (SELECT value FROM json_each(?))
+	`, provider, campgroundID, string(seenJSON))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, tx.Commit()
 }
 
 // UpsertCampsiteMetadataBatch inserts all campsite metadata in a batch
@@ -1309,17 +1434,6 @@ func (s *Store) UpsertCampsiteMetadataBatch(ctx context.Context, provider string
 
 	// Process in smaller chunks to reduce lock time
 	chunkSize := 200 // Smaller chunks for metadata operations
-
-	// Clear existing equipment entries for this campground first
-	if len(metadata) > 0 {
-		_, err := s.DB.ExecContext(ctx, `
-			DELETE FROM campsite_equipment
-			WHERE provider = ? AND campground_id = ?
-		`, provider, campgroundID)
-		if err != nil {
-			return fmt.Errorf("failed to clear existing equipment: %w", err)
-		}
-	}
 
 	for i := 0; i < len(metadata); i += chunkSize {
 		end := i + chunkSize
@@ -1367,6 +1481,21 @@ func (s *Store) upsertCampsiteMetadataChunk(ctx context.Context, provider string
 	}
 	defer equipmentStmt.Close()
 
+	// Replace equipment only for the sites in this chunk; other sites in
+	// the campground may not have been re-fetched.
+	ids := make([]string, len(metadata))
+	for i, m := range metadata {
+		ids[i] = m.ID
+	}
+	idsJSON, _ := json.Marshal(ids)
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM campsite_equipment
+		WHERE provider = ? AND campground_id = ?
+		AND campsite_id IN (SELECT value FROM json_each(?))
+	`, provider, campgroundID, string(idsJSON)); err != nil {
+		return fmt.Errorf("failed to clear existing equipment: %w", err)
+	}
+
 	// Process all metadata in batch
 	for _, m := range metadata {
 		_, err := metadataStmt.ExecContext(ctx, provider, campgroundID, m.ID, m.Name, m.Type, m.CostPerNight, m.Rating, now, m.PreviewImageURL)
@@ -1386,19 +1515,36 @@ func (s *Store) upsertCampsiteMetadataChunk(ctx context.Context, provider string
 	return tx.Commit()
 }
 
-// UpdateCampgroundBasedOnCampsites updates a campground with provided campsite types and equipment arrays, plus max and min cost
-func (s *Store) UpdateCampgroundBasedOnCampsites(ctx context.Context, provider, campgroundID string, campsiteTypes, equipment []string, minPrice, maxPrice float64) error {
-	// Marshal to JSON
-	campsiteTypesJSON, _ := json.Marshal(campsiteTypes)
-	equipmentJSON, _ := json.Marshal(equipment)
-
-	// Update the campground with aggregated data
+// RefreshCampgroundAggregates recomputes a campground's campsite types,
+// equipment and price range from its stored sites. Prices are left alone
+// when no site has one (recreation.gov sites don't carry prices; the
+// campground list does).
+func (s *Store) RefreshCampgroundAggregates(ctx context.Context, provider, campgroundID string) error {
 	_, err := s.DB.ExecContext(ctx, `
-		UPDATE campgrounds 
-		SET campsite_types = ?, equipment = ?, last_updated = ?, price_min = ?, price_max = ?
-		WHERE provider = ? AND campground_id = ?
-	`, string(campsiteTypesJSON), string(equipmentJSON), time.Now(), minPrice, maxPrice, provider, campgroundID)
-
+		UPDATE campgrounds SET
+			campsite_types = (
+				SELECT COALESCE(json_group_array(t), '[]') FROM (
+					SELECT DISTINCT campsite_type AS t FROM campsite_metadata
+					WHERE provider = ?1 AND campground_id = ?2 AND campsite_type != ''
+				)
+			),
+			equipment = (
+				SELECT COALESCE(json_group_array(e), '[]') FROM (
+					SELECT DISTINCT equipment_type AS e FROM campsite_equipment
+					WHERE provider = ?1 AND campground_id = ?2 AND equipment_type != ''
+				)
+			),
+			price_min = COALESCE((
+				SELECT MIN(cost_per_night) FROM campsite_metadata
+				WHERE provider = ?1 AND campground_id = ?2 AND cost_per_night > 0
+			), price_min),
+			price_max = COALESCE((
+				SELECT MAX(cost_per_night) FROM campsite_metadata
+				WHERE provider = ?1 AND campground_id = ?2 AND cost_per_night > 0
+			), price_max),
+			last_updated = ?3
+		WHERE provider = ?1 AND campground_id = ?2
+	`, provider, campgroundID, time.Now())
 	return err
 }
 
@@ -1480,7 +1626,7 @@ func (s *Store) ListCampgrounds(ctx context.Context, like string) ([]Campground,
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0), rating
 		FROM campgrounds
-		WHERE lower(name) LIKE '%' || lower(?) || '%'
+		WHERE lower(name) LIKE '%' || lower(?) || '%' AND removed_at IS NULL
 		ORDER BY
 			CASE
 				WHEN lower(name) = lower(?) THEN 0
@@ -1512,6 +1658,7 @@ func (s *Store) GetAllCampgrounds(ctx context.Context) ([]Campground, error) {
 	rows, err := s.ReadConnection().QueryContext(ctx, `
 		SELECT provider, campground_id, name, coalesce(latitude, 0.0), coalesce(longitude, 0.0)
 		FROM campgrounds
+		WHERE removed_at IS NULL
 		ORDER BY name
 	`)
 	if err != nil {

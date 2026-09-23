@@ -208,7 +208,7 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 		}
 		if resp.StatusCode != http.StatusOK {
 			recordFetch("recreation_gov_search", searchStart, false)
-			return nil, fmt.Errorf("recreation.gov search status %d; body: %s", resp.StatusCode, clipBody(body))
+			return nil, statusError("recreation.gov search", resp.StatusCode, body)
 		}
 		recordFetch("recreation_gov_search", searchStart, true)
 
@@ -304,6 +304,13 @@ func (r *RecreationGov) FetchAllCampgrounds(ctx context.Context) ([]CampgroundIn
 			break
 		}
 		start += len(page.Results)
+
+		// ~50 pages per full sync; no need to fire them back to back.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	slog.Info("recreation.gov campground sync completed",
@@ -342,19 +349,18 @@ func (r *RecreationGov) FetchCampsites(ctx context.Context, campgroundID string)
 		recordFetch("recreation_gov_campsites", metaStart, false)
 		return nil, fmt.Errorf("failed to fetch campsite metadata: %w", err)
 	}
-	defer resp.Body.Close()
 	observeUpstream("recreation_gov", resp)
-
-	if resp.StatusCode != http.StatusOK {
-		recordFetch("recreation_gov_campsites", metaStart, false)
-		return nil, fmt.Errorf("campsite metadata request failed with status %d", resp.StatusCode)
-	}
-	recordFetch("recreation_gov_campsites", metaStart, true)
-
 	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
 	if err != nil {
+		recordFetch("recreation_gov_campsites", metaStart, false)
 		return nil, fmt.Errorf("failed to read campsite metadata response: %w", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		recordFetch("recreation_gov_campsites", metaStart, false)
+		return nil, statusError("recreation.gov campsite metadata", resp.StatusCode, body)
+	}
+	recordFetch("recreation_gov_campsites", metaStart, true)
 
 	var response struct {
 		Campsites []struct {

@@ -35,6 +35,10 @@ type Manager struct {
 	// Optional auto-booking. Nil when SCHNIFFER_ENC_KEY is unset or pool
 	// isn't wired; notification path falls back to plain DM in that case.
 	pool *booker.Pool
+
+	// lastPollFailure is provider name -> time.Time of the last failed poll
+	// cycle. The metadata refresh loop backs off while polls are failing.
+	lastPollFailure sync.Map
 }
 
 // SetAutoBooking wires the browser pool used during notification dispatch.
@@ -198,6 +202,7 @@ func (m *Manager) runProviderLoop(ctx context.Context, providerName string) {
 		case <-t.C:
 			err := m.PollProvider(ctx, providerName)
 			if err != nil {
+				m.lastPollFailure.Store(providerName, time.Now())
 				interval += pollBackoffStep
 				m.logger.Warn("Rate limited, increasing interval", "provider", providerName, "new_interval", interval)
 				if interval > floor+60*time.Second {

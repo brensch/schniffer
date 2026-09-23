@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS campgrounds (
     campsite_types TEXT DEFAULT '[]', -- JSON array of campsite types
     equipment    TEXT DEFAULT '[]', -- JSON array of equipment types
 
+    -- metadata refresh bookkeeping (see manager/sync.go)
+    metadata_checked_at DATETIME, -- last campsite metadata refresh attempt
+    removed_at   DATETIME,        -- set when the provider stops listing it
+
     PRIMARY KEY (provider, campground_id)
 );
 

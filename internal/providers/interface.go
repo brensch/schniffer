@@ -2,8 +2,25 @@ package providers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"time"
 )
+
+// ErrRateLimited marks an upstream 403/429. Background metadata refresh
+// stops and pauses on it rather than pushing on and getting the IP blocked
+// for the active schniff polls.
+var ErrRateLimited = errors.New("rate limited")
+
+// statusError builds the error for a non-200 upstream response, wrapping
+// ErrRateLimited when the status looks like throttling or a WAF block.
+func statusError(what string, status int, body []byte) error {
+	if status == http.StatusTooManyRequests || status == http.StatusForbidden {
+		return fmt.Errorf("%s status %d: %w; body: %s", what, status, ErrRateLimited, clipBody(body))
+	}
+	return fmt.Errorf("%s status %d; body: %s", what, status, clipBody(body))
+}
 
 type CampsiteAvailability struct {
 	ID        string
@@ -44,6 +61,15 @@ type Provider interface {
 	// the minimal set of upstream requests (inclusive day ranges) for this provider.
 	// The input dates are unique and normalized to YYYY-MM-DD UTC.
 	PlanBuckets(dates []time.Time) []DateRange
+}
+
+// IncrementalCampsiteFetcher is an optional interface for providers whose
+// campsite metadata costs one upstream request per site. Sites in skip
+// already have recent enough metadata and aren't re-fetched; seen lists
+// every site the provider currently has, fetched or skipped, so callers can
+// tell which stored sites have disappeared.
+type IncrementalCampsiteFetcher interface {
+	FetchCampsitesSkipping(ctx context.Context, campgroundID string, skip map[string]bool) (fetched []CampsiteInfo, seen []string, err error)
 }
 
 // StayURLProvider is an optional interface for providers whose campground page

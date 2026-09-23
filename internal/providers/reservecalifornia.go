@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -299,7 +300,7 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		return nil, fmt.Errorf("citypark read body failed: %w", rerr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("citypark status %d; body: %s", resp.StatusCode, clipBody(body))
+		return nil, statusError("citypark", resp.StatusCode, body)
 	}
 	var parks map[string]struct {
 		CityParkId int     `json:"CityParkId"`
@@ -337,9 +338,10 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		} `json:"SelectedPlace"`
 	}
 
+	// One attempt per park, paced: every call leaves from the host IP that
+	// the active schniff polls also depend on. Any failure aborts the whole
+	// list, since callers treat a missing campground as removed.
 	var out []CampgroundInfo
-	// modest cap to avoid hammering if something goes wrong
-	checked := 0
 	for _, p := range parks {
 
 		// Skip inactive parks or parks without a PlaceId
@@ -347,43 +349,34 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			continue
 		}
 
-		var b2 []byte
-		success := false
-		for i := 0; i < 100; i++ {
-			pr := map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)}
-			pb, _ := json.Marshal(pr)
-			req2, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/place", bytes.NewReader(pb))
-			if err != nil {
-				slog.Warn("build place request failed", slog.Any("err", err))
-				continue
-			}
-			httpx.SpoofChromeHeaders(req2)
-			req2.Header.Set("Content-Type", "application/json")
-			req2.Header.Set("Origin", "https://www.reservecalifornia.com")
-			req2.Header.Set("Referer", "https://www.reservecalifornia.com/")
-			req2.Header.Set("tenantid", "cali")
-
-			time.Sleep(time.Duration(i) * time.Second)
-
-			slog.Info("checking park", slog.Int("id", p.CityParkId), slog.String("name", p.Name), slog.Int("placeId", p.PlaceId), slog.Int("retry", i))
-			resp2, err := r.direct.Do(req2)
-			if err != nil {
-				slog.Warn("place POST failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
-				continue
-			}
-			b2, _ = io.ReadAll(resp2.Body)
-			resp2.Body.Close()
-			if resp2.StatusCode != http.StatusOK {
-				slog.Warn("place status not OK", slog.Int("status", resp2.StatusCode), slog.Int("placeId", p.PlaceId))
-				continue
-			}
-			// exit if we got the value
-			success = true
-			break
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(metadataRequestSpacing):
 		}
-		if !success {
-			slog.Warn("place request failed after retries", slog.Int("placeId", p.PlaceId))
-			return nil, fmt.Errorf("place request failed after retries for PlaceId %d", p.PlaceId)
+
+		pb, _ := json.Marshal(map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)})
+		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/place", bytes.NewReader(pb))
+		if err != nil {
+			return nil, err
+		}
+		httpx.SpoofChromeHeaders(req2)
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Origin", "https://www.reservecalifornia.com")
+		req2.Header.Set("Referer", "https://www.reservecalifornia.com/")
+		req2.Header.Set("tenantid", "cali")
+
+		resp2, err := r.direct.Do(req2)
+		if err != nil {
+			return nil, fmt.Errorf("place POST failed for PlaceId %d: %w", p.PlaceId, err)
+		}
+		b2, err := io.ReadAll(resp2.Body)
+		resp2.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("place read body failed for PlaceId %d: %w", p.PlaceId, err)
+		}
+		if resp2.StatusCode != http.StatusOK {
+			return nil, statusError(fmt.Sprintf("place %d", p.PlaceId), resp2.StatusCode, b2)
 		}
 		var prParsed placeResp
 		err = json.Unmarshal(b2, &prParsed)
@@ -456,16 +449,25 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 				})
 			}
 		}
-		checked++
-
 	}
 	return out, nil
 }
 
-const maxRetriesCampsiteMetadata = 100
+// metadataRequestSpacing paces metadata calls (place lookups, per-site
+// details). They share the host IP with the active grid polls, and the
+// CloudFront WAF in front of the API blocks bursts.
+const metadataRequestSpacing = 10 * time.Second
 
 // FetchCampsites returns detailed campsite metadata for storage in the database
 func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID string) ([]CampsiteInfo, error) {
+	fetched, _, err := r.FetchCampsitesSkipping(ctx, campgroundID, nil)
+	return fetched, err
+}
+
+// FetchCampsitesSkipping implements IncrementalCampsiteFetcher. Listing a
+// facility's sites is one grid call, but each site's details are another
+// call, so sites in skip are only reported in seen.
+func (r *ReserveCalifornia) FetchCampsitesSkipping(ctx context.Context, campgroundID string, skip map[string]bool) ([]CampsiteInfo, []string, error) {
 	// Extract facility ID from composite ID format "parentID-facilityID"
 	var facilityID string
 	if parts := strings.Split(campgroundID, "-"); len(parts) == 2 {
@@ -493,51 +495,27 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	}
 
 	body, _ := json.Marshal(payload)
-	success := false
-	var respBody []byte
-	for i := 0; i < maxRetriesCampsiteMetadata; i++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/grid", bytes.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		httpx.SpoofChromeHeaders(req)
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "https://www.reservecalifornia.com")
-		req.Header.Set("Referer", "https://www.reservecalifornia.com/")
-		req.Header.Set("tenantid", "cali")
-
-		time.Sleep(time.Duration(i) * 1000 * time.Millisecond) // Exponential backoff
-
-		slog.Info("Sending campsite metadata grid request",
-			slog.Int("attempt", i+1))
-		resp, err := r.direct.Do(req)
-		if err != nil {
-			slog.Warn("campsite metadata grid request failed", slog.Any("error", err), slog.Int("attempt", i+1))
-			continue
-		}
-		defer resp.Body.Close()
-
-		respBody, err = io.ReadAll(resp.Body)
-		if err != nil {
-			slog.Warn("failed to read campsite metadata response",
-				slog.Any("error", err))
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			slog.Warn("campsite metadata request failed with status",
-				slog.Int("status", resp.StatusCode),
-				slog.String("body", clipBody(respBody)))
-			continue
-		}
-		success = true
-		break
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/grid", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
 	}
-	if !success {
-		slog.Warn("campsite metadata grid request failed after max retries",
-			slog.String("facilityId", facilityID))
-		return nil, fmt.Errorf("campsite metadata grid request failed after max retries")
+	httpx.SpoofChromeHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://www.reservecalifornia.com")
+	req.Header.Set("Referer", "https://www.reservecalifornia.com/")
+	req.Header.Set("tenantid", "cali")
+
+	resp, err := r.direct.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("campsite metadata grid request failed: %w", err)
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read campsite metadata response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, statusError("campsite metadata grid", resp.StatusCode, respBody)
 	}
 
 	// Parse using expanded structure to get unit details
@@ -556,7 +534,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 	}
 
 	if err := json.Unmarshal(respBody, &gridResp); err != nil {
-		return nil, fmt.Errorf("failed to parse campsite metadata response: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse campsite metadata response: %w", err)
 	}
 
 	slog.Info("Retrieved campsite grid data",
@@ -564,7 +542,20 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		slog.Int("unitCount", len(gridResp.Facility.Units)))
 
 	var campsiteInfos []CampsiteInfo
+	var seen []string
 	for _, unit := range gridResp.Facility.Units {
+		unitID := strconv.Itoa(unit.UnitId)
+		seen = append(seen, unitID)
+		if skip[unitID] {
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(metadataRequestSpacing):
+		}
+
 		// Get detailed campsite information with retries
 		detailsURL := fmt.Sprintf("%s/rdr/search/details/%d/startdate/%s",
 			reserveCaliforniaBaseURL, unit.UnitId, start.Format("2006-01-02"))
@@ -603,63 +594,39 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			} `json:"Amenities"`
 		}
 
-		success := false
-		for attempt := 0; attempt < maxRetriesCampsiteMetadata; attempt++ {
-			detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailsURL, nil)
-			if err != nil {
-				break
-			}
-			httpx.SpoofChromeHeaders(detailReq)
-			detailReq.Header.Set("Origin", "https://www.reservecalifornia.com")
-			detailReq.Header.Set("Referer", "https://www.reservecalifornia.com/")
-			detailReq.Header.Set("tenantid", "cali")
-
-			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
-			detailResp, err := r.direct.Do(detailReq)
-			if err != nil {
-				slog.Warn("failed to fetch campsite details",
-					slog.Int("unitId", unit.UnitId),
-					slog.String("error", err.Error()))
-				continue
-			}
-
-			detailBody, err := io.ReadAll(detailResp.Body)
-			detailResp.Body.Close()
-			if err != nil {
-				slog.Warn("failed to read campsite details response",
-					slog.Int("unitId", unit.UnitId),
-					slog.String("error", err.Error()))
-				continue
-			}
-
-			if detailResp.StatusCode == http.StatusTooManyRequests || detailResp.StatusCode >= 500 {
-				slog.Warn("server error for campsite details",
-					slog.Int("unitId", unit.UnitId),
-					slog.Int("status", detailResp.StatusCode),
-					slog.Int("attempt", attempt+1),
-					slog.String("response", clipBody(detailBody)))
-				continue
-			}
-
-			if detailResp.StatusCode != http.StatusOK {
-				slog.Warn("non-200 status for campsite details",
-					slog.Int("unitId", unit.UnitId),
-					slog.Int("status", detailResp.StatusCode),
-					slog.String("response", clipBody(detailBody)))
-				break
-			}
-
-			if err := json.Unmarshal(detailBody, &detailsResp); err != nil {
-				break
-			}
-
-			// Success!
-			success = true
-			break
+		detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailsURL, nil)
+		if err != nil {
+			return nil, nil, err
 		}
+		httpx.SpoofChromeHeaders(detailReq)
+		detailReq.Header.Set("Origin", "https://www.reservecalifornia.com")
+		detailReq.Header.Set("Referer", "https://www.reservecalifornia.com/")
+		detailReq.Header.Set("tenantid", "cali")
 
-		if !success {
-			return nil, fmt.Errorf("failed to fetch details for unit %d after %d attempts", unit.UnitId, maxRetriesCampsiteMetadata)
+		detailResp, err := r.direct.Do(detailReq)
+		if err != nil {
+			slog.Warn("failed to fetch campsite details", slog.Int("unitId", unit.UnitId), slog.Any("err", err))
+			continue
+		}
+		detailBody, err := io.ReadAll(detailResp.Body)
+		detailResp.Body.Close()
+		if err != nil {
+			slog.Warn("failed to read campsite details", slog.Int("unitId", unit.UnitId), slog.Any("err", err))
+			continue
+		}
+		if detailResp.StatusCode != http.StatusOK {
+			err := statusError(fmt.Sprintf("campsite details %d", unit.UnitId), detailResp.StatusCode, detailBody)
+			if errors.Is(err, ErrRateLimited) {
+				return nil, nil, err
+			}
+			// One bad site shouldn't sink the facility; it stays in seen
+			// and gets another go next cycle.
+			slog.Warn("campsite details failed", slog.Any("err", err))
+			continue
+		}
+		if err := json.Unmarshal(detailBody, &detailsResp); err != nil {
+			slog.Warn("failed to parse campsite details", slog.Int("unitId", unit.UnitId), slog.Any("err", err))
+			continue
 		}
 
 		// Determine equipment types based on site characteristics
@@ -721,7 +688,7 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 		}
 
 		campsiteInfos = append(campsiteInfos, CampsiteInfo{
-			ID:              strconv.Itoa(detailsResp.Unit.UnitId),
+			ID:              unitID,
 			Name:            detailsResp.Unit.Name,
 			Type:            campsiteType,
 			CostPerNight:    costPerNight,
@@ -730,15 +697,13 @@ func (r *ReserveCalifornia) FetchCampsites(ctx context.Context, campgroundID str
 			Amenities:       amenities,
 			PreviewImageURL: detailsResp.UnitImage,
 		})
-
-		// Add progressive delay to be respectful to the API
-		time.Sleep(200 * time.Millisecond)
 	}
 
 	slog.Info("Completed campsite metadata fetch",
 		slog.String("facilityId", facilityID),
 		slog.Int("totalUnits", len(gridResp.Facility.Units)),
-		slog.Int("successfulDetails", len(campsiteInfos)))
+		slog.Int("skipped", len(seen)-len(campsiteInfos)),
+		slog.Int("fetchedDetails", len(campsiteInfos)))
 
-	return campsiteInfos, nil
+	return campsiteInfos, seen, nil
 }
