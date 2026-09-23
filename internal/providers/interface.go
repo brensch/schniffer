@@ -13,6 +13,10 @@ import (
 // for the active schniff polls.
 var ErrRateLimited = errors.New("rate limited")
 
+// ErrIncomplete accompanies a partial result: what was returned is good,
+// but some of it couldn't be fetched, so absence from it means nothing.
+var ErrIncomplete = errors.New("incomplete")
+
 // statusError builds the error for a non-200 upstream response, wrapping
 // ErrRateLimited when the status looks like throttling or a WAF block.
 func statusError(what string, status int, body []byte) error {

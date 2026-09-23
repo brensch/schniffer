@@ -338,51 +338,45 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 		} `json:"SelectedPlace"`
 	}
 
-	// One attempt per park, paced: every call leaves from the host IP that
-	// the active schniff polls also depend on. Any failure aborts the whole
-	// list, since callers treat a missing campground as removed.
+	// Paced, and at most one retry per park: every call leaves from the host
+	// IP the active schniff polls also depend on. A park that still fails is
+	// skipped and the result flagged ErrIncomplete, since callers treat a
+	// missing campground as removed. A 403/429 aborts outright.
 	var out []CampgroundInfo
+	var active, failed int
 	for _, p := range parks {
 
 		// Skip inactive parks or parks without a PlaceId
 		if !p.IsActive || p.PlaceId == 0 {
 			continue
 		}
+		active++
 
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(metadataRequestSpacing):
+		var b2 []byte
+		var err error
+		for attempt := 0; attempt < 2; attempt++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(metadataRequestSpacing):
+			}
+			if b2, err = r.fetchPlace(ctx, p.PlaceId); err == nil || errors.Is(err, ErrRateLimited) {
+				break
+			}
 		}
-
-		pb, _ := json.Marshal(map[string]string{"PlaceId": strconv.Itoa(p.PlaceId)})
-		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/place", bytes.NewReader(pb))
-		if err != nil {
+		if errors.Is(err, ErrRateLimited) {
 			return nil, err
 		}
-		httpx.SpoofChromeHeaders(req2)
-		req2.Header.Set("Content-Type", "application/json")
-		req2.Header.Set("Origin", "https://www.reservecalifornia.com")
-		req2.Header.Set("Referer", "https://www.reservecalifornia.com/")
-		req2.Header.Set("tenantid", "cali")
-
-		resp2, err := r.direct.Do(req2)
 		if err != nil {
-			return nil, fmt.Errorf("place POST failed for PlaceId %d: %w", p.PlaceId, err)
-		}
-		b2, err := io.ReadAll(resp2.Body)
-		resp2.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("place read body failed for PlaceId %d: %w", p.PlaceId, err)
-		}
-		if resp2.StatusCode != http.StatusOK {
-			return nil, statusError(fmt.Sprintf("place %d", p.PlaceId), resp2.StatusCode, b2)
+			slog.Warn("place fetch failed; skipping park", slog.Int("placeId", p.PlaceId), slog.Any("err", err))
+			failed++
+			continue
 		}
 		var prParsed placeResp
-		err = json.Unmarshal(b2, &prParsed)
-		if err != nil {
-			slog.Warn("place JSON decode failed", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
-			return nil, fmt.Errorf("place JSON decode failed: %w; body: %s", err, clipBody(b2))
+		if err := json.Unmarshal(b2, &prParsed); err != nil {
+			slog.Warn("place JSON decode failed; skipping park", slog.Any("err", err), slog.Int("placeId", p.PlaceId))
+			failed++
+			continue
 		}
 
 		parentName := prParsed.SelectedPlace.Name
@@ -450,7 +444,38 @@ func (r *ReserveCalifornia) FetchAllCampgrounds(ctx context.Context) ([]Campgrou
 			}
 		}
 	}
+	if failed > 0 {
+		return out, fmt.Errorf("%d of %d parks failed: %w", failed, active, ErrIncomplete)
+	}
 	return out, nil
+}
+
+// fetchPlace POSTs search/place for one park and returns the body.
+func (r *ReserveCalifornia) fetchPlace(ctx context.Context, placeID int) ([]byte, error) {
+	pb, _ := json.Marshal(map[string]string{"PlaceId": strconv.Itoa(placeID)})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reserveCaliforniaBaseURL+"/rdr/search/place", bytes.NewReader(pb))
+	if err != nil {
+		return nil, err
+	}
+	httpx.SpoofChromeHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://www.reservecalifornia.com")
+	req.Header.Set("Referer", "https://www.reservecalifornia.com/")
+	req.Header.Set("tenantid", "cali")
+
+	resp, err := r.direct.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("place POST failed: %w", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("place read body failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError(fmt.Sprintf("place %d", placeID), resp.StatusCode, body)
+	}
+	return body, nil
 }
 
 // metadataRequestSpacing paces metadata calls (place lookups, per-site

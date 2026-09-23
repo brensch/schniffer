@@ -18,7 +18,7 @@ import (
 // metadataCycle. The campground list itself is re-pulled once per cycle.
 //
 // The loop exists to keep the map current, never at the expense of the
-// active schniff polls: it makes single-attempt requests, yields while a
+// active schniff polls: it makes at most one retry per request, yields while a
 // provider's poll loop is failing, and pauses on any 403/429.
 const (
 	metadataTickInterval = time.Hour
@@ -144,9 +144,10 @@ func (m *Manager) refreshMetadataTick(ctx context.Context, providerName string, 
 // it, and flags campgrounds the provider no longer lists as removed.
 func (m *Manager) refreshCampgroundList(ctx context.Context, providerName string, prov providers.Provider) error {
 	started := time.Now()
-	all, err := prov.FetchAllCampgrounds(ctx)
-	if err != nil {
-		return err
+	all, fetchErr := prov.FetchAllCampgrounds(ctx)
+	incomplete := errors.Is(fetchErr, providers.ErrIncomplete)
+	if fetchErr != nil && !incomplete {
+		return fetchErr
 	}
 	seen := make([]string, 0, len(all))
 	for _, cg := range all {
@@ -163,7 +164,11 @@ func (m *Manager) refreshCampgroundList(ctx context.Context, providerName string
 		return fmt.Errorf("count campgrounds: %w", err)
 	}
 	var removed int64
-	if len(all)*2 >= listed {
+	if incomplete {
+		// Keep what we got, but a partial list can't show what's gone.
+		m.logger.Warn("campground list incomplete; not marking removals",
+			slog.String("provider", providerName), slog.Any("err", fetchErr))
+	} else if len(all)*2 >= listed {
 		if removed, err = m.store.MarkCampgroundsRemoved(ctx, providerName, seen); err != nil {
 			return fmt.Errorf("mark removed campgrounds: %w", err)
 		}

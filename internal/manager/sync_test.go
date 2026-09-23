@@ -19,6 +19,7 @@ import (
 type metaProvider struct {
 	fakeProvider
 	campgrounds []providers.CampgroundInfo
+	listErr     error
 	sites       map[string][]providers.CampsiteInfo
 	siteErr     map[string]error
 	fetchedCGs  []string
@@ -26,7 +27,7 @@ type metaProvider struct {
 }
 
 func (p *metaProvider) FetchAllCampgrounds(context.Context) ([]providers.CampgroundInfo, error) {
-	return p.campgrounds, nil
+	return p.campgrounds, p.listErr
 }
 
 func (p *metaProvider) FetchCampsites(_ context.Context, id string) ([]providers.CampsiteInfo, error) {
@@ -144,6 +145,25 @@ func TestRefreshCampgroundListIgnoresSuspiciouslyShortList(t *testing.T) {
 	}
 	if got := listedIDs(t, store, "p"); len(got) != 10 {
 		t.Fatalf("short list removed campgrounds: %d listed, want 10", len(got))
+	}
+}
+
+func TestRefreshCampgroundListIncompleteKeepsPartialWithoutRemovals(t *testing.T) {
+	ctx := context.Background()
+	prov := &metaProvider{fakeProvider: fakeProvider{name: "p"}}
+	m, store := newSyncTestManager(t, prov)
+	prov.campgrounds = []providers.CampgroundInfo{cgInfo("a", 0), cgInfo("b", 0), cgInfo("c", 0)}
+	if err := m.refreshCampgroundList(ctx, "p", prov); err != nil {
+		t.Fatal(err)
+	}
+
+	prov.campgrounds = []providers.CampgroundInfo{cgInfo("a", 0), cgInfo("b", 0), cgInfo("d", 0)}
+	prov.listErr = fmt.Errorf("1 of 3 parks failed: %w", providers.ErrIncomplete)
+	if err := m.refreshCampgroundList(ctx, "p", prov); err != nil {
+		t.Fatal(err)
+	}
+	if got := listedIDs(t, store, "p"); len(got) != 4 || !got["c"] || !got["d"] {
+		t.Fatalf("listed = %v, want a,b,c,d (new one added, none removed)", got)
 	}
 }
 
